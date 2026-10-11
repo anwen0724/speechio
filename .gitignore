@@ -1,0 +1,10 @@
+.venv/
+.runtime/
+artifacts/
+data/corpus/p0/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.ruff_cache/

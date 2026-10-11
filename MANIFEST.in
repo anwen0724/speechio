@@ -1,0 +1,12 @@
+include README.md pyproject.toml .python-version
+recursive-include src *.py
+recursive-include evals *.py
+recursive-include tests *.py
+prune .runtime
+prune .venv
+prune artifacts
+prune data
+prune dist
+prune build
+prune .ruff_cache
+global-exclude __pycache__ *.py[cod]
