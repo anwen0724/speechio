@@ -36,11 +36,32 @@ const candidateSchema = z
 export type CandidateResult = z.infer<typeof candidateSchema>;
 export type CompletionMode = 'final' | 'candidate';
 type OpenOptions = {
+  wake: boolean;
   stableText: boolean;
   dualRealtime: boolean;
   completionMode: CompletionMode;
   retainForCorrection: boolean;
 };
+const wakeStatusSchema = z
+  .object({
+    enabled: z.boolean(),
+    state: z.enum([
+      'disabled',
+      'grace',
+      'awaiting_wake',
+      'awaiting_speech',
+      'recording',
+      'followup',
+      'finished',
+      'failed',
+      'closed',
+    ]),
+    released: z.boolean(),
+    keyword: z.string().nullable().optional(),
+    position_samples: z.number().int().optional(),
+  })
+  .passthrough();
+export type WakeStatus = z.infer<typeof wakeStatusSchema>;
 const mergeSchema = z
   .object({
     unit: unitSchema,
@@ -115,7 +136,11 @@ const eventSchema = z
 const messageSchema = z
   .object({
     protocol_version: z.literal(1),
-    type: z.enum(['ready', 'ack', 'pong', 'event', 'error', 'closed']),
+    type: z.enum(['ready', 'ack', 'pong', 'event', 'error', 'closed', 'state']),
+    wire_sequence: z.number().int().optional(),
+    input_state: z.string().optional(),
+    wake_status: wakeStatusSchema.optional(),
+    wake: z.object({ enabled: z.boolean() }).passthrough().optional(),
     session_id: z.string().optional(),
     generation: z.number().int().nonnegative().optional(),
     request_id: z.string().nullable().optional(),
@@ -273,6 +298,20 @@ export class BrowserSession {
   private inputEnded = false;
   private ready: Pending | undefined;
   private resumeEpoch = 0;
+  private audioLevel = 0;
+  private levelTime = 0;
+  private levelListeners = new Set<() => void>();
+  getAudioLevel = () => this.audioLevel;
+  subscribeLevel = (listener: () => void) => {
+    this.levelListeners.add(listener);
+    return () => {
+      this.levelListeners.delete(listener);
+    };
+  };
+  private setAudioLevel(level: number) {
+    this.audioLevel = level;
+    for (const listener of this.levelListeners) listener();
+  }
 
   constructor(
     readonly mode: Mode,
@@ -315,6 +354,8 @@ export class BrowserSession {
             ...(options.dualRealtime ? { dual_realtime: true } : {}),
             completion_mode: options.completionMode,
             retain_for_correction: options.retainForCorrection,
+            wake: options.wake,
+            status_updates: true,
             format: { sample_rate: this.sampleRate, channels: 1, sample_type: 'float32' },
           }),
         );
@@ -339,6 +380,13 @@ export class BrowserSession {
     try {
       if (typeof data !== 'string') throw new Error('服务响应不是 JSON 文本');
       const message = messageSchema.parse(JSON.parse(data));
+      if (message.command === 'reset' && message.generation !== undefined)
+        this.generation = message.generation;
+      if (
+        (message.type === 'event' || message.type === 'state') &&
+        message.generation !== this.generation
+      )
+        return;
       // 应答先建立继续边界；已经发送到网络的旧观察也不能恢复旧预览。
       if (message.resume) this.resumeEpoch = message.resume.resume_epoch;
       if (
@@ -423,6 +471,13 @@ export class BrowserSession {
   private sendAudio(frames: Float32Array) {
     const socket = this.socket;
     if (!this.capturing || !socket || this.disposed) return;
+    const now = performance.now();
+    if (now - this.levelTime >= 100) {
+      let squares = 0;
+      for (const sample of frames) squares += sample * sample;
+      this.setAudioLevel(Math.min(1, Math.sqrt(squares / frames.length)));
+      this.levelTime = now;
+    }
     if (socket.bufferedAmount > 1048576) throw new Error('网络发送积压，采集已停止');
     const metadata = new TextEncoder().encode(
       JSON.stringify({
@@ -452,6 +507,7 @@ export class BrowserSession {
       await this.capture.release(reason);
       this.capture = undefined;
     }
+    this.setAudioLevel(0);
   }
 
   /** 先刷新并释放设备，再封口；自动模式结束整个持续源。 */

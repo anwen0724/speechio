@@ -6,6 +6,7 @@ from math import isfinite
 
 from realtime_asr import ASRError, CandidateConfig, RealtimeConfig, RecognizerConfig
 from realtime_asr.backends.base import validate_engine
+from realtime_asr.segmentation.wakeword import WakeConfig
 
 
 def is_loopback(host):
@@ -27,6 +28,8 @@ class ServerConfig:
     ultrafast_config: RealtimeConfig | None = None
     candidate_config: CandidateConfig | None = None
     final_enabled: bool = True
+    wake_config: WakeConfig | None = None
+    wake_detector_factory: object = None
     host: str = "127.0.0.1"
     port: int = 8000
     token: str | None = None
@@ -67,6 +70,11 @@ class ServerConfig:
         return self.engine.capabilities if self.engine is not None else self.recognizer.capabilities
 
     def __post_init__(self):
+        if (self.wake_config is not None and not isinstance(self.wake_config, WakeConfig)) or (
+            self.wake_detector_factory is not None
+            and (self.wake_config is None or not callable(self.wake_detector_factory))
+        ):
+            raise ASRError("INVALID_CONFIGURATION", "configure_server", "唤醒配置或检测工厂无效")
         if type(self.final_enabled) is not bool or (
             self.candidate_config is not None
             and not isinstance(self.candidate_config, CandidateConfig)

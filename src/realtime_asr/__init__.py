@@ -22,9 +22,11 @@ from realtime_asr.runtime.recognizer import Recognizer, RecognizerConfig
 from realtime_asr.segmentation.acoustic import AcousticBoundaryDetector
 from realtime_asr.segmentation.gate import SegmentationConfig, SegmentBoundary
 from realtime_asr.segmentation.vad import VadConfig, VoiceActivity, VoiceDetector
+from realtime_asr.segmentation.wakeword import WakeConfig, WakeDetector
 from realtime_asr.session.automatic import AutomaticSession
 from realtime_asr.session.candidates import CandidateRequest, CandidateResult, ResumeAck
 from realtime_asr.session.session import (
+    AudioSnapshot,
     EventError,
     FinalTask,
     Session,
@@ -91,4 +93,7 @@ __all__ = [
     "SessionEvent",
     "UnitRef",
     "VadConfig",
+    "WakeConfig",
+    "WakeDetector",
+    "AudioSnapshot",
 ]

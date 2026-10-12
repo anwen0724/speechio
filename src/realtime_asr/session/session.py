@@ -93,6 +93,17 @@ class UnitRef:
 
 
 @dataclass(frozen=True)
+class AudioSnapshot:
+    """当前单元已经确定归属的标准音频副本，范围为半开样本区间。"""
+
+    unit: UnitRef
+    pcm: bytes
+    start_sample: int
+    end_sample: int
+    sample_rate: int = 16000
+
+
+@dataclass(frozen=True)
 class FinalTask:
     """已接受的封口任务描述，不表示模型已经完成。"""
 
@@ -489,6 +500,18 @@ class Session:
         """把已生成的标准短块加入本单元，不结束源转换。"""
         for frame in unit.converter.drain_ready():
             self._append_standard(unit, frame.pcm)
+
+    def audio_snapshot(self):
+        """观察已接纳标准短尾，不结束输入或暴露可变缓冲。"""
+        with self._runtime.coordination:
+            self._require_open()
+            unit = self._require_active()
+            if unit.task is not None:
+                raise ASRError("NO_ACTIVE_UNIT", "audio_snapshot", "当前单元已经封口")
+            self._drain_ready_audio(unit)
+            pcm = bytes(unit.pcm)
+            start = unit.stream_start_sample or 0
+            return AudioSnapshot(unit.ref, pcm, start, start + len(pcm) // 2)
 
     def request_candidate(self, *, kind="whole", hint=False):
         """固定当前输入与准确正文，接纳后立即返回请求描述。"""

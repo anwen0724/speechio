@@ -1,0 +1,2 @@
+# 仅用于本项目的 ONNX 唤醒安装配置；openwakeword 0.6.0 的该依赖没有 cp312 Linux 轮子。
+tflite-runtime

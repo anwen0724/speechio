@@ -9,7 +9,7 @@ from uuid import uuid4
 
 import numpy as np
 
-from realtime_asr.audio.conversion import AudioConverter, AudioFormat
+from realtime_asr.audio.conversion import AudioConverter, AudioFormat, AudioFrame
 from realtime_asr.errors import ASRError
 from realtime_asr.results import RecognitionResult
 from realtime_asr.runtime.tasks import InferenceRequest
@@ -20,6 +20,7 @@ from realtime_asr.segmentation.vad import (
     create_detector,
     local_detector_factory,
 )
+from realtime_asr.segmentation.wakeword import WakeConfig, WakeGate
 from realtime_asr.session.session import FinalTask, Session, _AudioUnit, _validate_timeout
 from realtime_asr.text.endpoint import EndpointConfig, SentenceBoundaryPolicy, SentenceHint
 
@@ -31,6 +32,7 @@ class _AutomaticInput:
     converter: AudioConverter
     gate: SegmentationGate
     detector: VoiceDetector
+    wake: WakeGate | None = None
     segments: deque = field(default_factory=deque)
     state: str = "listening"
     cancelled_units: set = field(default_factory=set)
@@ -80,12 +82,24 @@ class _AutomaticUnit(_AudioUnit):
     early_result: EarlyFinalResult | None = None
     pending_split: _SentenceCut | None = None
     sentence_policy: SentenceBoundaryPolicy | None = None
+    wake_context: dict | None = None
 
 
 class AutomaticSession(Session):
     """宿主只连续送音频；封口和后台任务使用普通会话的同一实现。"""
 
-    def __init__(self, runtime, config, vad, segmentation, endpoint=None, *, detector_factory=None):
+    def __init__(
+        self,
+        runtime,
+        config,
+        vad,
+        segmentation,
+        endpoint=None,
+        *,
+        detector_factory=None,
+        wake=None,
+        wake_detector_factory=None,
+    ):
         super().__init__(runtime, config)
         self._endpoint = endpoint if endpoint is not None else EndpointConfig()
         if not isinstance(self._endpoint, EndpointConfig):
@@ -113,9 +127,16 @@ class AutomaticSession(Session):
         ):
             raise ASRError("BACKEND_INCOMPATIBLE", "configure", "句末切段需要稳定观察和词时间能力")
         self._optimization_totals = {}
+        self._closed_wake = None
         self._input_lock = RLock()
         self._detector_factory = detector_factory or local_detector_factory(vad)
         self._segmentation = segmentation
+        if (wake is not None and not isinstance(wake, WakeConfig)) or (
+            wake_detector_factory is not None
+            and (wake is None or not callable(wake_detector_factory))
+        ):
+            raise ASRError("INVALID_CONFIGURATION", "configure", "唤醒配置或工厂无效")
+        self._wake_config, self._wake_factory = wake, wake_detector_factory
         minimum = int(segmentation.min_recording_duration * 16000)
         pre_roll = int(segmentation.pre_roll_duration * 16000)
         if (
@@ -128,11 +149,35 @@ class AutomaticSession(Session):
         self._vad_info = self._input.detector.info
 
     def _new_input(self):
-        return _AutomaticInput(
+        state = _AutomaticInput(
             AudioConverter(self.config.format),
             SegmentationGate(self._segmentation, max_segment_samples=self.config.max_audio_samples),
             create_detector(self._detector_factory),
         )
+        if self._wake_config is not None:
+            state.wake = WakeGate(
+                self._wake_config,
+                int(self._segmentation.pre_roll_duration * 16000),
+                self._wake_factory,
+                on_release=self._runtime.release_wake_resource,
+            )
+            self._runtime.own_wake_resource(self.session_id, state.wake)
+        return state
+
+    @property
+    def wake_status(self):
+        """返回当前输入代次的门控观察，不改写已封口单元。"""
+        with self._runtime.coordination:
+            state = self._input
+            if state is None:
+                return {
+                    **(self._closed_wake.status if self._closed_wake else {"enabled": False}),
+                    "state": "closed",
+                    "released": self._closed_wake.released if self._closed_wake else True,
+                }
+            if state.wake is None:
+                return {"enabled": False, "state": "disabled", "released": True}
+            return dict(state.wake.status)
 
     @property
     def input_state(self):
@@ -193,6 +238,13 @@ class AutomaticSession(Session):
         """自动输入的录音段由门控负责，不把继续误作重新开始分句。"""
         raise ASRError("MODE_UNAVAILABLE", "resume", "同轮继续只适用于手动输入")
 
+    def audio_snapshot(self):
+        """先递交已形成的确定音频，不把未确定回溯尾部归给当前单元。"""
+        with self._input_lock, self._runtime.coordination:
+            state = self._require_input()
+            self._pump(state)
+            return super().audio_snapshot()
+
     def feed_audio(self, chunk):
         """本会话串行转换和检测；不持有全局锁，也不等待 ASR 模型。"""
         with self._input_lock:
@@ -221,8 +273,17 @@ class AutomaticSession(Session):
     def _detect_frames(self, state, frames):
         for frame in frames:
             try:
-                activity = state.detector.detect(
-                    frame.pcm, frame.start_sample, recording=state.gate.active is not None
+                allowed, clear_before = (
+                    state.wake.process(frame, recording=state.gate.active is not None)
+                    if state.wake
+                    else (True, None)
+                )
+                activity = (
+                    state.detector.detect(
+                        frame.pcm, frame.start_sample, recording=state.gate.active is not None
+                    )
+                    if allowed
+                    else VoiceActivity(False, False, False, False, 0)
                 )
                 if not isinstance(activity, VoiceActivity):
                     raise ASRError("VAD_FAILED", "detect_vad", "检测器应返回 VoiceActivity")
@@ -232,6 +293,17 @@ class AutomaticSession(Session):
                 raise ASRError("VAD_FAILED", "detect_vad", str(exc)) from exc
             with self._runtime.coordination:
                 self._check_generation(state)
+                if clear_before is not None:
+                    state.gate.discard_history_before(clear_before)
+                    if clear_before >= frame.end_sample:
+                        state.gate.position = frame.end_sample
+                        continue
+                    if clear_before > frame.start_sample:
+                        frame = AudioFrame(
+                            frame.pcm[(clear_before - frame.start_sample) * 2 :],
+                            clear_before,
+                            frame.end_sample,
+                        )
                 if state.cancel_current:
                     # 转换已经接纳本块；取消掉本块尚未登记的段，保留转换时钟。
                     state.gate.position = frames[-1].end_sample
@@ -252,7 +324,13 @@ class AutomaticSession(Session):
                         self._count_optimization(unit, "speech_resumed")
                 text = self._active.last_realtime_text if self._active is not None else ""
                 pause = self._endpoint.pause_for(text, self._segmentation.post_speech_silence)
+                was_recording = state.gate.active is not None
                 state.segments.extend(state.gate.feed(frame, activity, post_speech_silence=pause))
+                if state.wake:
+                    if not was_recording and state.gate.active is not None:
+                        state.wake.recording_started()
+                    elif was_recording and state.gate.active is None:
+                        state.wake.recording_finished(frame.end_sample)
                 self._pump(state)
         if state.state not in ("failed", "finished"):
             state.state = "recording" if state.gate.active is not None else "listening"
@@ -267,6 +345,11 @@ class AutomaticSession(Session):
                 if segment.unit is None:
                     segment.unit = self._begin_unit(AudioFormat())
                     self._active.stream_start_sample = segment.start_sample
+                    self._active.wake_context = (
+                        dict(state.wake.recording_context or state.wake.status)
+                        if state.wake
+                        else None
+                    )
                 unit = self._units[segment.unit.unit_id]
                 samples = len(segment.pcm) // 2
                 if segment.boundary is None:
@@ -311,7 +394,12 @@ class AutomaticSession(Session):
         event = super()._event(unit, kind, **fields)
         return replace(
             event,
-            optimization={**(event.optimization or {}), **unit.optimization} or None,
+            optimization={
+                **(event.optimization or {}),
+                **unit.optimization,
+                **({"wake": unit.wake_context} if unit.wake_context else {}),
+            }
+            or None,
             source="early-final"
             if kind == "final" and unit.optimization.get("early_reused")
             else event.source,
@@ -476,6 +564,8 @@ class AutomaticSession(Session):
         if state.cancel_current:
             state.gate.cancel_active()
             state.detector.reset()
+            if state.wake:
+                state.wake.cancel()
             state.segments = deque(
                 segment for segment in state.segments if segment.boundary is not None
             )
@@ -518,6 +608,9 @@ class AutomaticSession(Session):
                     self._detect_frames(state, state.converter.finish())
                     state.gate.seal(reason="input_finished")
                     state.state = "finished"
+                    if state.wake:
+                        state.wake.state = "finished"
+                        state.wake.close()
                 except ASRError as exc:
                     self._fail_input(state, exc)
                     raise
@@ -540,6 +633,8 @@ class AutomaticSession(Session):
             if segment in state.segments:
                 raise ASRError("TASK_CAPACITY_EXCEEDED", "finish", "封口段已保留，等待容量后重试")
             state.state = "listening"
+            if state.wake:
+                state.wake.recording_finished(state.gate.position)
             return self._last_task
 
     def _wait_token(self):
@@ -587,20 +682,38 @@ class AutomaticSession(Session):
             state.segments.clear()
             state.converter.close()
             state.state = "failed"
+            if state.wake:
+                state.wake.state = "failed"
+                state.wake.close()
 
     def close(self):
         """控制不等待检测锁；正在执行的检测保留自己的本地引用。"""
         with self._runtime.coordination:
+            old = self._input
             change = Session.close(self)
             self._input = None
+            self._closed_wake = old.wake if old is not None else None
+            if old is not None and old.wake is not None:
+                old.wake.state = "closed"
+                old.wake.close()
             return change
 
     def reset(self):
         """锁外重新准备检测；旧调用不能向新代次登记结果。"""
+        with self._runtime.coordination:
+            self._require_open()
         fresh = self._new_input()
         with self._runtime.coordination:
-            change = Session.reset(self)
+            old = self._input
+            try:
+                change = Session.reset(self)
+            except ASRError:
+                if fresh.wake:
+                    fresh.wake.close()
+                raise
             self._input = fresh
             self._vad_info = fresh.detector.info
             self._optimization_totals = {}
+            if old is not None and old.wake is not None:
+                old.wake.close()
             return change

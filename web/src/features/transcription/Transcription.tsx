@@ -4,6 +4,9 @@ import type { Mode, RealtimeMerge, WireMessage } from './connection';
 import type { CandidateResult, CompletionMode, UnitRef } from './connection';
 import { CandidatePanel } from './CandidatePanel';
 import type { CandidateAction } from './CandidatePanel';
+import { RuntimeInfo, Timeline } from './RuntimePanel';
+import type { TimelineEntry } from './RuntimePanel';
+import type { WakeStatus } from './connection';
 import './transcription.css';
 
 type Status =
@@ -49,6 +52,10 @@ export function Transcription() {
   const [completionMode, setCompletionMode] = useState<CompletionMode>('final');
   const [retainForCorrection, setRetainForCorrection] = useState(false);
   const [candidateAvailable, setCandidateAvailable] = useState(false);
+  const [wake, setWake] = useState(false);
+  const [wakeStatus, setWakeStatus] = useState<WakeStatus>();
+  const [levelOwner, setLevelOwner] = useState<BrowserSession>();
+  const [timeline, setTimeline] = useState<TimelineEntry[]>([]);
   const [candidate, setCandidate] = useState<CandidateResult>();
   const [correctionTarget, setCorrectionTarget] = useState<UnitRef>();
   const [status, setStatus] = useState<Status>('disconnected');
@@ -88,6 +95,14 @@ export function Transcription() {
 
   function receive(owner: BrowserSession, message: WireMessage) {
     if (!mounted.current || session.current !== owner) return;
+    const eventSummary = message.event
+      ? `${message.event.kind} · 代次 ${message.event.unit.generation} · 单元 ${message.event.unit.unit_id}`
+      : (message.command ?? message.type);
+    setTimeline((current) => [
+      ...current.slice(-99),
+      { id: crypto.randomUUID(), time: new Date().toLocaleTimeString(), text: eventSummary },
+    ]);
+    if (message.wake_status) setWakeStatus(message.wake_status);
     if (message.command === 'start' && message.unit) latestUnit.current = message.unit;
     if (message.type === 'ready') setCandidateAvailable(message.candidate?.enabled ?? false);
     if (message.resume) {
@@ -180,6 +195,7 @@ export function Transcription() {
     setCorrectionTarget(undefined);
     setCandidate(undefined);
     setCandidateAvailable(false);
+    setWakeStatus(undefined);
     latestUnit.current = undefined;
     const previous = session.current;
     session.current = undefined;
@@ -190,8 +206,15 @@ export function Transcription() {
       (error) => fail(owner, error),
     );
     session.current = owner;
+    setLevelOwner(owner);
     try {
-      await owner.connect(token, { stableText, dualRealtime, completionMode, retainForCorrection });
+      await owner.connect(token, {
+        stableText,
+        dualRealtime,
+        completionMode,
+        retainForCorrection,
+        wake,
+      });
       if (mounted.current && session.current === owner) setStatus('ready');
     } catch (error) {
       fail(owner, asError(error));
@@ -249,6 +272,14 @@ export function Transcription() {
     }
   }
 
+  function clearDisplay() {
+    setPreview(undefined);
+    setCandidate(undefined);
+    setFinals([]);
+    setTimeline([]);
+    setCorrectionTarget(undefined);
+  }
+
   const connected = status === 'ready' || status === 'recording';
   return (
     <>
@@ -262,7 +293,11 @@ export function Transcription() {
           <select
             value={mode}
             disabled={connected || busy || status === 'draining'}
-            onChange={(event) => setMode(event.target.value === 'auto' ? 'auto' : 'manual')}
+            onChange={(event) => {
+              const next = event.target.value === 'auto' ? 'auto' : 'manual';
+              setMode(next);
+              if (next === 'manual') setWake(false);
+            }}
           >
             <option value="auto">自动分句</option>
             <option value="manual">手动结束</option>
@@ -298,6 +333,20 @@ export function Transcription() {
           双实时合并
         </label>
         <p className="hint">连接时申请麦克风权限。凭据仅保留在当前页面内存。</p>
+        <label className="stable-option">
+          <input
+            type="checkbox"
+            checked={wake}
+            disabled={connected || busy || mode !== 'auto'}
+            onChange={(event) => setWake(event.target.checked)}
+          />
+          等待唤醒词
+        </label>
+        <RuntimeInfo
+          owner={levelOwner}
+          ready={connected || status === 'draining'}
+          wake={wakeStatus}
+        />
         <label className="field">
           完成策略
           <select
@@ -460,6 +509,9 @@ export function Transcription() {
           >
             复制文本
           </button>
+          <button className="text-button" onClick={clearDisplay}>
+            清除展示
+          </button>
         </div>
         {!finals.length && <p className="empty">结束输入后，最终文本会保留在这里。</p>}
         <ol className="finals">
@@ -476,6 +528,7 @@ export function Transcription() {
           ))}
         </ol>
       </section>
+      <Timeline entries={timeline} />
     </>
   );
 }

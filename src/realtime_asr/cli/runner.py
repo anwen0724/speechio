@@ -24,7 +24,7 @@ from realtime_asr import (
     list_input_devices,
 )
 from realtime_asr.audio.files import audio_file_chunks
-from realtime_asr.cli.args import candidate_role, parse_args, realtime_roles
+from realtime_asr.cli.args import candidate_role, parse_args, realtime_roles, wake_role
 from realtime_asr.cli.candidates import CandidateTicker
 from realtime_asr.cli.input import stdin_blocks
 from realtime_asr.cli.output import Output
@@ -116,6 +116,7 @@ def _session(runtime, args, format):
     )
     if args.mode == "auto":
         return runtime.create_auto_session(
+            wake=wake_role(args),
             config=config,
             vad=VadConfig(
                 model_path=args.vad_model,
@@ -150,9 +151,24 @@ def _run_input(runtime, args, output, index, source, format, blocks, *, micropho
         correct_after_final=args.correct_after_final,
     )
     ticker = CandidateTicker(args, format, session.request_candidate)
+    last_wake_state = None
 
     def accept(block):
+        nonlocal last_wake_state
         session.feed_audio(block)
+        if args.wake:
+            wake = session.wake_status
+            stamp = (wake["state"], wake.get("detections"), wake.get("timeouts"))
+            if stamp != last_wake_state:
+                output.record(
+                    "status",
+                    status="input_state",
+                    input_state=session.input_state,
+                    wake_status=wake,
+                    input_index=index,
+                    source=source,
+                )
+                last_wake_state = stamp
         if skipped := ticker.accept(block):
             output.record("status", status="candidate_skipped", reason=skipped, source=source)
 

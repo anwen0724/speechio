@@ -19,6 +19,8 @@ whisper = ["faster-whisper==1.2.1", "huggingface-hub>=0.34,<1"]
 nemotron = ["sherpa-onnx==1.13.4", "onnxruntime>=1.31,<2", "requests>=2.32,<3"]
 audio = ["soundfile>=0.13,<0.14", "soxr>=1,<2"]
 vad = ["webrtcvad-wheels==2.0.14", "onnxruntime>=1.31,<2"]
+wake-porcupine = ["pvporcupine==4.0.3"]
+wake-openwakeword = ["openwakeword==0.6.0", "onnxruntime>=1.31,<2"]
 microphone = ["PyAudio==0.2.14", "soxr>=1,<2"]
 server = ["fastapi>=0.115,<1", "pydantic>=2.11,<3", "uvicorn>=0.35,<1", "websockets>=15,<17", "soxr>=1,<2"]
 client = ["httpx>=0.28,<1", "websocket-client>=1.8,<2"]
@@ -40,3 +42,9 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
+
+[tool.uv]
+# 唤醒固定使用 ONNX；此版本的 Linux TFLite 依赖没有 Python 3.12 轮子。
+exclude-dependencies = [
+    { package = { name = "openwakeword", version = "0.6.0" }, dependencies = ["tflite-runtime"] },
+]

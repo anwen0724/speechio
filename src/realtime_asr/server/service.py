@@ -4,6 +4,7 @@ import asyncio
 from collections import Counter
 from dataclasses import asdict, replace
 from functools import partial
+from pathlib import Path
 from time import monotonic
 
 from anyio import CancelScope
@@ -21,6 +22,7 @@ from realtime_asr import (
     StabilizationConfig,
     VadConfig,
 )
+from realtime_asr.segmentation.wakeword import WakeGate
 
 
 class Service:
@@ -72,6 +74,11 @@ class Service:
     async def open_session(self, options):
         """先保留名额，创建失败或取消后再释放；实际会话归对应请求拥有。"""
         config = self.config
+        if options.wake:
+            if options.mode != "auto":
+                raise ASRError("MODE_UNAVAILABLE", "admit", "唤醒只适用于自动输入")
+            if config.wake_config is None:
+                raise ASRError("WAKE_NOT_CONFIGURED", "admit", "宿主未配置唤醒")
         if self.phase != "ready":
             raise ASRError("SERVICE_NOT_READY", "admit", "服务未就绪")
         if len(self.sessions) + self.reserved >= config.max_sessions:
@@ -132,6 +139,8 @@ class Service:
                     dynamic_silence=options.dynamic_silence,
                     punctuation_split=options.punctuation_split,
                 ),
+                wake=config.wake_config if options.wake else None,
+                wake_detector_factory=config.wake_detector_factory if options.wake else None,
             )
 
         self.reserved += 1
@@ -235,6 +244,8 @@ class Service:
                     "ultrafast_config",
                     "candidate_config",
                     "final_enabled",
+                    "wake_config",
+                    "wake_detector_factory",
                     "vad_model",
                     "token",
                     "ssl_certfile",
@@ -263,6 +274,16 @@ class Service:
             "stable_text": config.realtime,
             "dual_realtime": self.runtime.ultrafast_capabilities is not None,
             "final_enabled": config.final_enabled,
+            "wake": {
+                "enabled": config.wake_config is not None,
+                "backend": config.wake_config.backend if config.wake_config else None,
+                "keywords": list(
+                    config.wake_config.keywords
+                    or tuple(Path(path).stem for path in config.wake_config.model_paths)
+                )
+                if config.wake_config
+                else [],
+            },
             "candidate": {
                 "enabled": self.runtime.candidate_capabilities is not None,
                 "engine": asdict(self.runtime.candidate_capabilities)
@@ -378,6 +399,8 @@ class Service:
     async def _prepare(self):
         try:
             await asyncio.to_thread(self.runtime.prepare)
+            if self.config.wake_config is not None:
+                await asyncio.to_thread(self._prepare_wake)
         except ASRError as exc:
             self.counts["prepare_failures"] += 1
             self.startup_error = {
@@ -390,6 +413,19 @@ class Service:
         else:
             if self.phase == "preparing":
                 self.phase = "ready"
+
+    def _prepare_wake(self):
+        """宿主预检与真实会话实例分开，不共享检测特征状态。"""
+        probe = WakeGate(
+            self.config.wake_config,
+            16000,
+            self.config.wake_detector_factory,
+            on_release=lambda resource: None,
+        )
+        probe.close()
+        if probe.errors:
+            error = probe.errors[0]
+            raise ASRError(error.code, error.operation, error.message)
 
     def readiness(self):
         """服务可接纳状态独立于运行时容量，不在加载期间查询其协调锁。"""

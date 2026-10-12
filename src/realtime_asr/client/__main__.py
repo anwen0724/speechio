@@ -146,6 +146,7 @@ def parser():
         source = file if name == "file" else commands.add_parser(name)
         source.add_argument("--candidates", action="store_true")
         add_candidate_request_args(source)
+        source.add_argument("--wake", action="store_true")
         source.add_argument(
             "--mode", choices=("auto", "manual"), default="auto" if name == "mic" else "manual"
         )
@@ -201,6 +202,8 @@ def streaming(client, args, output, stdin, *, file_input=None):
             )
             if getattr(args, name)
         }
+        if args.wake:
+            text_options["wake"] = True
         session = client.connect(
             mode=args.mode,
             format=format,
@@ -276,6 +279,8 @@ def main(argv=None, *, stdin=None, stdout=None, stderr=None):
     command = parser()
     args = command.parse_args(argv)
     args.completion_mode = args.completion_mode or "final"
+    if args.wake and args.mode != "auto":
+        command.error("唤醒只支持自动输入")
     if args.correct_after_final:
         args.retain_for_correction = True
         if args.mode != "manual":
@@ -293,6 +298,7 @@ def main(argv=None, *, stdin=None, stdout=None, stderr=None):
                         args.candidates
                         or args.completion_mode == "candidate"
                         or args.retain_for_correction
+                        or args.wake
                     ):
                         with closing(audio_file_chunks(path)) as blocks:
                             format, first = next(blocks)

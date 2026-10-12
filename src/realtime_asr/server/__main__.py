@@ -8,8 +8,10 @@ from realtime_asr import ASRError, RecognizerConfig
 from realtime_asr.cli.args import (
     add_candidate_model_args,
     add_realtime_model_args,
+    add_wake_args,
     candidate_role,
     realtime_roles,
+    wake_role,
 )
 from realtime_asr.server import ServerConfig, create_app
 
@@ -19,6 +21,7 @@ def parser():
     command.add_argument("--model", required=True)
     add_realtime_model_args(command)
     add_candidate_model_args(command)
+    add_wake_args(command)
     command.add_argument("--backend", choices=("whisper", "nemotron"), default="whisper")
     command.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     command.add_argument("--cudnn-folder")
@@ -74,6 +77,10 @@ def main(argv=None):
         )
         realtime, ultrafast = realtime_roles(options, recognizer)
         candidate = candidate_role(options, recognizer)
+        wake = wake_role(options)
+        for name in tuple(args):
+            if name == "wake" or name.startswith("wake_"):
+                args.pop(name)
         for role in ("realtime", "ultrafast"):
             for field in ("model", "backend", "device"):
                 args.pop(role + "_" + field)
@@ -94,6 +101,7 @@ def main(argv=None):
             recognizer=None if options.candidate_only else recognizer,
             candidate_config=candidate,
             final_enabled=not options.candidate_only,
+            wake_config=wake,
             **args,
         )
         import uvicorn

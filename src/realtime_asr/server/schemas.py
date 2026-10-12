@@ -43,6 +43,8 @@ class Open(Versioned):
     language: Annotated[str, Field(min_length=1)] | None = None
     realtime: bool = True
     dual_realtime: bool = False
+    wake: bool = False
+    status_updates: bool = False
     completion_mode: Literal["final", "candidate"] = "final"
     retain_for_correction: bool = False
     max_audio_seconds: PositiveSeconds | None = None

@@ -52,6 +52,45 @@ def add_candidate_request_args(parser):
     parser.add_argument("--correct-after-final", action="store_true")
 
 
+def add_wake_args(parser):
+    """本地与服务宿主使用同一唤醒语法，密钥不通过命令行递交。"""
+    parser.add_argument("--wake", action="store_true")
+    parser.add_argument(
+        "--wake-backend", choices=("porcupine", "openwakeword"), default="openwakeword"
+    )
+    parser.add_argument("--wake-keywords", nargs="+", default=[])
+    parser.add_argument("--wake-models", nargs="+", default=[])
+    parser.add_argument("--wake-parameter-model")
+    parser.add_argument("--wake-feature-dir")
+    parser.add_argument("--wake-sensitivity", type=float, default=0.5)
+    parser.add_argument("--wake-activation-delay", type=_seconds, default=0)
+    parser.add_argument("--wake-speech-timeout", type=_positive_seconds, default=5)
+    parser.add_argument("--wake-trim-duration", type=_seconds, default=0.1)
+    parser.add_argument("--wake-followup-window", type=_seconds, default=0)
+
+
+def wake_role(args):
+    """只组装配置；模型准备由自动会话或宿主预检负责。"""
+    from pathlib import Path
+
+    from realtime_asr import WakeConfig
+
+    if not args.wake:
+        return None
+    return WakeConfig(
+        backend=args.wake_backend,
+        keywords=tuple(args.wake_keywords),
+        model_paths=tuple(Path(path) for path in args.wake_models),
+        model_path=Path(args.wake_parameter_model) if args.wake_parameter_model else None,
+        feature_model_dir=Path(args.wake_feature_dir) if args.wake_feature_dir else None,
+        sensitivity=args.wake_sensitivity,
+        activation_delay=args.wake_activation_delay,
+        speech_timeout=args.wake_speech_timeout,
+        trim_duration=args.wake_trim_duration,
+        followup_window=args.wake_followup_window,
+    )
+
+
 def _local_role_model(args, role, primary):
     """统一角色的路径、设备继承和 GPU 运行库复用，不加载模型。"""
     from realtime_asr import ASRError, RecognizerConfig
@@ -128,6 +167,7 @@ def parse_args(argv=None):
         add_realtime_model_args(command)
         add_candidate_model_args(command)
         add_candidate_request_args(command)
+        add_wake_args(command)
         command.add_argument("--language")
         command.add_argument(
             "--mode", choices=("auto", "manual"), default="auto" if name == "mic" else "manual"
@@ -167,6 +207,8 @@ def parse_args(argv=None):
             command.add_argument("--sample-type", choices=("int16", "float32"), default="int16")
     args = parser.parse_args(argv)
     if args.command != "devices":
+        if args.wake and args.mode != "auto":
+            parser.error("唤醒要求 --mode auto")
         args.candidates = args.candidates or args.candidate_model is not None
         args.completion_mode = args.completion_mode or (
             "candidate" if args.candidate_only else "final"

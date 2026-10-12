@@ -105,6 +105,8 @@ class ASRRuntime:
         self._task_samples = 0
         self._worker = None
         self._close_result = None
+        self._wake_resources = {}
+        self._wake_errors = ()
         self._model_lock = Lock()
         self._engines = EngineResources(self._recognizer, self._model_lock)
         self._realtime = RealtimeGroup(self, realtime, ultrafast) if realtime is not None else None
@@ -243,7 +245,15 @@ class ASRRuntime:
             return session
 
     def create_auto_session(
-        self, *, vad=None, detector_factory=None, segmentation=None, config=None, endpoint=None
+        self,
+        *,
+        vad=None,
+        detector_factory=None,
+        segmentation=None,
+        config=None,
+        endpoint=None,
+        wake=None,
+        wake_detector_factory=None,
     ):
         """显式准备检测器；加载不持有共享协调锁，失败不注册会话。"""
         from realtime_asr.segmentation.gate import SegmentationConfig
@@ -267,14 +277,38 @@ class ASRRuntime:
             if config.realtime and self._realtime is None:
                 raise ASRError("REALTIME_NOT_CONFIGURED", "create_session", "运行时未配置实时角色")
         session = AutomaticSession(
-            self, config, vad, segmentation, endpoint, detector_factory=detector_factory
+            self,
+            config,
+            vad,
+            segmentation,
+            endpoint,
+            detector_factory=detector_factory,
+            wake=wake,
+            wake_detector_factory=wake_detector_factory,
         )
         with self._condition:
-            self._require_ready()
-            if len(self._sessions) >= self._limits.max_sessions:
-                raise ASRError("SESSION_CAPACITY_EXCEEDED", "create_session", "开放会话达到上限")
-            self._sessions[session.session_id] = session
+            try:
+                self._require_ready()
+                if len(self._sessions) >= self._limits.max_sessions:
+                    raise ASRError(
+                        "SESSION_CAPACITY_EXCEEDED", "create_session", "开放会话达到上限"
+                    )
+                self._sessions[session.session_id] = session
+            except ASRError:
+                session.close()
+                raise
         return session
+
+    def own_wake_resource(self, session_id, resource):
+        """只跟踪实际检测生命周期，不拥有门控策略或输入代次。"""
+        with self._condition:
+            self._wake_resources[resource] = session_id
+
+    def release_wake_resource(self, resource):
+        with self._condition:
+            self._wake_resources.pop(resource, None)
+            self._wake_errors += resource.errors
+            self._condition.notify_all()
 
     @property
     def coordination(self):
@@ -302,6 +336,9 @@ class ASRRuntime:
         )
         if self._realtime is not None:
             pending += self._realtime.pending_for(session_id)
+        pending += sum(
+            resource.busy for resource, owner in self._wake_resources.items() if owner == session_id
+        )
         return pending
 
     def detach_session(self, session_id):
@@ -373,9 +410,16 @@ class ASRRuntime:
             job = result = error = None
         if self._realtime is not None:
             self._realtime.join()
+        with self._condition:
+            while self._wake_resources:
+                self._condition.wait()
         cleanup_errors = self._engines.close()
         with self._condition:
-            errors = cleanup_errors + (self._realtime.errors if self._realtime else ())
+            errors = (
+                cleanup_errors
+                + (self._realtime.errors if self._realtime else ())
+                + self._wake_errors
+            )
             self._close_result = RuntimeCloseResult("failed" if errors else "ok", errors=errors)
             self._state = "closed"
             self._condition.notify_all()
@@ -441,5 +485,7 @@ class ASRRuntime:
         with self._condition:
             if self._worker.is_alive():
                 realtime_pending = self._realtime.pending_for() if self._realtime else 0
-                self._close_result = RuntimeCloseResult("pending", self._tasks + realtime_pending)
+                self._close_result = RuntimeCloseResult(
+                    "pending", self._tasks + realtime_pending + len(self._wake_resources)
+                )
             return self._close_result

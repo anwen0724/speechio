@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 const require = createRequire(resolve("web/package.json"));
 const { chromium } = require("playwright");
 const candidates = process.argv[3] === "candidates";
+const workbench = process.argv[3] === "workbench";
 const browser = await chromium.launch({
   executablePath: "C:/Program Files/Google/Chrome/Application/chrome.exe",
   headless: true,
@@ -82,6 +83,11 @@ async function run() {
         for (const kind of ["final", "completed"])
           send({type: "event", event: {kind, unit: unit(2), sequence: 5,
             task_id: "final-fixture", result: kind === "final" ? {text: "结束正文"} : null, error: null, resume_epoch: epoch}});
+      }
+      if (workbench && command.type === 'finish') {
+        send({type: 'ack', command: 'finish', request_id: command.request_id});
+        send({type: 'event', event: {kind: 'final', sequence: 8, unit: unit(2),
+          result: {text: '新的结束正文'}, error: null}});
       }
       if (command.type === "open" && process.argv[3] === "stable")
         assert.equal(command.stable_text, true);
@@ -195,6 +201,23 @@ async function run() {
   }
   await page.getByText("已连接", { exact: true }).waitFor();
   await page.getByRole("button", { name: "开始采集", exact: true }).click();
+  if (workbench) {
+    await page.getByLabel('会话时间线', {exact: true}).waitFor({timeout: 1500});
+    await page.waitForFunction(() => document.querySelector('meter')?.value > 0);
+    assert(await page.getByLabel('会话时间线', {exact: true}).locator('li').count() > 0);
+    await page.getByRole('button', {name: '清除展示', exact: true}).click();
+    assert.equal(await page.locator('.finals li').count(), 0);
+    assert.equal(commands.includes('reset'), false);
+    await page.getByRole('button', {name: '结束当前输入', exact: true}).click();
+    await page.locator('.finals').getByText('新的结束正文', {exact: true}).waitFor();
+    assert.equal(await page.locator('meter').evaluate((meter) => meter.value), 0);
+    await page.screenshot({path: 'artifacts/p9/workbench-desktop.png', fullPage: true});
+    await page.setViewportSize({width: 390, height: 844});
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    await page.screenshot({path: 'artifacts/p9/workbench-mobile.png', fullPage: true});
+    console.log('audio level, timeline and display clearing: passed');
+    return;
+  }
   if (candidates) {
     await page.getByRole("button", {name: "整轮候选", exact: true}).click();
     await page.getByLabel("候选正文", {exact: true}).getByText("独立整轮候选", {exact: true}).waitFor();

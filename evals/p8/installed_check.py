@@ -152,12 +152,45 @@ print(json.dumps({'controlled_installed_candidates': True, 'package': sdk.__file
 )
 
 
+WAKE_PROBE = (
+    PROBE
+    + """
+class Vad:
+    info = {'backend': 'installed-vad'}
+    def detect(self, pcm, start_sample, *, recording=False):
+        return sdk.VoiceActivity(True, True, True, True, .1)
+    def reset(self): pass
+class Wake:
+    sample_rate = 16000
+    frame_samples = 512
+    def __init__(self): self.closed = 0
+    def detect(self, pcm): return 'installed keyword'
+    def reset(self): pass
+    def close(self): self.closed += 1
+detector = Wake()
+with sdk.ASRRuntime(engine=Engine()) as runtime:
+    session = runtime.create_auto_session(detector_factory=Vad,
+        segmentation=sdk.SegmentationConfig(min_recording_duration=0),
+        wake=sdk.WakeConfig(trim_duration=0), wake_detector_factory=lambda: detector)
+    session.feed_audio(np.ones(525, np.int16))
+    snapshot = session.audio_snapshot()
+    assert snapshot.end_sample - snapshot.start_sample == 512
+    session.finish_input()
+    assert session.get_event(timeout=5).kind == 'final'
+    assert session.get_event(timeout=5).kind == 'completed'
+assert detector.closed == 1
+print(json.dumps({'installed_wake_and_snapshot': True, 'package': sdk.__file__}))
+"""
+)
+
+
 def main():
     parser = argparse.ArgumentParser(description="P8 wheel 项目外检查，复用已准备的三种依赖环境")
     parser.add_argument("--environments", type=Path, default=Path(".runtime/p6-installed"))
     parser.add_argument("--outside", type=Path, required=True)
     parser.add_argument("--dual", action="store_true")
     parser.add_argument("--candidates", action="store_true")
+    parser.add_argument("--wake", action="store_true")
     args = parser.parse_args()
     project = Path.cwd()
     outside = args.outside.resolve()
@@ -214,6 +247,11 @@ def main():
             env,
         )
         report["p8_candidates_api"] = json.loads(output.splitlines()[-1])
+    if args.wake:
+        output = invoke(
+            [str(environments / "base/Scripts/python.exe"), "-I", "-c", WAKE_PROBE], outside, env
+        )
+        report["p9_api"] = json.loads(output.splitlines()[-1])
     with zipfile.ZipFile(wheel_path) as wheel:
         names = [name for name in wheel.namelist() if name.startswith("realtime_asr/")]
         for name in names:
@@ -226,7 +264,9 @@ def main():
     report["dependency_profiles_reused"] = True
     report["package_reinstalled_from_current_wheel"] = True
     Path(
-        "artifacts/p8-candidates/installed.json"
+        "artifacts/p9/installed.json"
+        if args.wake
+        else "artifacts/p8-candidates/installed.json"
         if args.candidates
         else "artifacts/p8-1/installed.json"
         if args.dual

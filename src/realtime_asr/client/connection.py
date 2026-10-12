@@ -23,7 +23,7 @@ def read_message(text):
     value = json.loads(text)
     if not isinstance(value, dict) or value.get("protocol_version") != 1:
         raise ASRError("INVALID_RESPONSE", "receive", "服务响应协议无效")
-    if value.get("type") not in ("ready", "ack", "pong", "event", "error", "closed"):
+    if value.get("type") not in ("ready", "ack", "pong", "event", "error", "closed", "state"):
         raise ASRError("INVALID_RESPONSE", "receive", "服务响应类别无效")
     return value
 

@@ -17,6 +17,8 @@ from realtime_asr.server.schemas import AudioMetadata, Command
 
 def preview_key(message):
     """只有可替换预览参与合并；最终、完成及连接错误保持关键出口。"""
+    if message["type"] == "state":
+        return (message["session_id"], message["generation"]), ("state", None)
     event = message.get("event", {})
     kind = event.get("kind")
     if kind == "realtime":
@@ -42,14 +44,14 @@ class Outbox:
             for old in tuple(self.queue):
                 if preview_key(old) == key:
                     self.queue.remove(old)
-                    dropped[old["event"]["kind"]] += 1
+                    dropped[old.get("event", {}).get("kind", old["type"])] += 1
         while len(self.queue) >= self.capacity:
             old = next((item for item in self.queue if preview_key(item) is not None), None)
             if old is not None:
                 self.queue.remove(old)
-                dropped[old["event"]["kind"]] += 1
+                dropped[old.get("event", {}).get("kind", old["type"])] += 1
             elif key is not None:
-                dropped[message["event"]["kind"]] += 1
+                dropped[message.get("event", {}).get("kind", message["type"])] += 1
                 return dropped
             else:
                 raise ASRError("SLOW_CONSUMER", "send", "关键消息发送缓冲已满")
@@ -80,6 +82,7 @@ class Connection:
         self.closing = False
         self.close_code = None
         self.close_task = None
+        self._last_input_state = None
         self.cache = OrderedDict()
         self.outbox = Outbox(service.config.max_pending_messages)
         self.control_gate = asyncio.Lock()
@@ -98,7 +101,38 @@ class Connection:
     def emit(self, message):
         dropped = self.outbox.put(message)
         self.service.counts["realtime_dropped"] += dropped["realtime"]
-        self.service.counts["candidate_dropped"] += sum(dropped.values()) - dropped["realtime"]
+        self.service.counts["candidate_dropped"] += (
+            sum(dropped.values()) - dropped["realtime"] - dropped["state"]
+        )
+        self.service.counts["state_dropped"] += dropped["state"]
+
+    def _input_status(self):
+        if self.options.mode == "auto":
+            return {
+                "input_state": self.session.input_state,
+                "wake_status": self.session.wake_status,
+            }
+        return {
+            "input_state": "recording" if self.active is not None else "listening",
+            "wake_status": {"enabled": False, "state": "disabled", "released": True},
+        }
+
+    def _emit_input_status(self, *, force=False):
+        """音频位置不单独刷屏，只发布当前代次的状态转换。"""
+        if not (self.options.status_updates or self.options.wake):
+            return
+        value = self._input_status()
+        wake = value["wake_status"]
+        stamp = (
+            self.generation,
+            value["input_state"],
+            wake["state"],
+            wake.get("detections"),
+            wake.get("timeouts"),
+        )
+        if force or stamp != self._last_input_state:
+            self.emit(self.message("state", **value))
+            self._last_input_state = stamp
 
     def abort(self, error_code, message, *, code=1013):
         """失败清楚结束当前连接；不尝试为残缺输入生成最终。"""
@@ -123,6 +157,7 @@ class Connection:
                 format=self.options.format.model_dump(),
                 expected_audio_sequence=0,
                 candidate=self.service.capabilities()["candidate"],
+                wake=self.service.capabilities()["wake"],
                 text_options={
                     name: getattr(self.options, name)
                     for name in (
@@ -138,6 +173,7 @@ class Connection:
                 },
             )
         )
+        self._emit_input_status(force=True)
         sender = asyncio.create_task(self._send(), name="ASRWSSend")
         tasks = [
             asyncio.create_task(self._receive(), name="ASRWSReceive"),
@@ -260,6 +296,7 @@ class Connection:
         self.service.counts["audio_packets"] += 1
         self.service.counts["input_bytes"] += len(audio)
         self.service.counts["source_frames"] += metadata.frame_count
+        self._emit_input_status()
 
     async def _command(self, text):
         """应答先进入唯一出口，事件消费者随后领取新代次的观察。"""
@@ -283,6 +320,8 @@ class Connection:
             raise ASRError("INVALID_MESSAGE", "control", "该命令不接受 unit")
         kind = command.type
         fields = {}
+        if kind == "ping" and (self.options.status_updates or self.options.wake):
+            fields.update(self._input_status())
         if kind == "start":
             if self.options.mode != "manual":
                 raise ASRError("MODE_UNAVAILABLE", "start", "自动输入不单独开始音频单元")
@@ -362,6 +401,8 @@ class Connection:
         if len(self.cache) > 64:
             self.cache.popitem(last=False)
         self.emit(response)
+        if kind in ("start", "finish", "cancel", "reset", "end_input"):
+            self._emit_input_status(force=True)
         if kind == "close" and self.close_task is None:
             self.close_task = asyncio.create_task(self._drain_close(), name="ASRWSDrain")
 

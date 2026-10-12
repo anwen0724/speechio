@@ -26,6 +26,23 @@ class BlockingEngine(RecordingEngine):
 
 
 class CandidateTests(unittest.TestCase):
+    def test_public_audio_snapshot_includes_short_tail_and_is_independent(self):
+        with sdk.ASRRuntime(engine=RecordingEngine()) as runtime:
+            session = runtime.create_session()
+            unit = session.start()
+            source = np.arange(525, dtype=np.int16)
+            session.feed_audio(source)
+            snapshot = session.audio_snapshot()
+            self.assertEqual(
+                (snapshot.unit, snapshot.start_sample, snapshot.end_sample), (unit, 0, 525)
+            )
+            self.assertEqual(snapshot.sample_rate, 16000)
+            self.assertEqual(snapshot.pcm, source.astype("<i2").tobytes())
+            source.fill(0)
+            session.feed_audio(np.ones(13, dtype=np.int16))
+            self.assertEqual(session.audio_snapshot().end_sample, 538)
+            self.assertEqual(np.frombuffer(snapshot.pcm, dtype="<i2")[-1], 524)
+
     def test_empty_correction_preserves_original_final(self):
         class EmptyCorrection(RecordingEngine):
             def transcribe(self, audio, language=None, *, role="final", word_timestamps=False):

@@ -2,7 +2,7 @@
 
 独立实时 ASR 项目。当前提供同步整段识别 SDK、连续会话 SDK、实时识别与稳定文本、自动分句和结束优化、麦克风采集、本地命令行及 HTTP／WebSocket 共享服务。Python 远程客户端和最小浏览器入口调用同一服务协议。真实评估入口独立放在 `evals/`。
 
-同步 SDK 分块入口在全部输入结束后返回完整结果。连续会话可在上一单元推理期间接收下一单元，通过实时与最终事件消费结果。基本实时支持 Whisper 完整快照和 Nemotron 原生增量。自动会话通过双 VAD 确认录音段，提供前置保护与统一回溯。可选策略提供声学触发、提前推理、动态等待及有词时间证据的句末切段。双实时可分别配置准确与极速角色，保留原文并按锚点合并有限尾部。候选支持固定尾部／整轮快照、手动同轮继续、候选完成和最近整轮修正。SDK、CLI、服务与浏览器使用相同核心接口；唤醒与完整工作台仍待后续阶段。产品范围见 [PRD](docs/PRD.md)，系统设计见 [Architecture](docs/ARCHITECTURE.md)，实际验收见 [STATUS](docs/STATUS.md)。
+同步 SDK 分块入口在全部输入结束后返回完整结果。连续会话可在上一单元推理期间接收下一单元，通过实时与最终事件消费结果。基本实时支持 Whisper 完整快照和 Nemotron 原生增量。自动会话通过双 VAD 确认录音段，提供前置保护与统一回溯。可选策略提供声学触发、提前推理、动态等待及有词时间证据的句末切段。双实时可分别配置准确与极速角色，保留原文并按锚点合并有限尾部。候选支持固定尾部／整轮快照、手动同轮继续、候选完成和最近整轮修正。SDK、CLI、服务与浏览器使用相同核心接口；可选本地唤醒和工作台的音量、运行状态、时间线、复制及清除已接通。产品范围见 [PRD](docs/PRD.md)，系统设计见 [Architecture](docs/ARCHITECTURE.md)，实际验收见 [STATUS](docs/STATUS.md)。
 
 ## 代码结构
 
@@ -593,3 +593,17 @@ Spec、实施 Plan 与状态入口分别为 [P0 Spec](docs/specs/runtime-and-cor
 本地与服务启动器支持 `--candidates`、独立 `--candidate-model` 和 `--candidate-only`。本地转写与远程转写支持 `--candidate-kind`、`--candidate-every`、`--candidate-hint`、`--completion-mode`、`--retain-for-correction` 和手动模式的 `--correct-after-final`。周期按输入音频时长计算；文本输出的候选写 stderr，最终正文写 stdout。远程参数只申请宿主已有角色。
 
 浏览器在连接前选择完成策略和修正保留。连接成功后按宿主能力启用候选按钮；同轮继续仅用于手动采集，修正成功更新原最终正文。候选区域独立显示来源、范围、状态及发布时的新旧关系。候选模型计算期间仍继续递交麦克风音频。
+
+## 可选唤醒与完整工作台
+
+默认关闭唤醒。自动持续输入可以在宿主提供 `WakeConfig` 后启用；手动会话和 HTTP 整段保持直接识别。SDK 的 `create_auto_session(..., wake=...)` 使用本地 CPU Porcupine 或 OpenWakeWord，检测状态按输入代次隔离。激活宽限、正文等待、固定前置裁剪与继续窗口都按标准音频样本位置推进。
+
+Porcupine 安装 `wake-porcupine` extra，设置 `PICOVOICE_ACCESS_KEY`，选择内置 keywords 或本地 .ppn 文件；非英语参数使用本地 .pv。密钥不写入命令参数或服务协议。OpenWakeWord 安装 `wake-openwakeword` extra，显式提供关键词 .onnx、melspectrogram.onnx 和 embedding_model.onnx。模型准备时不隐式联网，具体模型工具见后续部署说明。项目 uv 配置只排除 openwakeword 0.6.0 的 TFLite 依赖，因为当前路线固定使用 ONNX。项目外的 ONNX 安装可使用 [排除文件](packaging/wake-onnx-excludes.txt)；不将此文件用于任意其他模型环境。
+
+本地与服务宿主使用 `--wake`、`--wake-backend`、`--wake-keywords` 或 `--wake-models`、`--wake-feature-dir`，并可配置 `--wake-activation-delay`、`--wake-speech-timeout`、`--wake-trim-duration` 与 `--wake-followup-window`。服务配置后，远程 CLI 的 `--mode auto --wake` 只申请该宿主角色。默认继续窗口为零，独立唤醒词与正文之间有停顿时，应按实际使用配置有限窗口。
+
+浏览器在连接前选择自动模式和“等待唤醒词”。页面显示服务模型就绪、采集 RMS 和当前门控状态；采集停止后音量归零。时间线保留最近 100 条摘要。清除展示不停止录音、不改变后台代次；重置会话和结束输入仍是明确的后台控制。所有识别区域有自己的滚动范围。
+
+公开 `Session.audio_snapshot()` 提供当前单元已经确定归属的标准音频副本及半开范围。自动模式不包含尚未确定归属的回溯尾部；观察不结束输入。可以通过 [录音保存示例](examples/save_audio.py)保存标准 WAV，或使用 [热键听写示例](examples/hotkey_dictation.py)在终端用 Space 开始／结束、Esc 取消并退出。热键不接管其他应用。
+
+Porcupine 的正向实际检测仍需 AccessKey，人工口述、首词裁剪质量、终端热键与其他平台应分别验收。当前验证范围见 STATUS，不把受控检测或浏览器模拟采集当成人工设备验收。

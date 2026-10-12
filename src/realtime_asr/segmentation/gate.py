@@ -310,3 +310,22 @@ class SegmentationGate:
         self._gap_protection = False
         self._last_end = self.position
         self._next_start_sample = self.position
+
+    def discard_history_before(self, sample):
+        """唤醒裁剪只影响未归属的前置音频，保留跨帧右侧样本。"""
+        retained = deque()
+        for frame, activity in self._history:
+            if frame.end_sample > sample:
+                start = max(sample, frame.start_sample)
+                retained.append(
+                    (
+                        AudioFrame(
+                            frame.pcm[(start - frame.start_sample) * 2 :], start, frame.end_sample
+                        ),
+                        activity,
+                    )
+                )
+        self._history = retained
+        self._recent.clear()
+        self._waiting_onset = False
+        self._last_end = self._next_start_sample = sample
