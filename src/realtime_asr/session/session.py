@@ -13,6 +13,11 @@ from realtime_asr.results import RecognitionResult
 from realtime_asr.runtime.tasks import InferenceRequest
 from realtime_asr.segmentation.acoustic import AcousticBoundary
 from realtime_asr.segmentation.gate import SegmentBoundary
+from realtime_asr.text.realtime_merge import (
+    RealtimeMergeConfig,
+    RealtimeMerger,
+    RealtimeMergeResult,
+)
 from realtime_asr.text.stabilizer import (
     FinalizationResult,
     StabilizationConfig,
@@ -46,12 +51,17 @@ class SessionConfig:
     realtime: bool = False
     stabilization: StabilizationConfig | None = None
     word_timestamps: bool = False
+    merge: RealtimeMergeConfig | None = None
 
     def __post_init__(self):
         """创建时检查外部配置，不在每个输入块重复验证配置。"""
         if (
             not isinstance(self.realtime, bool)
             or type(self.word_timestamps) is not bool
+            or (
+                self.merge is not None
+                and (not isinstance(self.merge, RealtimeMergeConfig) or not self.realtime)
+            )
             or (
                 self.stabilization is not None
                 and (not isinstance(self.stabilization, StabilizationConfig) or not self.realtime)
@@ -124,6 +134,8 @@ class SessionEvent:
     stabilization: StabilizationResult | None = None
     finalization: FinalizationResult | None = None
     optimization: dict | None = None
+    realtime_role: str | None = None
+    merge: RealtimeMergeResult | None = None
 
 
 @dataclass(frozen=True)
@@ -146,7 +158,8 @@ class _AudioUnit:
     source_bytes: int = 0
     task: FinalTask | None = None
     events: deque | None = None
-    realtime_event: SessionEvent | None = None
+    realtime_events: dict[str, SessionEvent] = field(default_factory=dict)
+    merger: RealtimeMerger | None = None
     boundary: SegmentBoundary | None = None
     stream_start_sample: int | None = None
     stabilizer: TextStabilizer | None = None
@@ -157,6 +170,10 @@ class Session:
     """隐藏连续输入、固定音频及输出归属，宿主只操作公开控制接口。"""
 
     def __init__(self, runtime, config: SessionConfig):
+        if config.merge is not None and (
+            runtime.realtime is None or not runtime.realtime.has_ultrafast
+        ):
+            raise ASRError("REALTIME_NOT_CONFIGURED", "create_session", "运行时未配置极速角色")
         self._runtime = runtime
         self._config = config
         self._session_id = uuid4().hex
@@ -210,6 +227,8 @@ class Session:
                 raise ASRError("RESULT_CAPACITY_EXCEEDED", "start", "未消费单元达到容量上限")
             ref = UnitRef(self.session_id, self._generation, self._next_unit)
             unit = self._new_unit(ref, format)
+            if self.config.merge is not None:
+                unit.merger = RealtimeMerger(ref, self.config.merge)
             if self.config.stabilization is not None:
                 unit.stabilizer = TextStabilizer(ref, self.config.stabilization)
             if self.config.realtime:
@@ -346,30 +365,38 @@ class Session:
         self._runtime.coordination.notify_all()
 
     def _record_realtime(self, unit, event):
-        """每个单元只保留最新观察；终态正文不被实时输出覆盖。"""
+        """每个角色保留一个最新槽；只用准确路更新稳定和端点证据。"""
         if self._units.get(unit.ref.unit_id) is unit and unit.events is None:
+            role = event.realtime_role
             if event.kind == "realtime":
+                observation = TextObservation(
+                    unit.ref,
+                    event.observation_sequence,
+                    event.result.text,
+                    event.audio_samples,
+                    event.completed_at_monotonic,
+                )
                 stable = None
-                if unit.stabilizer is not None:
-                    stable = unit.stabilizer.observe(
-                        TextObservation(
-                            unit.ref,
-                            event.observation_sequence,
-                            event.result.text,
-                            event.audio_samples,
-                            event.completed_at_monotonic,
-                        )
-                    )
-                if event.result.text.strip() and (stable is None or stable.accepted):
+                if role == "accurate" and unit.stabilizer is not None:
+                    stable = unit.stabilizer.observe(observation)
+                if (
+                    role == "accurate"
+                    and event.result.text.strip()
+                    and (stable is None or stable.accepted)
+                ):
                     unit.last_realtime_text = event.result.text
                 event = replace(event, stabilization=stable)
+                if unit.merger is not None:
+                    unit.merger.observe(role, observation)
             if unit.stream_start_sample is not None:
                 event = replace(
                     event,
                     stream_start_sample=unit.stream_start_sample + event.audio_start_sample,
                     stream_end_sample=unit.stream_start_sample + event.audio_samples,
                 )
-            unit.realtime_event = event
+            # 更新角色槽的插入顺序，消费者按最近观察的到达顺序读取。
+            unit.realtime_events.pop(role, None)
+            unit.realtime_events[role] = event
 
     def cancel(self, target: UnitRef | None = None) -> bool:
         """取消当前输入或指定单元；不扩大到其他单元或会话。"""
@@ -411,6 +438,7 @@ class Session:
             audio_samples=samples,
             audio_version=samples,
             result=result,
+            merge=unit.merger.snapshot() if unit.merger is not None else None,
             error=EventError(error.code, error.operation, error.message) if error else None,
             boundary=unit.boundary,
             stream_start_sample=unit.stream_start_sample,
@@ -438,7 +466,7 @@ class Session:
         cancelled = []
         discarded = 0
         for unit in self._units.values():
-            discarded += int(unit.realtime_event is not None)
+            discarded += len(unit.realtime_events)
             if unit.events is not None:
                 discarded += len(unit.events)
                 continue
@@ -465,7 +493,7 @@ class Session:
 
     def _terminal(self, unit, kind, *, result=None, error=None):
         if kind == "cancelled" or (kind == "failed" and unit.task is None):
-            unit.realtime_event = None
+            unit.realtime_events.clear()
             if self.config.realtime:
                 self._runtime.realtime.cancel_unit(unit.ref)
         unit.events = deque([self._event(unit, kind, result=result, error=error)])
@@ -482,12 +510,12 @@ class Session:
             return None
         if first.events and first.events[0].kind == "completed":
             return first, False
-        if first.realtime_event is not None:
+        if first.realtime_events:
             return first, True
         if first.events:
             return first, False
         for unit in self._units.values():
-            if unit.realtime_event is not None:
+            if unit.realtime_events:
                 return unit, True
         return None
 
@@ -509,8 +537,12 @@ class Session:
             unit, realtime = self._next_event()
             self._sequence += 1
             if realtime:
-                event, unit.realtime_event = unit.realtime_event, None
-                return replace(event, sequence=self._sequence)
+                event = unit.realtime_events.pop(next(iter(unit.realtime_events)))
+                return replace(
+                    event,
+                    sequence=self._sequence,
+                    merge=unit.merger.snapshot() if unit.merger is not None else None,
+                )
             event = replace(unit.events.popleft(), sequence=self._sequence)
             if not unit.events:
                 del self._units[unit.ref.unit_id]

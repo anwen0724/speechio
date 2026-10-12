@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 const require = createRequire(resolve("web/package.json"));
 const { chromium } = require("playwright");
 const [url, folder, wav] = process.argv.slice(2);
+const dual = process.argv[5] === "dual";
 const browser = await chromium.launch({
   executablePath: "C:/Program Files/Google/Chrome/Application/chrome.exe",
   headless: true,
@@ -23,6 +24,7 @@ try {
   await page.goto(url);
   await page.getByLabel("接入模式").selectOption("manual");
   await page.getByLabel("稳定文本", { exact: true }).check();
+  if (dual) await page.getByLabel("双实时合并", { exact: true }).check();
   await page.getByRole("button", { name: "连接", exact: true }).click();
   await page.getByText("已连接", { exact: true }).waitFor();
   await page.getByRole("button", { name: "开始采集", exact: true }).click();
@@ -37,6 +39,20 @@ try {
   const unstable = await page
     .getByLabel("待定尾部", { exact: true })
     .innerText();
+  let sources;
+  if (dual) {
+    await page.waitForFunction(() => {
+      const fast = document.querySelector('[aria-label="极速实时原文"]')?.textContent;
+      return Boolean(fast && !fast.includes("等待"));
+    }, { timeout: 20000 });
+    sources = {
+      accurate: await page.getByLabel("准确实时正文", { exact: true }).innerText(),
+      ultrafast: await page.getByLabel("极速实时原文", { exact: true }).innerText(),
+      merged: await page.getByLabel("合并实时文本", { exact: true }).innerText(),
+      status: await page.getByLabel("合并状态", { exact: true }).innerText(),
+    };
+    assert(sources.accurate.length > 0 && sources.ultrafast.length > 0);
+  }
   assert(stable.length > 0);
   await page.screenshot({
     path: resolve(folder, "browser-stable-desktop.png"),
@@ -73,6 +89,8 @@ try {
         status: "passed",
         stable,
         unstable,
+        dual,
+        sources,
         final,
         source: "public WAV through Chrome microphone simulation",
         human_microphone_accepted: false,

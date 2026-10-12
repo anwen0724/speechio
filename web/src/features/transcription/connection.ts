@@ -5,6 +5,33 @@ const unitSchema = z.object({
   generation: z.number().int().nonnegative(),
   unit_id: z.number().int().positive(),
 });
+const mergeSchema = z
+  .object({
+    unit: unitSchema,
+    text: z.string(),
+    accurate_text: z.string(),
+    ultrafast_text: z.string(),
+    ultrafast_suffix: z.string(),
+    status: z.enum([
+      'waiting_for_accurate',
+      'accurate_only',
+      'exact',
+      'bootstrap_exact',
+      'fuzzy',
+      'soft_frontier',
+      'held_fuzzy_pending',
+      'held_no_anchor',
+      'held_fast_conflict',
+      'accurate_advanced_no_anchor',
+      'stale_ignored',
+    ]),
+    revision: z.number().int().nonnegative(),
+    accurate_generation: z.number().int().nonnegative(),
+    matched: z.boolean(),
+    held: z.boolean(),
+  })
+  .passthrough();
+export type RealtimeMerge = z.infer<typeof mergeSchema>;
 const eventSchema = z
   .object({
     kind: z.enum(['realtime', 'final', 'completed', 'failed', 'realtime_failed', 'cancelled']),
@@ -12,6 +39,8 @@ const eventSchema = z
     sequence: z.number().int(),
     result: z.object({ text: z.string() }).passthrough().nullable(),
     error: z.object({ code: z.string(), message: z.string() }).nullable(),
+    realtime_role: z.enum(['accurate', 'ultrafast']).nullable().optional(),
+    merge: mergeSchema.nullable().optional(),
     stabilization: z
       .object({
         accepted: z.boolean(),
@@ -191,7 +220,7 @@ export class BrowserSession {
   ) {}
 
   /** 先取得实际设备格式，再以 open 鉴权；成功连接尚未开始递交音频。 */
-  async connect(token: string, stableText = false) {
+  async connect(token: string, stableText = false, dualRealtime = false) {
     try {
       this.capture = await Capture.create(
         undefined,
@@ -222,6 +251,7 @@ export class BrowserSession {
             mode: this.mode,
             realtime: true,
             ...(stableText ? { stable_text: true } : {}),
+            ...(dualRealtime ? { dual_realtime: true } : {}),
             format: { sample_rate: this.sampleRate, channels: 1, sample_type: 'float32' },
           }),
         );

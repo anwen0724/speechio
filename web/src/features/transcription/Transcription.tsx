@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { asError, BrowserSession } from './connection';
-import type { Mode, WireMessage } from './connection';
+import type { Mode, RealtimeMerge, WireMessage } from './connection';
 import './transcription.css';
 
 type Status =
@@ -22,12 +22,26 @@ const labels: Record<Status, string> = {
   closed: '已关闭',
   error: '错误',
 };
+const mergeLabels: Record<RealtimeMerge['status'], string> = {
+  waiting_for_accurate: '等待准确正文，极速原文单独展示。',
+  accurate_only: '显示准确正文，尚无可追加尾部。',
+  exact: '已通过精确锚点补充尾部。',
+  bootstrap_exact: '初始英文词精确匹配，已补充尾部。',
+  fuzzy: '受限模糊匹配已确认。',
+  soft_frontier: '单调前沿已确认尾部。',
+  held_fuzzy_pending: '等待模糊匹配确认，保留当前正文。',
+  held_no_anchor: '极速结果没有锚点，保留当前正文。',
+  held_fast_conflict: '极速尾部发生冲突，保留已经显示的部分。',
+  accurate_advanced_no_anchor: '准确正文已更新，旧尾部已清除。',
+  stale_ignored: '旧观察已忽略。',
+};
 
 /** 一个会话协调三个区域；旧连接回调始终核对所属实例。 */
 export function Transcription() {
   const [token, setToken] = useState('');
   const [mode, setMode] = useState<Mode>('auto');
   const [stableText, setStableText] = useState(false);
+  const [dualRealtime, setDualRealtime] = useState(false);
   const [status, setStatus] = useState<Status>('disconnected');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -37,6 +51,7 @@ export function Transcription() {
         text: string;
         stable?: string;
         unstable?: string;
+        merge?: RealtimeMerge;
       }
     | undefined
   >(undefined);
@@ -73,12 +88,22 @@ export function Transcription() {
     const key = `${event.unit.session_id}:${event.unit.generation}:${event.unit.unit_id}`;
     if (event.kind === 'realtime' && event.result) {
       const stable = event.stabilization;
-      setPreview({
+      const rawText = event.result.text;
+      setPreview((current) => ({
         key,
-        text: stable?.display_text ?? event.result.text,
-        stable: stable?.stable_text,
-        unstable: stable?.unstable_text,
-      });
+        text: event.merge?.text ?? stable?.display_text ?? rawText,
+        stable:
+          stable?.stable_text ??
+          (event.realtime_role === 'ultrafast' && current?.key === key
+            ? current.stable
+            : undefined),
+        unstable:
+          stable?.unstable_text ??
+          (event.realtime_role === 'ultrafast' && current?.key === key
+            ? current.unstable
+            : undefined),
+        merge: event.merge ?? undefined,
+      }));
     }
     if (event.kind === 'final' && event.result) {
       const text = event.result.text;
@@ -118,7 +143,7 @@ export function Transcription() {
     );
     session.current = owner;
     try {
-      await owner.connect(token, stableText);
+      await owner.connect(token, stableText, dualRealtime);
       if (mounted.current && session.current === owner) setStatus('ready');
     } catch (error) {
       fail(owner, asError(error));
@@ -194,6 +219,15 @@ export function Transcription() {
           />
           稳定文本
         </label>
+        <label className="stable-option">
+          <input
+            type="checkbox"
+            checked={dualRealtime}
+            disabled={connected || busy}
+            onChange={(event) => setDualRealtime(event.target.checked)}
+          />
+          双实时合并
+        </label>
         <p className="hint">连接时申请麦克风权限。凭据仅保留在当前页面内存。</p>
         <div className="actions">
           <button
@@ -253,25 +287,61 @@ export function Transcription() {
         )}
         <p className="hint">取消舍弃当前输入；重置进入新代次。断开会先排空本连接的结果。</p>
       </section>
-      <section className="preview-panel" aria-label="实时观察">
+      <section
+        className={`preview-panel${dualRealtime ? ' dual-preview-panel' : ''}`}
+        aria-label="实时观察"
+      >
         <div className="panel-heading">
           <h2>实时观察</h2>
-          <span className="tag">{stableText ? '稳定与待定' : '可变预览'}</span>
+          <span className="tag">
+            {dualRealtime ? '双路与合并' : stableText ? '稳定与待定' : '可变预览'}
+          </span>
         </div>
-        <p className={preview ? 'preview' : 'empty'}>
-          {preview?.stable !== undefined ? (
-            <>
-              <strong className="stable-text" aria-label="稳定前缀">
-                {preview.stable}
-              </strong>
-              <span className="unstable-text" aria-label="待定尾部">
-                {preview.unstable}
-              </span>
-            </>
-          ) : (
-            preview?.text || '开始说话后，这里显示实时识别。'
-          )}
-        </p>
+        {dualRealtime ? (
+          <div className="dual-observations">
+            <h3>准确正文</h3>
+            <p className="preview" aria-label="准确实时正文">
+              {preview?.merge?.accurate_text || '等待准确路结果。'}
+            </p>
+            {stableText && preview?.stable !== undefined && (
+              <>
+                <h3>准确路稳定与待定</h3>
+                <p>
+                  <strong className="stable-text" aria-label="稳定前缀">
+                    {preview.stable}
+                  </strong>
+                  <span className="unstable-text" aria-label="待定尾部">
+                    {preview.unstable}
+                  </span>
+                </p>
+              </>
+            )}
+            <h3>极速原文</h3>
+            <p aria-label="极速实时原文">{preview?.merge?.ultrafast_text || '等待极速路结果。'}</p>
+            <h3>合并文本</h3>
+            <p className="preview" aria-label="合并实时文本">
+              {preview?.merge?.text || '等待准确正文与可信锚点。'}
+            </p>
+            <p className="hint" aria-label="合并状态">
+              {preview?.merge ? mergeLabels[preview.merge.status] : '开始采集后显示两路结果。'}
+            </p>
+          </div>
+        ) : (
+          <p className={preview ? 'preview' : 'empty'}>
+            {preview?.stable !== undefined ? (
+              <>
+                <strong className="stable-text" aria-label="稳定前缀">
+                  {preview.stable}
+                </strong>
+                <span className="unstable-text" aria-label="待定尾部">
+                  {preview.unstable}
+                </span>
+              </>
+            ) : (
+              preview?.text || '开始说话后，这里显示实时识别。'
+            )}
+          </p>
+        )}
       </section>
       <section className="final-panel" aria-label="最终结果">
         <div className="panel-heading">

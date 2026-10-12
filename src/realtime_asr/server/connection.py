@@ -33,7 +33,11 @@ class Outbox:
         if is_realtime(message):
             unit = message["event"]["unit"]
             for old in tuple(self.queue):
-                if is_realtime(old) and old["event"]["unit"] == unit:
+                if (
+                    is_realtime(old)
+                    and old["event"]["unit"] == unit
+                    and old["event"].get("realtime_role") == message["event"].get("realtime_role")
+                ):
                     self.queue.remove(old)
                     dropped += 1
         while len(self.queue) >= self.capacity:
@@ -114,6 +118,7 @@ class Connection:
                     name: getattr(self.options, name)
                     for name in (
                         "stable_text",
+                        "dual_realtime",
                         "word_timestamps",
                         "early_transcription_silence",
                         "dynamic_silence",

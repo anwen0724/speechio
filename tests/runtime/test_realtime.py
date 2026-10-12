@@ -16,7 +16,8 @@ from realtime_asr import (
     RuntimeLimits,
     SessionConfig,
 )
-from realtime_asr.runtime.models.manifest import NEMOTRON_FILES, create_manifest
+from realtime_asr.runtime.models.manifest import create_manifest
+from realtime_asr.runtime.models.pinned import NEMOTRON_FILES
 from tests.backends.test_stream import RuntimeRecognizer, RuntimeStream
 from tests.runtime import test_recognizer
 

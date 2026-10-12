@@ -54,9 +54,12 @@ class Output:
             if event.kind == "final":
                 self._write_stdout(event.result.text + "\n")
             elif event.kind == "realtime":
-                text = (
-                    event.stabilization.display_text if event.stabilization else event.result.text
-                )
+                if event.merge is not None:
+                    text = event.merge.text
+                elif event.stabilization is not None:
+                    text = event.stabilization.display_text
+                else:
+                    text = event.result.text
                 self.stderr.write(f"[{event.source}:{event.unit.unit_id}] {text}\n")
                 self.stderr.flush()
             elif event.error is not None:

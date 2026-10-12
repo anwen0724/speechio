@@ -1,0 +1,73 @@
+"""使用已经准备的两个模型，通过公开 SDK 消费原文、合并和最终结果。"""
+
+import argparse
+from contextlib import closing
+
+from realtime_asr import (
+    ASRError,
+    ASRRuntime,
+    RealtimeConfig,
+    RealtimeMergeConfig,
+    RecognizerConfig,
+    SessionConfig,
+)
+from realtime_asr.audio.files import audio_file_chunks
+
+
+def show(event):
+    """模型错误保留分类；合并文本只作为预览，不替代最终正文。"""
+    if event.error is not None:
+        raise ASRError(event.error.code, event.error.operation, event.error.message)
+    print(
+        event.kind,
+        event.realtime_role,
+        event.result.text if event.result else "",
+        event.merge.text if event.merge else "",
+    )
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("file")
+    parser.add_argument("--accurate-model", required=True)
+    parser.add_argument("--ultrafast-model", required=True)
+    parser.add_argument("--language")
+    args = parser.parse_args()
+    accurate = RecognizerConfig(model_path=args.accurate_model, backend="nemotron")
+    fast = RecognizerConfig(model_path=args.ultrafast_model, backend="nemotron")
+    with ASRRuntime(
+        accurate,
+        realtime=RealtimeConfig(mode="native"),
+        ultrafast=RealtimeConfig(mode="native", model=fast),
+    ) as runtime:
+        with closing(audio_file_chunks(args.file)) as chunks:
+            format, first = next(chunks)
+            session = runtime.create_session(
+                SessionConfig(
+                    format=format,
+                    language=args.language,
+                    realtime=True,
+                    merge=RealtimeMergeConfig(),
+                )
+            )
+            try:
+                session.start()
+                session.feed_audio(first)
+                for _, audio in chunks:
+                    session.feed_audio(audio)
+                    while event := session.get_event():
+                        show(event)
+                session.finish()
+                while True:
+                    event = session.get_event(timeout=60)
+                    if event is None:
+                        raise TimeoutError("识别没有在等待期限内完成")
+                    show(event)
+                    if event.kind == "completed":
+                        break
+            finally:
+                session.close()
+
+
+if __name__ == "__main__":
+    main()

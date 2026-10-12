@@ -2,7 +2,7 @@
 
 独立实时 ASR 项目。当前提供同步整段识别 SDK、连续会话 SDK、实时识别与稳定文本、自动分句和结束优化、麦克风采集、本地命令行及 HTTP／WebSocket 共享服务。Python 远程客户端和最小浏览器入口调用同一服务协议。真实评估入口独立放在 `evals/`。
 
-同步 SDK 分块入口在全部输入结束后返回完整结果。连续会话可在上一单元推理期间接收下一单元，通过实时与最终事件消费结果。基本实时支持 Whisper 完整快照和 Nemotron 原生增量。自动会话通过双 VAD 确认录音段，提供前置保护与统一回溯。可选策略提供声学触发、提前推理、动态等待及有词时间证据的句末切段。接入层复用这些接口；双实时合并、候选、完整浏览器工作台和唤醒仍待后续阶段。产品范围见 [PRD](docs/PRD.md)，系统设计见 [Architecture](docs/ARCHITECTURE.md)，实际验收见 [STATUS](docs/STATUS.md)。
+同步 SDK 分块入口在全部输入结束后返回完整结果。连续会话可在上一单元推理期间接收下一单元，通过实时与最终事件消费结果。基本实时支持 Whisper 完整快照和 Nemotron 原生增量。自动会话通过双 VAD 确认录音段，提供前置保护与统一回溯。可选策略提供声学触发、提前推理、动态等待及有词时间证据的句末切段。双实时可分别配置准确与极速角色，保留原文并按锚点合并有限尾部。接入层复用这些接口；候选、完整浏览器工作台和唤醒仍待后续阶段。产品范围见 [PRD](docs/PRD.md)，系统设计见 [Architecture](docs/ARCHITECTURE.md)，实际验收见 [STATUS](docs/STATUS.md)。
 
 ## 代码结构
 
@@ -43,7 +43,8 @@ src/realtime_asr/
 │   └── vad.py               # WebRTC、Silero 与独立检测状态
 ├── text/
 │   ├── stabilizer.py        # 原文投影、稳定证据与最终差异
-│   └── endpoint.py          # 动态等待与句末锚点策略
+│   ├── endpoint.py          # 动态等待与句末锚点策略
+│   └── realtime_merge.py    # 双路观察、锚点、内容代次与有限尾部
 ├── backends/
 │   ├── base.py              # 通用整段、流式与能力契约
 │   ├── local.py             # 内置配置、模型组装与专有参数
@@ -53,7 +54,7 @@ src/realtime_asr/
 └── runtime/
     ├── recognizer.py        # 同步 SDK 与模型生命周期
     ├── asr.py               # ASRRuntime、最终调度及容量
-    ├── realtime.py          # 实时执行、周期与原生排空
+    ├── realtime.py          # 角色执行组、周期、容量与原生排空
     ├── tasks.py             # 固定音频、选项及任务归属
     ├── models/              # 显式准备、身份校验及准备阶段记录
     └── native/              # GPU 资源与原生运行库加载
@@ -66,7 +67,7 @@ evals/p4/                    # 自动分句与边界真实验收
 evals/p5/                    # 麦克风、CLI 与项目外安装验证
 evals/p6/                    # 真实网络、模型、浏览器、TLS 与安装验证
 evals/p7/                    # 文本、声学、端点 A/B、真实词时间与句末切段
-evals/p8/                    # 引擎边界、本地回归、受控远程及独立安装
+evals/p8/                    # 引擎边界、双实时对照、真实入口及独立安装
 evals/module_organization.py # 目录迁移前后的真实回放
 
 examples/                    # 只通过公开 SDK 使用产品
@@ -76,7 +77,7 @@ tests/
 ├── cli/                     # 命令行公开行为与外部输入输出
 ├── session/                 # 单元、控制、归属与自动输入
 ├── segmentation/            # 检测、分句与边界保护
-├── text/                    # 稳定观察与句末语言规则
+├── text/                    # 稳定观察、句末语言规则及双路合并
 ├── backends/                # 模型适配与原生流
 ├── runtime/                 # 模型资源与执行调度
 ├── server/                  # 协议、归属、并发、容量与清理
@@ -103,6 +104,69 @@ tests/
 注入后 SDK 接管引擎生命周期。同一运行时内，最终和实时角色可共用实例，运行时串行调用并只关闭一次；不同实例各自准备和关闭。`RealtimeConfig(engine=other_engine, mode="native")` 配置独立流式角色。最终角色仍需整段能力；只支持流式的引擎可作为独立实时角色。引擎准备失败后，调用方需新建实例和 SDK 对象。
 
 服务地址、连接池和凭据保存在适配器内。HTTP／WebSocket 客户端不能注入引擎或修改宿主的地址与凭据。自定义引擎使用方式见 [custom_engine.py](examples/custom_engine.py)，详细输入、错误及资源契约见 [P8.0 Spec](docs/specs/engine-and-runtime-boundaries.md)。
+
+## 双实时识别
+
+第二路默认关闭。最终和准确角色可以共享实例，极速角色可以使用独立模型或调用方提供的引擎。SDK 在 `ASRRuntime` 上配置 `ultrafast`，在 `SessionConfig` 上通过 `merge=RealtimeMergeConfig()` 为该会话开启双实时。
+
+当前可准备 Nemotron 3.5 的 1120 ms／80 ms INT8 变体，均使用 sherpa-onnx CPU 路径。最终与准确实时共用 1120 ms，极速使用独立 80 ms。**本机 CPU 对照没有显示延迟或尾部收益，80 ms 路实际更慢，结束等待也增加。** 这些名称表示角色；不要据此把该组合当作性能默认配置。已有单路配置保持。测量及未验收范围见 [P8.1 Plan](docs/plans/p8-1-dual-realtime.md)。
+
+准备函数只在明确调用时下载；推理保持离线。已准备目录只校验，不把另一块长重标为目标变体。基础包之外需要 `nemotron` 依赖。
+
+```python
+from realtime_asr.runtime.models.prepare import prepare_nemotron
+
+prepare_nemotron("models/nemotron-1120ms", variant="1120ms", allow_download=True)
+prepare_nemotron("models/nemotron-80ms", variant="80ms", allow_download=True)
+```
+
+使用已准备的目录：
+
+```python
+from realtime_asr import (
+    ASRRuntime, RealtimeConfig, RealtimeMergeConfig, RecognizerConfig, SessionConfig,
+)
+
+accurate = RecognizerConfig(model_path="models/nemotron-1120ms", backend="nemotron")
+fast = RecognizerConfig(model_path="models/nemotron-80ms", backend="nemotron")
+with ASRRuntime(
+    accurate,
+    realtime=RealtimeConfig(mode="native"),
+    ultrafast=RealtimeConfig(mode="native", model=fast),
+) as runtime:
+    session = runtime.create_session(
+        SessionConfig(realtime=True, merge=RealtimeMergeConfig())
+    )
+    try:
+        session.start()
+        session.feed_audio(pcm16_bytes)  # 调用方已有的标准音频。
+        session.finish()
+        while True:
+            event = session.get_event(timeout=60)
+            if event is None:
+                raise TimeoutError("识别等待超时")
+            if event.error:
+                raise RuntimeError(event.error.message)
+            print(event.kind, event.realtime_role, event.merge)
+            if event.kind == "completed":
+                break
+    finally:
+        session.close()
+```
+
+`event.result` 保留所属角色的原文；`event.merge` 提供两路来源、合并文本、锚点及范围。稳定与结束策略只消费准确路，最终仍识别完整音频。英文按词、汉字按字符对齐，无可信锚点时保持正文，不能强行拼接。
+
+本地 CLI 的实际参数：
+
+```powershell
+realtime-asr stdin --model models/nemotron-1120ms --backend nemotron --ultrafast-model models/nemotron-80ms --realtime --dual-realtime --output jsonl
+realtime-asr serve --model models/nemotron-1120ms --backend nemotron --ultrafast-model models/nemotron-80ms
+realtime-asr remote --url http://127.0.0.1:8000 --output jsonl stdin --realtime --dual-realtime
+```
+
+独立准确模型使用 `--realtime-model`。两路 backend 和 device 可独立指定，缺省沿用最终配置；服务角色在启动时固定，客户端只能选择已提供能力。浏览器连接前勾选“双实时合并”，实时区域显示准确正文、极速原文及合并状态。HTTP 仍用于完整转写。
+
+可运行文件示例见 [dual_realtime.py](examples/dual_realtime.py)。具体契约见 [P8.1 Spec](docs/specs/dual-realtime.md)。`python -m evals.p8.dual prepare|matrix|network|cli` 是开发验证入口，各次命令选择一个模式；受控测试不代表正式质量验收。
 
 ## 环境与安装
 

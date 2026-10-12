@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from ipaddress import ip_address
 from math import isfinite
 
-from realtime_asr import ASRError, RecognizerConfig
+from realtime_asr import ASRError, RealtimeConfig, RecognizerConfig
 from realtime_asr.backends.base import validate_engine
 
 
@@ -23,6 +23,8 @@ class ServerConfig:
 
     recognizer: RecognizerConfig | None = None
     engine: object = None
+    realtime_config: RealtimeConfig | None = None
+    ultrafast_config: RealtimeConfig | None = None
     host: str = "127.0.0.1"
     port: int = 8000
     token: str | None = None
@@ -56,6 +58,18 @@ class ServerConfig:
         return self.engine.capabilities if self.engine is not None else self.recognizer.capabilities
 
     def __post_init__(self):
+        if (
+            any(
+                config is not None and not isinstance(config, RealtimeConfig)
+                for config in (self.realtime_config, self.ultrafast_config)
+            )
+            or (
+                not self.realtime
+                and (self.realtime_config is not None or self.ultrafast_config is not None)
+            )
+            or (self.realtime_config is not None and self.acoustic_boundaries)
+        ):
+            raise ASRError("INVALID_CONFIGURATION", "configure_server", "实时角色或声学配置冲突")
         if (self.recognizer is None) == (self.engine is None) or (
             self.recognizer is not None and not isinstance(self.recognizer, RecognizerConfig)
         ):

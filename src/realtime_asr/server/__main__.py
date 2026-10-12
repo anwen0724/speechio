@@ -5,12 +5,14 @@ import os
 import sys
 
 from realtime_asr import ASRError, RecognizerConfig
+from realtime_asr.cli.args import add_realtime_model_args, realtime_roles
 from realtime_asr.server import ServerConfig, create_app
 
 
 def parser():
     command = argparse.ArgumentParser(prog="realtime-asr serve", description="共享本地 ASR 服务")
     command.add_argument("--model", required=True)
+    add_realtime_model_args(command)
     command.add_argument("--backend", choices=("whisper", "nemotron"), default="whisper")
     command.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     command.add_argument("--cudnn-folder")
@@ -54,7 +56,8 @@ def parser():
 
 def main(argv=None):
     """仅启动器读取明确指定的 Token 环境变量；应用工厂不读隐藏配置。"""
-    args = vars(parser().parse_args(argv))
+    options = parser().parse_args(argv)
+    args = vars(options).copy()
     try:
         recognizer = RecognizerConfig(
             model_path=args.pop("model"),
@@ -63,6 +66,13 @@ def main(argv=None):
             cudnn_folder=args.pop("cudnn_folder"),
             cuda_directory=args.pop("cuda_directory"),
         )
+        realtime, ultrafast = realtime_roles(options, recognizer)
+        for role in ("realtime", "ultrafast"):
+            for field in ("model", "backend", "device"):
+                args.pop(role + "_" + field)
+        args.pop("acoustic_boundaries")
+        args["realtime_config"] = realtime
+        args["ultrafast_config"] = ultrafast
         args["token"] = os.environ.get(args.pop("token_env"))
         args["allowed_origins"] = tuple(args.pop("allowed_origin"))
         config = ServerConfig(recognizer=recognizer, **args)

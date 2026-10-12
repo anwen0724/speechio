@@ -107,34 +107,33 @@ class _RealtimeUnit:
 class RealtimeExecutor:
     """在协调锁外执行模型调用，按单元轮转选择最新完整快照。"""
 
-    def __init__(self, runtime, config):
+    def __init__(self, runtime, config, role, model, model_lock):
         self.runtime = runtime
         self.config = config
-        self.model = runtime._recognizer
-        self.shared = config.model is None and (
-            config.engine is None or config.engine is self.model.engine
-        )
-        if not self.shared:
-            self.model = Recognizer(config.model, engine=config.engine)
+        self.role = role
+        self.model = model
+        self.shared = model is runtime._recognizer
         capabilities = self.model.capabilities
         available = capabilities.snapshot if config.mode == "snapshot" else capabilities.streaming
         if not available:
             raise ASRError("BACKEND_INCOMPATIBLE", "configure", "实时路径与模型后端不匹配")
-        self.model.ensure_compatible(runtime._recognizer)
-        self.model_lock = runtime._model_lock if self.shared else Lock()
+        self.model_lock = model_lock
         self.states = {}
         self.busy = None
         self.stopping = False
         self.errors = []
-        self.thread = Thread(target=self._run, name="ASRRealtimeWorker", daemon=True)
+        self.thread = Thread(target=self._run, name=f"ASRRealtime-{role}", daemon=True)
 
-    def add_unit(self, session, ref):
-        """在开始时预留最大采样容量，登记成功后才占用单元序号。"""
+    def check_capacity(self, session):
+        """组装方先检查所有角色容量，再统一登记，避免单路孤立状态。"""
         reserved = sum(state.session.config.max_audio_samples for state in self.states.values())
         if len(self.states) >= self.config.max_units or (
             reserved + session.config.max_audio_samples > self.config.max_audio_samples
         ):
             raise ASRError("REALTIME_CAPACITY_EXCEEDED", "start", "实时单元预留容量不足")
+
+    def add_unit(self, session, ref):
+        """容量检查完成后登记本角色的独立计时、增量和流上下文。"""
         state = _RealtimeUnit(session, ref, monotonic())
         if self.config.acoustic_boundaries:
             state.detector = AcousticBoundaryDetector(self.config.boundary_sensitivity)
@@ -344,6 +343,7 @@ class RealtimeExecutor:
                 result=None if error else result,
                 error=error,
                 source=self.config.mode,
+                realtime_role=self.role,
                 started_at_monotonic=started,
                 completed_at_monotonic=monotonic(),
                 stream_finished=self.config.mode == "native" and finishing and error is None,
@@ -362,5 +362,120 @@ class RealtimeExecutor:
                 self.busy = None
                 condition.notify_all()
             state = pcm = result = error = event = None
-        if not self.shared:
-            self.errors.extend(self.model.close().errors)
+
+
+class RealtimeGroup:
+    """隐藏两路的登记、共享引擎、排空和释放，向会话提供同一交接接口。"""
+
+    def __init__(self, runtime, accurate, ultrafast=None):
+        if ultrafast is not None and (
+            not isinstance(ultrafast, RealtimeConfig)
+            or (ultrafast.model is None and ultrafast.engine is None)
+        ):
+            raise ASRError("INVALID_CONFIGURATION", "configure", "极速角色需要明确的模型或引擎")
+        self.runtime = runtime
+        self._models = [(runtime._recognizer, runtime._model_lock)]
+        self.executors = {}
+        for role, config in (("accurate", accurate), ("ultrafast", ultrafast)):
+            if config is None:
+                continue
+            model, lock = self._role_model(config)
+            self.executors[role] = RealtimeExecutor(runtime, config, role, model, lock)
+
+    def _role_model(self, config):
+        """注入实例按身份共享；显式本地配置仍创建独立模型拥有者。"""
+        if config.model is None:
+            engine = config.engine if config.engine is not None else self._models[0][0].engine
+            for model, lock in self._models:
+                if model.engine is engine:
+                    return model, lock
+        model = Recognizer(config.model, engine=config.engine)
+        for other, _ in self._models:
+            model.ensure_compatible(other)
+        owned = model, Lock()
+        self._models.append(owned)
+        return owned
+
+    @property
+    def has_ultrafast(self):
+        return "ultrafast" in self.executors
+
+    @property
+    def injected(self):
+        return any(model.config is None for model, _ in self._models)
+
+    def capabilities(self, role):
+        executor = self.executors.get(role)
+        return executor.model.capabilities if executor is not None else None
+
+    @property
+    def accurate_config(self):
+        return self.executors["accurate"].config
+
+    @property
+    def unit_count(self):
+        return sum(len(executor.states) for executor in self.executors.values())
+
+    @property
+    def reserved_samples(self):
+        return sum(
+            state.session.config.max_audio_samples
+            for executor in self.executors.values()
+            for state in executor.states.values()
+        )
+
+    def pending_for(self, session_id=None):
+        return sum(
+            executor.busy is not None
+            and (session_id is None or executor.busy.ref.session_id == session_id)
+            for executor in self.executors.values()
+        )
+
+    def prepare(self):
+        for model, _ in self._models[1:]:
+            model.prepare()
+
+    def start(self):
+        for executor in self.executors.values():
+            executor.thread.start()
+
+    def join(self):
+        for executor in self.executors.values():
+            executor.thread.join()
+
+    def close_models(self):
+        """执行线程全部退出后关闭独立拥有者；最终引擎由运行时关闭。"""
+        errors = tuple(error for executor in self.executors.values() for error in executor.errors)
+        for model, _ in self._models[1:]:
+            errors += model.close().errors
+        return errors
+
+    def add_unit(self, session, ref):
+        enabled = tuple(
+            executor
+            for role, executor in self.executors.items()
+            if role == "accurate" or session.config.merge is not None
+        )
+        for executor in enabled:
+            executor.check_capacity(session)
+        for executor in enabled:
+            executor.add_unit(session, ref)
+
+    def audio_changed(self, ref, pcm=b""):
+        for executor in self.executors.values():
+            executor.audio_changed(ref, pcm)
+
+    def finish_unit(self, ref):
+        for executor in self.executors.values():
+            executor.finish_unit(ref)
+
+    def cancel_unit(self, ref):
+        for executor in self.executors.values():
+            executor.cancel_unit(ref)
+
+    def is_complete(self, ref):
+        return all(executor.is_complete(ref) for executor in self.executors.values())
+
+    def stop(self):
+        for executor in self.executors.values():
+            executor.stop()

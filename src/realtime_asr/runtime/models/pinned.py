@@ -1,4 +1,6 @@
-"""P0 固定模型包身份；校验值来自有效 Spec。"""
+"""已接入的固定模型身份；变体的包与文件校验值分开声明。"""
+
+from realtime_asr.errors import ASRError
 
 NEMOTRON_ID = "sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11"
 NEMOTRON_URL = (
@@ -23,3 +25,38 @@ NEMOTRON_FILES = {
     ),
     "tokens.txt": (131440, "729cc103155bafa785f9cd45746cd41cabe97eab7182fc04d594129587958f8a"),
 }
+
+NEMOTRON_MODELS = {
+    "560ms": {"id": NEMOTRON_ID, "archive": NEMOTRON_ARCHIVE, "files": NEMOTRON_FILES},
+    "1120ms": {
+        "id": "sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-1120ms-int8-2026-06-11",
+        "archive": (475276334, "adbdd5e9fef87300c37cebfcfc4f1ebe56845c860c8a760af0a1dd65ce9beed3"),
+        "files": {
+            **NEMOTRON_FILES,
+            "encoder.int8.onnx": (
+                657601521,
+                "2fff2166acaa535bd969fb223c1f0783d71029f143cb298bc54c2afe85abf772",
+            ),
+        },
+    },
+    "80ms": {
+        "id": "sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-80ms-int8-2026-06-11",
+        "archive": (475274007, "fb170128c496db33a1fb9f5f9f823257f42f911224ee218bb429f3c2eaf90a8d"),
+        "files": {
+            **NEMOTRON_FILES,
+            "encoder.int8.onnx": (
+                657601516,
+                "411e1222810f4a4cf0a3704c7609597a12def5b4ad2c7347a24ccd40d895484d",
+            ),
+        },
+    },
+}
+
+
+def nemotron_model(variant):
+    """显式选择固定发布变体，不从目录名称猜测模型身份。"""
+    if not isinstance(variant, str) or variant not in NEMOTRON_MODELS:
+        raise ASRError(
+            "INVALID_CONFIGURATION", "prepare_model", "Nemotron 变体应为 560ms、1120ms 或 80ms"
+        )
+    return NEMOTRON_MODELS[variant]

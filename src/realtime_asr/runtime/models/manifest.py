@@ -6,7 +6,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from realtime_asr.errors import ASRError
-from realtime_asr.runtime.models.pinned import NEMOTRON_FILES
+from realtime_asr.runtime.models.pinned import nemotron_model
 
 MANIFEST_NAME = "model-manifest.json"
 WHISPER_FILES = {name: None for name in ("model.bin", "config.json", "tokenizer.json")}
@@ -29,7 +29,7 @@ def check_file(path, size, digest):
     return actual_size, actual_hash
 
 
-def create_manifest(folder, *, backend, model_id, source, revision):
+def create_manifest(folder, *, backend, model_id, source, revision, variant=None):
     """首次准备后建立模型记录；已有清单不可被当前文件覆盖。"""
     folder = Path(folder).resolve()
     if (folder / MANIFEST_NAME).exists():
@@ -41,7 +41,9 @@ def create_manifest(folder, *, backend, model_id, source, revision):
         ):
             raise ASRError("MODEL_INTEGRITY", "prepare_model", "已有清单的模型身份不同")
         return manifest
-    required = NEMOTRON_FILES if backend == "nemotron" else WHISPER_FILES
+    required = (
+        nemotron_model(variant or "560ms")["files"] if backend == "nemotron" else WHISPER_FILES
+    )
     for name, expected in required.items():
         path = folder / name
         if not path.is_file():
@@ -72,6 +74,8 @@ def create_manifest(folder, *, backend, model_id, source, revision):
         "model_path": str(folder),
         "files": files,
     }
+    if backend == "nemotron" and variant is not None:
+        manifest["variant"] = variant
     with (folder / MANIFEST_NAME).open("x", encoding="utf-8") as output:
         json.dump(manifest, output, ensure_ascii=False, indent=2)
     return manifest
@@ -86,7 +90,14 @@ def verify_manifest(folder):
         raise ASRError("MODEL_INCOMPLETE", "verify_model", "模型清单缺失或无法读取") from exc
     if manifest.get("backend") not in ("whisper", "nemotron"):
         raise ASRError("BACKEND_INCOMPATIBLE", "verify_model", "模型清单后端不受支持")
-    required = NEMOTRON_FILES if manifest.get("backend") == "nemotron" else WHISPER_FILES
+    if manifest["backend"] == "nemotron":
+        variant = manifest.get("variant", "560ms")
+        model = nemotron_model(variant)
+        if variant != "560ms" and manifest["model_id"] != model["id"]:
+            raise ASRError("MODEL_INTEGRITY", "verify_model", "Nemotron 变体与模型身份不一致")
+        required = model["files"]
+    else:
+        required = WHISPER_FILES
     declared = {item["path"]: item for item in manifest.get("files", [])}
     if not required.keys() <= declared.keys():
         raise ASRError("MODEL_INCOMPLETE", "verify_model", "清单遗漏必需模型文件")

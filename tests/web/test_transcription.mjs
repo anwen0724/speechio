@@ -49,6 +49,8 @@ async function run() {
         send({ type: "ready", request_id: command.request_id });
       if (command.type === "open" && process.argv[3] === "stable")
         assert.equal(command.stable_text, true);
+      if (command.type === "open" && process.argv[3] === "dual")
+        assert.equal(command.dual_realtime, true);
       if (command.type === "end_input")
         send({
           type: "ack",
@@ -91,6 +93,15 @@ async function run() {
             unit: unit(2),
             result: { text: "正在说第二句" },
             error: null,
+            ...(process.argv[3] === "dual" ? {
+              realtime_role: "ultrafast",
+              merge: {
+                unit: unit(2), text: "准确正文极速尾部", accurate_text: "准确正文",
+                ultrafast_text: "准确正文极速尾部", ultrafast_suffix: "极速尾部",
+                status: "exact", revision: 2, accurate_generation: 1,
+                matched: true, held: false,
+              },
+            } : {}),
             ...(process.argv[3] === "stable"
               ? {
                   stabilization: {
@@ -131,6 +142,8 @@ async function run() {
     .selectOption(process.argv[3] === "auto-eof" ? "auto" : "manual");
   if (process.argv[3] === "stable")
     await page.getByLabel("稳定文本", { exact: true }).check();
+  if (process.argv[3] === "dual")
+    await page.getByLabel("双实时合并", { exact: true }).check({ timeout: 1500 });
   await page.getByRole("button", { name: "连接", exact: true }).click();
   if (process.argv[3] === "auth-error") {
     await page.getByRole("alert").waitFor();
@@ -166,6 +179,12 @@ async function run() {
         .isEnabled(),
     );
     console.log("realtime failure preserves input and final path: passed");
+  } else if (process.argv[3] === "dual") {
+    await page.getByText("上一句话", { exact: true }).waitFor();
+    assert.equal(await page.getByLabel("准确实时正文", { exact: true }).innerText(), "准确正文");
+    assert.equal(await page.getByLabel("极速实时原文", { exact: true }).innerText(), "准确正文极速尾部");
+    assert.equal(await page.getByLabel("合并实时文本", { exact: true }).innerText(), "准确正文极速尾部");
+    console.log("dual preview preserves all sources after older final: passed");
   } else {
     await page.getByText("上一句话", { exact: true }).waitFor();
     assert.equal(

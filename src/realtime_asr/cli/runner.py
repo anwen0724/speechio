@@ -15,7 +15,7 @@ from realtime_asr import (
     EndpointConfig,
     MicrophoneConfig,
     MicrophoneInput,
-    RealtimeConfig,
+    RealtimeMergeConfig,
     RecognizerConfig,
     SegmentationConfig,
     SessionConfig,
@@ -24,7 +24,7 @@ from realtime_asr import (
     list_input_devices,
 )
 from realtime_asr.audio.files import audio_file_chunks
-from realtime_asr.cli.args import parse_args
+from realtime_asr.cli.args import parse_args, realtime_roles
 from realtime_asr.cli.input import stdin_blocks
 from realtime_asr.cli.output import Output
 
@@ -102,6 +102,7 @@ def _session(runtime, args, format):
         realtime=args.realtime,
         stabilization=StabilizationConfig() if args.stable_text else None,
         word_timestamps=args.word_timestamps,
+        merge=RealtimeMergeConfig() if args.dual_realtime else None,
     )
     if args.mode == "auto":
         return runtime.create_auto_session(
@@ -253,15 +254,8 @@ def _execute(args, stdin, output):
             cudnn_folder=args.cudnn_folder,
             cuda_directory=args.cuda_directory,
         )
-        realtime = (
-            RealtimeConfig(
-                mode=config.capabilities.realtime_mode,
-                acoustic_boundaries=args.acoustic_boundaries,
-            )
-            if (args.realtime)
-            else None
-        )
-        runtime = ASRRuntime(config, realtime=realtime)
+        realtime, ultrafast = realtime_roles(args, config)
+        runtime = ASRRuntime(config, realtime=realtime, ultrafast=ultrafast)
         output.record("status", status="preparing", input_index=0, source=source)
         runtime.prepare()
         if args.command == "mic":

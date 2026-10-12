@@ -12,7 +12,7 @@ from realtime_asr.runtime.models.manifest import (
     sha256_file,
     verify_manifest,
 )
-from realtime_asr.runtime.models.pinned import NEMOTRON_ARCHIVE, NEMOTRON_ID, NEMOTRON_URL
+from realtime_asr.runtime.models.pinned import nemotron_model
 
 
 def prepare_whisper(folder, *, allow_download=False, local_snapshot=None):
@@ -46,30 +46,40 @@ def prepare_whisper(folder, *, allow_download=False, local_snapshot=None):
     )
 
 
-def prepare_nemotron(folder, *, allow_download=False):
+def prepare_nemotron(folder, *, allow_download=False, variant="560ms"):
     """固定发布包先校验，再安全展开；已有模型只做离线核对。"""
     folder = Path(folder).resolve()
+    model = nemotron_model(variant)
+    model_id = model["id"]
+    url = f"https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/{model_id}.tar.bz2"
     if (folder / MANIFEST_NAME).exists():
-        return verify_manifest(folder)
+        manifest = verify_manifest(folder)
+        if manifest.get("variant", "560ms") != variant:
+            raise ASRError("MODEL_INTEGRITY", "prepare_model", "已有模型不是所选变体")
+        return manifest
     if not allow_download:
         raise ASRError("MODEL_INCOMPLETE", "prepare_model", "离线准备缺少完整 Nemotron 模型")
     folder.parent.mkdir(parents=True, exist_ok=True)
-    archive = folder.parent / f"{NEMOTRON_ID}.tar.bz2"
+    archive = folder.parent / f"{model_id}.tar.bz2"
     if not archive.exists():
         partial = archive.with_suffix(archive.suffix + ".partial")
         import requests
 
-        with requests.get(NEMOTRON_URL, stream=True, timeout=(15, 30)) as response:
+        with requests.get(url, stream=True, timeout=(15, 30)) as response:
             response.raise_for_status()
             with partial.open("wb") as output:
                 for block in response.iter_content(chunk_size=1024 * 1024):
                     output.write(block)
-        check_file(partial, *NEMOTRON_ARCHIVE)
+        check_file(partial, *model["archive"])
         partial.rename(archive)
-    check_file(archive, *NEMOTRON_ARCHIVE)
-    with tarfile.open(archive, "r:bz2") as package:
-        package.extractall(folder.parent, filter="data")
-    extracted = folder.parent / NEMOTRON_ID
+    check_file(archive, *model["archive"])
+    extracted = folder.parent / model_id
+    if not extracted.exists():
+        with tarfile.open(archive, "r:bz2") as package:
+            package.extractall(folder.parent, filter="data")
+    # 已存在的展开目录只校验，不用重新解包覆盖未知内容。
+    for name, expected in model["files"].items():
+        check_file(extracted / name, *expected)
     if extracted != folder:
         if folder.exists():
             raise ASRError("MODEL_PREPARE", "prepare_model", "目标目录已存在，保留已有文件")
@@ -77,7 +87,8 @@ def prepare_nemotron(folder, *, allow_download=False):
     return create_manifest(
         folder,
         backend="nemotron",
-        model_id=NEMOTRON_ID,
-        source=NEMOTRON_URL,
-        revision=NEMOTRON_ID,
+        model_id=model_id,
+        source=url,
+        revision=model_id,
+        variant=variant,
     )

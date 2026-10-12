@@ -16,6 +16,63 @@ class CommandTests(unittest.TestCase):
     def setUp(self):
         test_recognizer.RecognizerTests.setUp(self)
 
+    def test_dual_cli_streams_both_roles_before_stdin_eof(self):
+        received = Event()
+        roles = set()
+
+        class Input:
+            first = True
+
+            def read(self, count):
+                if self.first:
+                    self.first = False
+                    return b"\x01\x00" * 1024
+                if not received.wait(5):
+                    raise OSError("两路实时未在输入结束前交付")
+                return b""
+
+        class Output(io.StringIO):
+            def write(self, text):
+                record = json.loads(text)
+                if record["record_type"] == "event" and record["event"]["kind"] == "realtime":
+                    roles.add(record["event"]["realtime_role"])
+                    if roles == {"accurate", "ultrafast"}:
+                        received.set()
+                return super().write(text)
+
+        def inference(audio, **options):
+            return iter(
+                [SimpleNamespace(text="speech system today", start=0, end=0.1)]
+            ), SimpleNamespace(language="en", language_probability=1)
+
+        stdout, stderr = Output(), io.StringIO()
+        with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=inference):
+            code = main(
+                [
+                    "stdin",
+                    "--model",
+                    str(self.path),
+                    "--realtime",
+                    "--dual-realtime",
+                    "--ultrafast-model",
+                    str(self.path),
+                    "--output",
+                    "jsonl",
+                ],
+                stdin=Input(),
+                stdout=stdout,
+                stderr=stderr,
+            )
+        self.assertEqual(code, 0, stderr.getvalue())
+        self.assertEqual(roles, {"accurate", "ultrafast"})
+        events = [
+            record["event"]
+            for line in stdout.getvalue().splitlines()
+            if (record := json.loads(line))["record_type"] == "event"
+        ]
+        self.assertEqual(events[-1]["kind"], "completed")
+        self.assertTrue(any(event["merge"] and event["merge"]["text"] for event in events))
+
     def test_json_input_error_is_structured_and_also_visible_on_stderr(self):
         stdout, stderr = io.StringIO(), io.StringIO()
         code = main(

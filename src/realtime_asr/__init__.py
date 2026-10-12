@@ -32,9 +32,17 @@ from realtime_asr.session.session import (
     UnitRef,
 )
 from realtime_asr.text.endpoint import EndpointConfig
+from realtime_asr.text.realtime_merge import (
+    RealtimeMergeConfig,
+    RealtimeMerger,
+    RealtimeMergeResult,
+)
 from realtime_asr.text.stabilizer import StabilizationConfig, TextObservation, TextStabilizer
 
 __all__ = [
+    "RealtimeMergeConfig",
+    "RealtimeMergeResult",
+    "RealtimeMerger",
     "BaseTranscriptionEngine",
     "EngineCapabilities",
     "StreamingSession",

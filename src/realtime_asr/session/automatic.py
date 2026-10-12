@@ -363,9 +363,10 @@ class AutomaticSession(Session):
             or unit.events is not None
             or unit.sentence_policy is None
             or event.kind != "realtime"
+            or event.realtime_role == "ultrafast"
         ):
             return
-        stable = unit.realtime_event.stabilization
+        stable = unit.realtime_events["accurate"].stabilization
         if not stable.accepted:
             return
         hint = unit.sentence_policy.observe(
@@ -396,7 +397,7 @@ class AutomaticSession(Session):
         # 已启动的旧实时观察可能覆盖右侧，先失效，再封口固定左段。
         if self.config.realtime:
             self._runtime.realtime.cancel_unit(unit.ref)
-            unit.realtime_event = None
+            unit.realtime_events.clear()
         unit.pcm[:] = segment.pcm
         segment.delivered_samples = cut
         unit.early_result = None

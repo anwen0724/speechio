@@ -89,6 +89,15 @@ button.primary {
   font-size: 20px;
   overflow-wrap: anywhere;
 }
+.dual-observations h3 {
+  font-size: 13px;
+  color: #556760;
+  margin: 14px 0 6px;
+}
+.dual-observations p {
+  margin: 6px 0;
+  overflow-wrap: anywhere;
+}
 .finals {
   list-style: none;
   margin: 0;

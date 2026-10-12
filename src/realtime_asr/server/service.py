@@ -14,6 +14,7 @@ from realtime_asr import (
     ASRRuntime,
     EndpointConfig,
     RealtimeConfig,
+    RealtimeMergeConfig,
     RuntimeLimits,
     SegmentationConfig,
     SessionConfig,
@@ -27,9 +28,13 @@ class Service:
 
     def __init__(self, config):
         self.config = config
-        if config.realtime and config.capabilities.realtime_mode is None:
+        if (
+            config.realtime
+            and config.realtime_config is None
+            and config.capabilities.realtime_mode is None
+        ):
             raise ASRError("BACKEND_INCOMPATIBLE", "configure_server", "引擎未声明实时能力")
-        realtime = (
+        realtime = config.realtime_config or (
             RealtimeConfig(
                 mode="snapshot"
                 if config.acoustic_boundaries
@@ -43,6 +48,7 @@ class Service:
             config.recognizer,
             engine=config.engine,
             realtime=realtime,
+            ultrafast=config.ultrafast_config,
             limits=RuntimeLimits(
                 max_sessions=config.max_sessions,
                 max_tasks=config.max_tasks,
@@ -74,6 +80,10 @@ class Service:
             raise ASRError("INVALID_CONFIGURATION", "admit", "请求超过服务新会话上限")
         if options.realtime and not config.realtime:
             raise ASRError("REALTIME_NOT_CONFIGURED", "admit", "服务未配置基本实时")
+        if options.dual_realtime and (
+            not options.realtime or self.runtime.ultrafast_capabilities is None
+        ):
+            raise ASRError("REALTIME_NOT_CONFIGURED", "admit", "双实时需要启用实时并配置极速角色")
         if options.mode == "auto" and config.vad_model is None:
             raise ASRError("MODE_UNAVAILABLE", "admit", "服务未配置自动模式")
         if options.mode != "auto" and (
@@ -90,6 +100,7 @@ class Service:
             max_pending_units=pending,
             stabilization=StabilizationConfig() if options.stable_text else None,
             word_timestamps=options.word_timestamps,
+            merge=RealtimeMergeConfig() if options.dual_realtime else None,
         )
 
         def create():
@@ -208,7 +219,16 @@ class Service:
                 "active_next_wait": active,
                 "new_sessions": new_sessions,
                 "startup_only": startup
-                + ("recognizer", "engine", "vad_model", "token", "ssl_certfile", "ssl_keyfile"),
+                + (
+                    "recognizer",
+                    "engine",
+                    "realtime_config",
+                    "ultrafast_config",
+                    "vad_model",
+                    "token",
+                    "ssl_certfile",
+                    "ssl_keyfile",
+                ),
             },
         }
 
@@ -230,8 +250,17 @@ class Service:
             "automatic": config.vad_model is not None,
             "realtime": config.realtime,
             "stable_text": config.realtime,
+            "dual_realtime": self.runtime.ultrafast_capabilities is not None,
+            "realtime_roles": {
+                role: asdict(capability) if capability is not None else None
+                for role, capability in (
+                    ("accurate", self.runtime.realtime_capabilities),
+                    ("ultrafast", self.runtime.ultrafast_capabilities),
+                )
+            },
             "word_timestamps": engine.word_timestamps,
-            "acoustic_boundaries": config.realtime and config.acoustic_boundaries,
+            "acoustic_boundaries": config.realtime
+            and self.runtime.realtime.accurate_config.acoustic_boundaries,
             "endpoint_optimization": config.vad_model is not None,
             "punctuation_split": config.vad_model is not None
             and config.realtime

@@ -33,7 +33,13 @@ class RemoteOutput:
             self.stdout.flush()
         elif event.get("kind") == "realtime":
             stable = event.get("stabilization")
-            text = stable["display_text"] if stable else event["result"]["text"]
+            merge = event.get("merge")
+            if merge is not None:
+                text = merge["text"]
+            elif stable is not None:
+                text = stable["display_text"]
+            else:
+                text = event["result"]["text"]
             self.stderr.write("[realtime] " + text + "\n")
             self.stderr.flush()
         elif message["type"] == "error":
@@ -102,6 +108,7 @@ def parser():
         )
         source.add_argument("--realtime", action=argparse.BooleanOptionalAction, default=False)
         source.add_argument("--stable-text", action="store_true")
+        source.add_argument("--dual-realtime", action="store_true")
         source.add_argument("--dynamic-silence", action="store_true")
         source.add_argument("--punctuation-split", action="store_true")
         source.add_argument("--early-transcription-silence", type=_seconds, default=0)
@@ -138,6 +145,7 @@ def streaming(client, args, output, stdin):
             name: getattr(args, name)
             for name in (
                 "stable_text",
+                "dual_realtime",
                 "word_timestamps",
                 "dynamic_silence",
                 "punctuation_split",
@@ -194,7 +202,10 @@ def main(argv=None, *, stdin=None, stdout=None, stderr=None):
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
-    args = parser().parse_args(argv)
+    command = parser()
+    args = command.parse_args(argv)
+    if args.input != "file" and args.dual_realtime and not args.realtime:
+        command.error("双实时要求 --realtime")
     output = RemoteOutput(args.output, stdout or sys.stdout, stderr or sys.stderr)
     try:
         with RemoteClient(

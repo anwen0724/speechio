@@ -64,6 +64,10 @@ select {
   grid-column: 2;
   min-height: 175px;
 }
+.preview-panel.dual-preview-panel {
+  height: 440px;
+  overflow-y: auto;
+}
 .final-panel {
   grid-column: 2;
   min-height: 270px;

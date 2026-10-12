@@ -42,6 +42,7 @@ class Open(Versioned):
     format: Format = Field(default_factory=Format)
     language: Annotated[str, Field(min_length=1)] | None = None
     realtime: bool = True
+    dual_realtime: bool = False
     max_audio_seconds: PositiveSeconds | None = None
     max_pending_units: PositiveInt | None = None
     webrtc_mode: Annotated[int, Field(ge=0, le=3)] = 3
