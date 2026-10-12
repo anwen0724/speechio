@@ -13,7 +13,7 @@ from uuid import uuid4
 import numpy as np
 
 from evals.p0.matrix import declare_matrix
-from realtime_asr.core.errors import ASRError, error_record
+from realtime_asr.errors import ASRError, error_record
 
 
 def require(condition, message):
@@ -217,9 +217,7 @@ def run_boundaries(storage, pool, audio, cancel, selected):
         "F07": lambda: real_stream_states(pool.engines["nemotron"], "F07"),
         "F08": lambda: compare_chunks(storage),
         "F09": lambda: compare_isolation(storage),
-        "F10": lambda: run_tests(
-            ["test_snapshots.py", "test_snapshot_run.py"], storage.writer.folder
-        ),
+        "F10": lambda: run_tests(["test_snapshot_run.py"], storage.writer.folder),
         "F11": lambda: run_tests(["test_trials.py", "test_snapshot_run.py"], storage.writer.folder),
         "F12": lambda: run_tests(
             ["test_corpus.py", "test_gpu.py", "test_trials.py"], storage.writer.folder

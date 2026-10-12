@@ -3,7 +3,6 @@
 from threading import Event
 
 from evals.p0.trial import Trial
-from realtime_asr.core.audio import as_audio
 
 
 def run_stream(
@@ -18,10 +17,8 @@ def run_stream(
     close=True,
     trial=None,
 ):
-    """按新增范围推进，保留不足一块的尾部。"""
-    array = as_audio(audio, allow_column=True)
-    if mode not in ("fast", "paced") or not isinstance(chunk_samples, int) or chunk_samples <= 0:
-        raise ValueError("流式模式或块长无效")
+    """按矩阵声明回放已校验的语料数组，保留不足一块的尾部。"""
+    array = audio
     cancel = cancel if cancel is not None else Event()
     stream = session if session is not None else engine.create_streaming_session(language)
     trial = trial if trial is not None else Trial(array.size)

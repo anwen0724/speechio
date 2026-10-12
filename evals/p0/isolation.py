@@ -2,7 +2,6 @@
 
 from evals.p0.stream_run import run_stream
 from evals.p0.trial import Trial
-from realtime_asr.core.audio import as_audio
 
 
 def run_reset_pair(engine, first_audio, second_audio, *, cancel=None):
@@ -32,7 +31,7 @@ def run_reset_pair(engine, first_audio, second_audio, *, cancel=None):
 
 def run_interleaved(engine, audios, languages, *, chunk_samples=512, cancel=None):
     """交错新增块并分别结束，归属不依赖完成先后。"""
-    arrays = [as_audio(audio) for audio in audios]
+    arrays = audios
     streams = [engine.create_streaming_session(language) for language in languages]
     trials = [Trial(array.size) for array in arrays]
     for start in range(0, max(array.size for array in arrays), chunk_samples):

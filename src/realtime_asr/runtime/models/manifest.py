@@ -5,10 +5,11 @@ import json
 from pathlib import Path
 from uuid import uuid4
 
-from realtime_asr.core.errors import ASRError
+from realtime_asr.errors import ASRError
 from realtime_asr.runtime.models.pinned import NEMOTRON_FILES
 
 MANIFEST_NAME = "model-manifest.json"
+WHISPER_FILES = {name: None for name in ("model.bin", "config.json", "tokenizer.json")}
 
 
 def sha256_file(path):
@@ -40,11 +41,7 @@ def create_manifest(folder, *, backend, model_id, source, revision):
         ):
             raise ASRError("MODEL_INTEGRITY", "prepare_model", "已有清单的模型身份不同")
         return manifest
-    required = (
-        NEMOTRON_FILES
-        if backend == "nemotron"
-        else {name: None for name in ("model.bin", "config.json", "tokenizer.json")}
-    )
+    required = NEMOTRON_FILES if backend == "nemotron" else WHISPER_FILES
     for name, expected in required.items():
         path = folder / name
         if not path.is_file():
@@ -87,11 +84,9 @@ def verify_manifest(folder):
         manifest = json.loads((folder / MANIFEST_NAME).read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise ASRError("MODEL_INCOMPLETE", "verify_model", "模型清单缺失或无法读取") from exc
-    required = (
-        NEMOTRON_FILES
-        if manifest.get("backend") == "nemotron"
-        else {name: None for name in ("model.bin", "config.json", "tokenizer.json")}
-    )
+    if manifest.get("backend") not in ("whisper", "nemotron"):
+        raise ASRError("BACKEND_INCOMPATIBLE", "verify_model", "模型清单后端不受支持")
+    required = NEMOTRON_FILES if manifest.get("backend") == "nemotron" else WHISPER_FILES
     declared = {item["path"]: item for item in manifest.get("files", [])}
     if not required.keys() <= declared.keys():
         raise ASRError("MODEL_INCOMPLETE", "verify_model", "清单遗漏必需模型文件")

@@ -4,7 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
-from realtime_asr.core.errors import ASRError
+from realtime_asr.errors import ASRError
 
 
 def parser():
@@ -60,7 +60,7 @@ def main():
                     ),
                 ]
             case "prepare-gpu":
-                from realtime_asr.runtime.gpu import prepare_cudnn
+                from realtime_asr.runtime.native.gpu import prepare_cudnn
 
                 result = {"folder": str(prepare_cudnn(arguments.runtime_root))}
             case "prepare-corpus":
@@ -95,7 +95,7 @@ def main():
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
     except (ASRError, OSError, ValueError) as exc:
-        from realtime_asr.core.errors import error_record
+        from realtime_asr.errors import error_record
 
         print(json.dumps(error_record(exc, arguments.command), ensure_ascii=False, indent=2))
         return 2

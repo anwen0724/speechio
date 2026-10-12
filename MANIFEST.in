@@ -2,6 +2,7 @@ include README.md pyproject.toml .python-version
 recursive-include src *.py
 recursive-include evals *.py
 recursive-include tests *.py
+recursive-include examples *.py
 prune .runtime
 prune .venv
 prune artifacts

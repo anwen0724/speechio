@@ -7,8 +7,8 @@ import numpy as np
 
 from evals.p0.stream_run import run_stream
 from evals.p0.whole_run import run_whole
-from realtime_asr.core.engines.stream import NativeStream
-from tests.core.test_stream import RuntimeRecognizer, RuntimeStream
+from realtime_asr.backends.stream import NativeStream
+from tests.backends.test_stream import RuntimeRecognizer, RuntimeStream
 
 
 class EngineBoundary:

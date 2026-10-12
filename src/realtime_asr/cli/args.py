@@ -1,0 +1,80 @@
+"""命令语法与使用前可判断的配置，不创建模型或设备。"""
+
+import argparse
+from math import isfinite
+
+
+def _positive_int(value):
+    number = int(value)
+    if number <= 0:
+        raise argparse.ArgumentTypeError("必须为正整数")
+    return number
+
+
+def _seconds(value):
+    number = float(value)
+    if not isfinite(number) or number < 0:
+        raise argparse.ArgumentTypeError("必须为有限非负秒数")
+    return number
+
+
+def _positive_seconds(value):
+    number = _seconds(value)
+    if number == 0:
+        raise argparse.ArgumentTypeError("必须大于零")
+    return number
+
+
+def parse_args(argv=None):
+    """子命令分别声明源格式，避免麦克风设备与 ASR 设备混用。"""
+    parser = argparse.ArgumentParser(prog="realtime-asr", description="本地实时音频识别")
+    commands = parser.add_subparsers(dest="command", required=True)
+    devices = commands.add_parser("devices", help="列出输入设备，不加载模型")
+    devices.add_argument("--channels", type=_positive_int, default=1)
+    devices.add_argument("--output", choices=("text", "jsonl"), default="text")
+    for name in ("mic", "file", "stdin"):
+        command = commands.add_parser(name)
+        command.add_argument("--model", required=True)
+        command.add_argument("--backend", choices=("whisper", "nemotron"), default="whisper")
+        command.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
+        command.add_argument("--cudnn-folder")
+        command.add_argument("--cuda-directory")
+        command.add_argument("--language")
+        command.add_argument(
+            "--mode", choices=("auto", "manual"), default="auto" if name == "mic" else "manual"
+        )
+        command.add_argument(
+            "--realtime", action=argparse.BooleanOptionalAction, default=name == "mic"
+        )
+        command.add_argument("--output", choices=("text", "jsonl"), default="text")
+        command.add_argument("--max-audio-seconds", type=_positive_seconds, default=30)
+        command.add_argument("--drain-timeout", type=_seconds, default=30)
+        command.add_argument("--close-timeout", type=_seconds, default=5)
+        command.add_argument("--vad-model")
+        command.add_argument("--webrtc-mode", type=int, choices=range(4), default=3)
+        command.add_argument("--silero-end-detection", action="store_true")
+        command.add_argument("--trim-pre-roll", action="store_true")
+        command.add_argument("--backdate-seconds", type=_seconds, default=0)
+        if name in ("mic", "stdin"):
+            command.add_argument(
+                "--sample-rate", type=_positive_int, default=None if name == "mic" else 16000
+            )
+            command.add_argument("--channels", type=_positive_int, default=1)
+        if name == "mic":
+            command.add_argument("--input-device", type=int)
+            command.add_argument("--chunk-frames", type=_positive_int, default=1024)
+            command.add_argument("--queue-seconds", type=_positive_seconds, default=5)
+            command.add_argument("--duration", type=_positive_seconds)
+        elif name == "file":
+            command.add_argument("paths", nargs="+")
+        else:
+            command.add_argument("--sample-type", choices=("int16", "float32"), default="int16")
+    args = parser.parse_args(argv)
+    if args.command != "devices":
+        if args.mode == "auto" and not args.vad_model:
+            parser.error("auto 模式要求 --vad-model")
+        if args.max_audio_seconds > 600 or int(args.max_audio_seconds * 16000) == 0:
+            parser.error("--max-audio-seconds 应大于零且不超过 600 秒")
+        if args.command == "mic" and args.input_device is not None and args.input_device < 0:
+            parser.error("--input-device 应为非负索引")
+    return args

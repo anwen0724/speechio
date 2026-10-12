@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from realtime_asr.core.errors import ASRError
+from realtime_asr.errors import ASRError
 from realtime_asr.runtime.models.manifest import create_manifest, verify_manifest
 
 
@@ -41,7 +41,8 @@ class ModelTests(unittest.TestCase):
                 create_manifest(
                     path, backend="whisper", model_id="tiny", source="test", revision="abc"
                 )
-            self.assertEqual(first["files"][0]["verified"], True)
+            saved = json.loads((path / "model-manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(saved, first)
 
     def test_missing_required_model_file_is_not_prepared(self):
         with tempfile.TemporaryDirectory() as folder:

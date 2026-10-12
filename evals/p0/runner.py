@@ -111,7 +111,7 @@ def run_matrix(manifest, runtime_root, output_root, *, exploratory=False, select
                 for item in group[len(trials) :]:
                     storage.save_missing(item, "blocked", "前置重置或流创建失败")
             except Exception as exc:
-                from realtime_asr.core.errors import error_record
+                from realtime_asr.errors import error_record
 
                 for item in group:
                     storage.save_missing(item, "failed", error_record(exc, "execute_trial"))

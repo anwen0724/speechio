@@ -8,8 +8,8 @@ from uuid import uuid4
 from evals.p0.diagnostics.native_libraries import loaded_libraries
 from evals.p0.diagnostics.resources import ResourceSampler
 from evals.p0.execution import execute_trial
-from realtime_asr.core.errors import ASRError, error_record
-from realtime_asr.runtime.gpu import CUDNN_VERSION, GPUContext
+from realtime_asr.errors import ASRError, error_record
+from realtime_asr.runtime.native.gpu import CUDNN_VERSION, GPUContext
 
 
 class EnginePool:
@@ -27,10 +27,10 @@ class EnginePool:
     def _create(self, backend):
         """只在显式加载阶段导入后端；设备由声明决定。"""
         if backend == "nemotron":
-            from realtime_asr.core.engines.nemotron import NemotronEngine
+            from realtime_asr.backends.nemotron import NemotronEngine
 
             return NemotronEngine(self.root / "models/nemotron")
-        from realtime_asr.core.engines.whisper import WhisperEngine
+        from realtime_asr.backends.whisper import WhisperEngine
 
         if backend == "whisper-gpu":
             self.gpu_context = GPUContext(self.root / "cudnn" / CUDNN_VERSION)

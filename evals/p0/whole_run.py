@@ -3,12 +3,11 @@
 from threading import Event
 
 from evals.p0.trial import Trial
-from realtime_asr.core.audio import as_audio
 
 
 def run_whole(engine, audio, language, *, cancel=None, trial=None):
-    """只生成一个完整结果；取消后的返回仅保存为迟到诊断。"""
-    array = as_audio(audio)
+    """使用已校验的语料数组；取消后的返回仅保存为迟到诊断。"""
+    array = audio
     trial = trial if trial is not None else Trial(array.size)
     cancel = cancel if cancel is not None else Event()
     if cancel.is_set():

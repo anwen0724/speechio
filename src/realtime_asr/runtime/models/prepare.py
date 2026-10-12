@@ -4,7 +4,7 @@ import shutil
 import tarfile
 from pathlib import Path
 
-from realtime_asr.core.errors import ASRError
+from realtime_asr.errors import ASRError
 from realtime_asr.runtime.models.manifest import (
     MANIFEST_NAME,
     check_file,

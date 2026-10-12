@@ -1,1 +1,62 @@
-"""独立 ASR 包；core 提供识别能力，runtime 提供模型与运行库支持。"""
+"""独立 ASR SDK；按音频、会话、分句、后端与运行时组织实现。"""
+
+from realtime_asr.audio.conversion import AudioConverter, AudioFormat, AudioFrame
+from realtime_asr.audio.microphone import (
+    InputDevice,
+    MicrophoneConfig,
+    MicrophoneInput,
+    list_input_devices,
+)
+from realtime_asr.errors import ASRError
+from realtime_asr.results import CloseResult, RecognitionResult
+from realtime_asr.runtime.asr import (
+    ASRRuntime,
+    RuntimeCapacity,
+    RuntimeCloseResult,
+    RuntimeLimits,
+)
+from realtime_asr.runtime.realtime import RealtimeConfig
+from realtime_asr.runtime.recognizer import Recognizer, RecognizerConfig
+from realtime_asr.segmentation.gate import SegmentationConfig, SegmentBoundary
+from realtime_asr.segmentation.vad import VadConfig
+from realtime_asr.session.automatic import AutomaticSession
+from realtime_asr.session.session import (
+    EventError,
+    FinalTask,
+    Session,
+    SessionChange,
+    SessionConfig,
+    SessionEvent,
+    UnitRef,
+)
+
+__all__ = [
+    "InputDevice",
+    "MicrophoneConfig",
+    "MicrophoneInput",
+    "list_input_devices",
+    "ASRError",
+    "ASRRuntime",
+    "AudioConverter",
+    "AudioFormat",
+    "AudioFrame",
+    "AutomaticSession",
+    "CloseResult",
+    "EventError",
+    "FinalTask",
+    "RecognitionResult",
+    "RealtimeConfig",
+    "Recognizer",
+    "RecognizerConfig",
+    "RuntimeCapacity",
+    "RuntimeCloseResult",
+    "RuntimeLimits",
+    "Session",
+    "SegmentBoundary",
+    "SegmentationConfig",
+    "SessionChange",
+    "SessionConfig",
+    "SessionEvent",
+    "UnitRef",
+    "VadConfig",
+]

@@ -2,16 +2,61 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event
+from uuid import uuid4
 
-from evals.p0.snapshots import SnapshotSchedule
 from evals.p0.trial import Trial
-from realtime_asr.core.audio import as_audio
-from realtime_asr.core.errors import error_record
+from realtime_asr.errors import error_record
+
+
+class SnapshotSchedule:
+    """按绝对时钟记录机会，推理积压时只保留最新的待执行前缀。"""
+
+    def __init__(self, sample_count):
+        self.sample_count = sample_count
+        self.end_due_ns = round(sample_count * 1_000_000_000 / 16000)
+        self.next_end_sample = 3200
+        self.pending = None
+        self.requests = []
+        self.ended = False
+
+    def advance(self, elapsed_ns):
+        """记录已发生的机会；文件结束优先于同一时刻的新机会。"""
+        available = min(self.sample_count, elapsed_ns * 16000 // 1_000_000_000)
+        while self.next_end_sample <= available and self.next_end_sample < self.sample_count:
+            if self.pending is not None:
+                self.pending.update(status="skipped", reason="superseded")
+            request = {
+                "snapshot_id": uuid4().hex,
+                "requested_end_sample": self.next_end_sample,
+                "due_ns": self.next_end_sample * 1_000_000_000 // 16000,
+                "status": "pending",
+                "reason": None,
+            }
+            self.requests.append(request)
+            self.pending = request
+            self.next_end_sample += 3200
+        if elapsed_ns >= self.end_due_ns:
+            self.ended = True
+            self.discard("discarded_at_end")
+
+    def start(self):
+        """取出待执行机会；音频范围由工作线程实际开始时确定。"""
+        if self.ended or self.pending is None:
+            return None
+        request, self.pending = self.pending, None
+        request["status"] = "started"
+        return request
+
+    def discard(self, reason):
+        """结束或取消未启动机会，不生成假文本。"""
+        if self.pending is not None:
+            self.pending.update(status="skipped", reason=reason)
+            self.pending = None
 
 
 def run_snapshots(engine, audio, language, *, cancel=None, trial=None):
-    """输入结束独立于推理完成，最后重新识别完整音频。"""
-    array = as_audio(audio)
+    """按时钟回放已校验的语料数组，最后重新识别完整音频。"""
+    array = audio
     cancel = cancel if cancel is not None else Event()
     trial = trial if trial is not None else Trial(array.size)
     schedule = SnapshotSchedule(array.size)
@@ -62,7 +107,7 @@ def run_snapshots(engine, audio, language, *, cancel=None, trial=None):
                 if schedule.ended:
                     break
                 if future is None:
-                    active = schedule.start(trial.now())
+                    active = schedule.start()
                     if active is not None:
                         future = worker.submit(transcribe_prefix, active)
                 # 只等待下个机会或短轮询，不等待推理才推进音频时钟。

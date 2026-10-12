@@ -1,58 +1,295 @@
 # realtime-asr
 
-独立实时 ASR 项目。当前交付 P0 的本地运行和语料验证入口，包括 faster-whisper 整段识别、周期前缀快照，以及 Nemotron 原生流式识别。
+独立实时 ASR 项目。当前提供同步整段识别 SDK、连续会话 SDK、基本实时识别、自动分句、麦克风采集和本地命令行。支持完整音频、有限分块、本地文件、连续输入及原始 stdin。真实评估入口独立放在 `evals/`。
 
-当前入口用于开发验证。正式 SDK、麦克风、自动分句、服务、浏览器界面和唤醒尚未实现。产品范围见 [PRD](docs/PRD.md)，系统设计见 [Architecture](docs/ARCHITECTURE.md)，实际验收见 [STATUS](docs/STATUS.md)。
+同步 SDK 分块入口在全部输入结束后返回完整结果。连续会话可在上一单元推理期间接收下一单元，通过实时与最终事件消费结果。基本实时支持 Whisper 完整快照和 Nemotron 原生增量。自动会话通过双 VAD 确认录音段，提供前置保护与统一回溯。麦克风与命令行复用这些接口。实时稳定与合并、服务、浏览器界面和唤醒尚未实现。产品范围见 [PRD](docs/PRD.md)，系统设计见 [Architecture](docs/ARCHITECTURE.md)，实际验收见 [STATUS](docs/STATUS.md)。
 
 ## 代码结构
 
-核心代码位于 `src/realtime_asr/core/`。音频处理、识别结果、错误和后端适配器都在这里。`runtime/` 提供模型准备、完整性校验及原生运行库支持。
+正式实现位于 `src/realtime_asr/`，按音频、会话、分句、识别后端和运行时组织。公共错误与结果各保留一个小文件；核心模块不依赖 evals、测试或示例。
 
 ```text
 src/realtime_asr/
-├── core/                    # 识别核心
-│   ├── audio.py             # 标准音频读取与校验
-│   ├── results.py           # 识别结果
-│   ├── errors.py            # 识别错误
-│   └── engines/
-│       ├── whisper.py       # Whisper 整段与快照调用
-│       ├── nemotron.py      # Nemotron 模型与流创建
-│       └── stream.py        # 原生流输入、解码、结束、重置与关闭
-└── runtime/                 # 模型与运行库支持
-    ├── models/              # 准备、来源、固定配置与文件校验
-    ├── gpu.py               # GPU 运行库准备与选择
-    ├── native_libraries.py  # 原生运行库加载
-    └── stages.py            # 模型准备与加载阶段观测
+├── __init__.py              # 稳定的公开 SDK 导出
+├── __main__.py              # python -m realtime_asr
+├── errors.py                # 公共错误与错误记录
+├── results.py               # 识别与关闭结果
+├── audio/
+│   ├── conversion.py        # 格式、连续转换、凑帧与标准样本位置
+│   ├── files.py             # 标准 WAV 与通用文件有限块解码
+│   └── microphone.py        # 输入设备、实际源格式与独立采集
+├── cli/
+│   ├── args.py              # 命令与参数
+│   ├── input.py             # raw stdin 与可停止管道读取
+│   ├── output.py            # 文本与 JSONL 出口
+│   └── runner.py            # 公开 SDK 接入与自有资源关闭
+├── session/
+│   ├── session.py           # 单元归属、控制、任务与有序事件
+│   └── automatic.py         # 持续源输入与待递交自动段
+├── segmentation/
+│   ├── gate.py              # 前置保护、静音确认、裁剪与切点
+│   └── vad.py               # WebRTC、Silero 与独立检测状态
+├── backends/
+│   ├── whisper.py           # Whisper 整段与快照适配
+│   ├── nemotron.py          # Nemotron 识别器适配
+│   └── stream.py            # 原生流输入、解码、结束与关闭
+└── runtime/
+    ├── recognizer.py        # 同步 SDK 与模型生命周期
+    ├── asr.py               # ASRRuntime、最终调度及容量
+    ├── realtime.py          # 实时执行、周期与原生排空
+    ├── models/              # 显式准备、身份校验及准备阶段记录
+    └── native/              # GPU 资源与原生运行库加载
 
-evals/p0/                    # P0 评估，独立于正式安装包
-├── __main__.py              # python -m evals.p0
-├── corpus/                  # 公开语料、增广与标注校验
-├── evaluation/              # CER / WER、指标与分组评分
-├── diagnostics/             # 环境、资源观测与 JSONL
-└── ...                      # 矩阵、试次、取消、隔离检查与报告
+evals/p0/                    # 语料、评分与基线验证
+evals/p1/                    # 同步 SDK 真实验收
+evals/p2/                    # 连续会话真实验收
+evals/p3/                    # 实时联合运行与资源测量
+evals/p4/                    # 自动分句与边界真实验收
+evals/p5/                    # 麦克风、CLI 与项目外安装验证
+evals/module_organization.py # 目录迁移前后的真实回放
 
+examples/                    # 只通过公开 SDK 使用产品
 tests/
-├── core/                    # 识别核心行为
-├── runtime/                 # 模型和运行库边界
-└── evals/                   # 评估流程、评分与报告行为
+├── audio/                   # 音频格式、转换与文件
+├── cli/                     # 命令行公开行为与外部输入输出
+├── session/                 # 单元、控制、归属与自动输入
+├── segmentation/            # 检测、分句与边界保护
+├── backends/                # 模型适配与原生流
+├── runtime/                 # 模型资源与执行调度
+└── evals/                   # 评估工具行为
 ```
 
-核心与运行支持不得依赖 `evals/` 或 `tests/`。评估代码调用识别实现，再补充语料、试次、测量和评分信息。`evals/p0/engines.py` 的 `EnginePool` 只负责评估中的模型复用和预热，不作为产品运行时。
+`audio` 提供标准音频与位置；`segmentation` 提供检测记录和切点；`session` 决定段归属、封口、取消和事件有效性。`runtime` 管理模型与推理调度，`backends` 处理模型专有调用和原生流。分句模块不提交 ASR 任务，后端不读取会话缓冲。
 
-当前尚未实现正式 SDK、产品运行时及会话管理。后续按已确认架构建设，共用识别核心；不会把评估矩阵作为产品识别流程。
+`runtime/models` 与 `runtime/native` 是资源支持模块，可以被运行时和后端使用；这些模块不反向依赖会话、后端或执行器。会话与运行时保留现有提交、回交和协调锁关系。
+
+评估代码调用正式实现，再补充语料、测量和评分。`evals/p0/engines.py` 的 `EnginePool` 只用于评估，不作为产品运行时。整理前的内部模块路径已迁移，不保留旧 `core` 包；`from realtime_asr import ...` 的公开导出与签名保持。映射和执行证据见[目录整理 Plan](docs/plans/functional-module-organization.md)。
 
 ## 环境与安装
 
 使用 uv 和 64 位 CPython 3.12。开发解释器由 `.python-version` 固定为已安装的 3.12.14，Python 依赖由 `uv.lock` 锁定。以下命令在项目根目录执行：
 
 ```powershell
-uv sync --locked --extra whisper --extra nemotron
-uv run --locked --extra whisper --extra nemotron python -m evals.p0 environment
+uv sync --locked --extra whisper --extra nemotron --extra audio --extra vad --extra microphone
+uv run --no-sync python -m evals.p0 environment
 ```
 
 uv 建立根目录 `.venv`，不向 Anaconda 或其他项目环境安装依赖。`uv run` 也应带上所需 extras；省略 extras 会按较小的依赖集合重新同步环境。
 
-基础包只安装 NumPy，后端依赖按 extras 安装。P0 评估通过项目根目录的 `evals/` 运行，使用开发依赖组中的 SciPy 和 psutil，M10 使用 `tests/`。wheel 只包含 `src/realtime_asr/` 中的识别核心与运行支持，不包含评估工具、测试或语料。源码分发包保留评估和测试源码，供开发验证使用。
+基础包只安装 NumPy，后端依赖按 extras 安装。P0 评估通过项目根目录的 `evals/` 运行，使用开发依赖组中的 SciPy 和 psutil，M10 使用 `tests/`。wheel 只包含 `src/realtime_asr/` 中的核心、运行支持和正式 CLI，不包含评估工具、测试或语料。源码分发包保留评估和测试源码，供开发验证使用。
+
+## 本地命令行与麦克风
+
+安装包提供 `realtime-asr` 和 `python -m realtime_asr`。帮助不枚举设备或加载模型。麦克风使用 `microphone`，自动分句额外使用 `vad`；文件使用 `audio`。各命令均通过已有会话 SDK 识别，模型路径由调用方指定。
+
+以下示例在已经按上文同步环境、准备本地模型后运行：
+
+```powershell
+uv run --no-sync realtime-asr --help
+uv run --no-sync realtime-asr devices
+
+# 默认自动分句和基本实时；Ctrl+C 停止，也可指定 --duration。
+uv run --no-sync realtime-asr mic --model .runtime/models/whisper-tiny --vad-model .runtime/models/vad/silero-v6.onnx --duration 10
+
+# 手动模式将本次采集作为一个完整单元；不要求 VAD。
+uv run --no-sync realtime-asr mic --model .runtime/models/whisper-tiny --mode manual --duration 5 --output jsonl
+
+# 按文件顺序识别，各文件使用自己的实际格式。
+uv run --no-sync realtime-asr file first.wav second.wav --model .runtime/models/whisper-tiny --language zh-CN
+```
+
+`--input-device` 是 devices 显示的 PortAudio 索引，`--device cpu|cuda` 是模型计算设备。默认采用系统输入设备，自动格式优先 16 kHz，再探测设备支持格式；显式索引或采样率无效时失败，不静默换设备。默认采集块为 1024 个源帧，缓冲预算为 5 秒；溢出和容量满明确报错。
+
+file 和 stdin 默认 manual 且不启用实时。显式 `--mode auto --vad-model <path>` 使用自动分句，`--realtime` 开启实时观察。mic 默认 auto 和 realtime，`--no-realtime` 关闭实时。默认单段容量 30 秒，`--max-audio-seconds` 可设为大于零且不超过 600 秒。
+
+stdin 接收原始小端 PCM16，默认 16 kHz 单声道；float32、其他采样率或声道应显式声明，不接收 WAV 文件头。PowerShell 的文本管道可能转换二进制，向子进程写原字节时使用二进制流。以下示例只演示把已经持有的 PCM16 交给 CLI：
+
+```python
+import subprocess
+
+completed = subprocess.run(
+    ["realtime-asr", "stdin", "--model", "models/whisper-tiny", "--output", "jsonl"],
+    input=pcm16_bytes,  # 调用方已有的原始音频字节。
+    capture_output=True,
+)
+print(completed.returncode, completed.stdout.decode("utf-8"))
+```
+
+text 的 stdout 只包含每个最终正文一行，实时预览、状态和错误写 stderr。jsonl 的 stdout 是 UTF-8 逐行对象，保留完整核心事件、输入序号和来源；每行立即刷新。devices 的设备列表是该命令正文。标准流由进程拥有，CLI 不主动 close。
+
+正常 EOF 或时长结束后，CLI 封口并排空最终结果。第一次 Ctrl+C 请求停止输入和排空，第二次取消剩余工作。退出码为成功 0、运行失败 1、参数无效 2、排空或清理未完成 4、用户中断 130；排空默认为 30 秒，关闭默认为 5 秒。坏管道不重试输出，空闲 stdin 不阻止已知事件故障的处理。
+
+独立采集 SDK 不创建识别器：
+
+```python
+from realtime_asr import MicrophoneConfig, MicrophoneInput, list_input_devices
+
+print(list_input_devices())
+with MicrophoneInput(MicrophoneConfig()) as microphone:
+    print(microphone.device, microphone.format)
+    pcm = microphone.read_audio(timeout=1)
+    print(len(pcm) if pcm is not None else 0)
+```
+
+将采集器的实际 `format` 用于 `SessionConfig`，再把原始块交给 `session.feed_audio()`。采集器不重采样，也不关闭外部会话。需要完整尾部时，先调用 `close()` 并检查 CloseResult，再读取尚未消费的已接收队列；pending 表示在途读取或清理仍未退出，不代表已释放。
+
+具体契约见 [P5 Spec](docs/specs/microphone-and-cli.md)。`python -m evals.p5` 显式运行真实模型和本机设备验证，不作为产品运行入口。公开语料对照、真实设备采集和人工口述质量分别记录；当前实际验证及未验收事项见 [P5 Plan](docs/plans/p5-microphone-and-cli.md)。
+
+## Python SDK
+
+宿主可使用自己的 CPython 3.12 环境安装 wheel；模型与运行库路径由宿主指定，不要求在项目目录运行。按用途安装依赖组：
+
+```powershell
+uv pip install "<wheel-path>[whisper,audio]"
+# 使用 Nemotron 时选择 nemotron；标准 16 kHz 字节或数组不需要 audio。
+```
+
+`audio` 包含 SoundFile 与 SoXR，不引入麦克风依赖。模型应先显式准备，SDK 不下载或自动切换设备。
+
+```python
+from pathlib import Path
+from realtime_asr import AudioFormat, Recognizer, RecognizerConfig
+
+config = RecognizerConfig(model_path=Path("models/whisper-tiny"))
+with Recognizer(config) as recognizer:
+    result = recognizer.transcribe_file(Path("samples/speech.wav"), language="zh")
+    print(result.text)
+print(recognizer.close_result)
+```
+
+完整 PCM16 字节使用 `recognizer.transcribe(pcm, format=AudioFormat(), language="zh")`。完整浮点数组声明真实采样率与声道，例如 `AudioFormat(48000, 2, "float32")`。
+
+有限音频块序列使用 `recognizer.transcribe_chunks(chunks, format=AudioFormat(), language="en")`。SDK 先读取和连续转换全部输入，再调用一次模型；这不是实时文本接口。输入块允许空块，迭代正常结束后刷新尾部。迭代失败不会返回前缀成功。
+
+需要单独转换时，可使用 `AudioConverter(format)` 的 `feed`、`finish` 和 `close`。`feed` 返回完整标准块，`finish` 返回滤波余量与短尾块；`AudioFrame` 的位置按 16 kHz 有效采样计数。`close` 丢弃余量，不代替 `finish`。
+
+同一 `Recognizer` 可顺序复用模型；并发准备、识别或关闭返回 `RUNTIME_BUSY`。错误通过 `ASRError.code`、`operation` 和 `message` 判断。关闭返回 `CloseResult`，重复关闭保留首次结论；`reference_drop` 不承诺显存回到加载前数值。
+
+Whisper CUDA 配置应显式提供 `device="cuda"` 和 `cudnn_folder`；`cuda_directory` 省略时使用下文说明的本机 CUDA 12.8 目录。CPU 配置不提供 GPU 路径。
+
+完整接口与输入规则见 [P1 Spec](docs/specs/external-audio-and-sdk.md)。独立调用示例见 [examples/transcribe.py](examples/transcribe.py)。
+
+```powershell
+uv run --no-sync python examples/transcribe.py <audio-path> --model <model-path> --language zh
+uv run --no-sync python -m evals.p1
+```
+
+后一命令显式运行真实模型验收，默认使用已准备的 `.runtime` 和 P0 公开语料。结果写入 `artifacts/p1/sdk-check/summary.json`；标准输入对照 P0 已保存探索结果，不形成正式 CER／WER。
+
+## 连续会话 SDK
+
+运行时显式准备共享模型，创建会话后按单元输入。`finish()` 固定完整音频并提交后台任务，返回后可以开始下一单元；它不表示推理已经完成。
+
+```python
+from realtime_asr import ASRRuntime, RecognizerConfig, SessionConfig
+
+with ASRRuntime(RecognizerConfig(model_path="models/whisper-tiny")) as runtime:
+    session = runtime.create_session(SessionConfig(language="zh"))
+    for pcm in (first_pcm, second_pcm):  # 示例：两个完整 PCM16 音频单元
+        session.start()
+        session.feed_audio(pcm)
+        session.finish()
+    for _ in range(4):
+        event = session.get_event(timeout=30)
+        if event is None:
+            raise TimeoutError("等待事件超时")
+        if event.kind == "final":
+            print(event.unit, event.result.text)
+    session.close()
+```
+
+正常任务依次交付 `final`、`completed`；失败只交付 `failed`，取消只交付 `cancelled`。实际程序应按这些终结类型消费，示例中的四次消费只演示两次正常成功。事件可以定位会话、代次、单元、任务和封口采样范围。
+
+`cancel()` 只取消活动单元；取消已提交任务应传入 `UnitRef`。`reset()` 取消该会话旧工作并增加代次。`Session.close()` 不隐含结束，也不关闭共享模型。重置和关闭直接返回取消记录，并清除未消费的旧事件。
+
+运行时关闭默认等待 5 秒。`pending` 表示仍有后台资源未退出；运行任务结束后才清理模型，宿主可再次关闭并观察终态。取消不承诺中断本地模型调用。音频、任务和结果容量分别受限，提交容量不足时保留 `sealed` 音频供重试；完整规则见 [P2 Spec](docs/specs/continuous-sessions.md)。
+
+```powershell
+uv run --no-sync python examples/continuous_session.py <first.wav> <second.wav> --model <model-path> --language en
+uv run --no-sync python -m evals.p2
+```
+
+连续会话示例读取 16 kHz、单声道 PCM16 WAV，不需要 audio 依赖。真实模型验收位于 `evals/p2/`，结果写入 `artifacts/p2/session-check/summary.json`，不作为正式质量评分。
+
+## 基本实时识别 SDK
+
+运行时通过 `RealtimeConfig` 配置实时角色，会话通过 `SessionConfig(realtime=True)` 启用。关闭实时的会话保留普通最终事件流程。默认 `mode="snapshot"` 使用 Whisper；`mode="native"` 使用 Nemotron CPU。`model=None` 共享最终模型，显式 `model=RecognizerConfig(...)` 创建独立实时模型实例。
+
+```python
+from realtime_asr import ASRRuntime, RealtimeConfig, RecognizerConfig, SessionConfig
+
+with ASRRuntime(
+    RecognizerConfig(model_path="models/whisper-tiny"),
+    realtime=RealtimeConfig(),
+) as runtime:
+    session = runtime.create_session(SessionConfig(realtime=True, language="zh"))
+    session.start()
+    for chunk in pcm_chunks:  # 示例：调用方按音频来源节奏提供标准 PCM16
+        session.feed_audio(chunk)
+        while event := session.get_event():
+            print(event.kind, event.source, event.result)
+    session.finish()
+    while True:
+        event = session.get_event(timeout=60)
+        if event is None:
+            raise TimeoutError("等待识别事件超时")
+        print(event.kind, event.source, event.result)
+        if event.kind in ("completed", "failed", "cancelled"):
+            break
+    session.close()
+```
+
+实时文本是可变观察。`source` 区分 `snapshot`、`native` 与 `final`，`audio_samples` 说明实际覆盖范围。每单元只保留最新未消费实时观察，普通最终与完成事件保持顺序。`realtime_failed` 只终止该单元的实时路径，输入与普通最终识别仍可继续。
+
+快照封口后停止更新；原生流封口时补送短尾和重采样余量，结束并关闭流后再执行完整普通最终。共享模型串行运行；独立模型可同时推进。实时单元在开始时预留配置的最大采样容量，取消后仍在执行的调用继续占用物理容量，直到实际返回。接口、计时和关闭规则见 [P3 Spec](docs/specs/basic-realtime.md)。
+
+标准 WAV 的节奏输入示例和真实模型验收：
+
+```powershell
+uv run --no-sync python examples/realtime_session.py <audio-path> --model <model-path> --language en
+uv run --no-sync python -m evals.p3
+```
+
+真实评估使用本地模型与已有公开语料，分别记录中文、英文连续单元和 30 秒重复音频的实时范围、时序、最终正文对照、RSS 与容量释放。评估结果位于 `artifacts/p3/`；这些记录不代替人工语料核实、正式 CER／WER 或吞吐量验收。
+
+## 自动分句
+
+安装 `vad` 可选依赖，显式提供本地 Silero v6 ONNX 图。自动会话直接接收持续输入，不逐段调用 `start()`。一个输入代次使用同一个转换器，结束录音段不会重置重采样状态。
+
+```python
+from realtime_asr import ASRRuntime, RecognizerConfig, SessionConfig, VadConfig
+
+with ASRRuntime(RecognizerConfig(model_path=".runtime/models/whisper-tiny")) as runtime:
+    session = runtime.create_auto_session(
+        vad=VadConfig(model_path=".runtime/models/vad/silero-v6.onnx"),
+        config=SessionConfig(language="zh-CN"),
+    )
+    for chunk in audio_chunks:
+        session.feed_audio(chunk)
+        while event := session.get_event():
+            print(event.kind, event.boundary, event.result)
+    session.finish_input()
+    while session.pending_segments:
+        event = session.get_event(timeout=30)
+        if event is None:
+            raise TimeoutError("等待自动录音段超时")
+        print(event.kind, event.boundary, event.result)
+    session.close()
+```
+
+自动会话通过 WebRTC 与 Silero 确认开口，默认使用 WebRTC 判断句尾。默认保留 1 秒前置缓冲；保守裁剪与回溯均由 `SegmentationConfig` 显式启用。边界使用连续标准样本位置；开启回溯时暂留最新尾部，增加相应实时延迟，避免左右原生流重复接收音频。最终任务容量不足时保留待递交段，消费结果后继续递交；音频预算不足时整块拒绝，可消费后重送。
+
+检测参数需要适合输入音量。本机英文公开录音的 RMS 约为 -49.9 dBFS，默认 `webrtc_mode=3` 漏检明显；验证中明确使用 `webrtc_mode=0`，没有自动放大源音频。此配置事实与首词、边界的人工质量验收不能混为一谈。检测模型身份、失败处理与控制契约见 [P4 Spec](docs/specs/automatic-segmentation.md)。
+
+以下准备命令只复用已安装 faster-whisper 1.2.1 的固定检测模型资产；正式 SDK 只读取提供的路径，不依赖 faster-whisper 来定位检测模型：
+
+```powershell
+uv run --no-sync python -m evals.p4 --prepare-vad
+uv run --no-sync python examples/automatic_session.py <audio-path> --model .runtime/models/whisper-tiny --vad-model .runtime/models/vad/silero-v6.onnx --language zh-CN
+uv run --no-sync python -m evals.p4
+```
+
+真实评估代码位于 `evals/p4/`，记录保存到 `artifacts/p4/`。标准 PCM 示例只需 `whisper,vad`，不需要 `audio`；更换源格式时沿用 P1 的音频转换依赖与约束。模型文件需要另行准备，不包含在 wheel 中。
 
 ## 模型准备
 
@@ -119,9 +356,9 @@ uv run --locked --extra whisper --extra nemotron python -m evals.p0 run
 ## 开发检查
 
 ```powershell
-uv run --locked --extra whisper --extra nemotron python -m unittest discover -s tests -t . -v
-uv run --locked --extra whisper --extra nemotron ruff check src evals tests
-uv run --locked --extra whisper --extra nemotron ruff format --check src evals tests
+uv run --no-sync python -m unittest discover -s tests -t . -v
+uv run --no-sync ruff check src evals tests examples
+uv run --no-sync ruff format --check src evals tests examples
 uv build
 ```
 
