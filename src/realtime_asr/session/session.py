@@ -2,7 +2,6 @@
 
 from collections import deque
 from dataclasses import dataclass, field, replace
-from hashlib import sha256
 from math import isfinite
 from uuid import uuid4
 
@@ -11,6 +10,7 @@ import numpy as np
 from realtime_asr.audio.conversion import AudioConverter, AudioFormat
 from realtime_asr.errors import ASRError
 from realtime_asr.results import RecognitionResult
+from realtime_asr.runtime.tasks import InferenceRequest
 from realtime_asr.segmentation.acoustic import AcousticBoundary
 from realtime_asr.segmentation.gate import SegmentBoundary
 from realtime_asr.text.stabilizer import (
@@ -136,23 +136,9 @@ class SessionChange:
     pending_tasks: int
 
 
-@dataclass(frozen=True)
-class EarlyFinalResult:
-    """提前结果保留固定范围和摘要，不在完成后额外持有音频副本。"""
-
-    audio_samples: int
-    audio_digest: bytes
-    result: RecognitionResult
-    timing: tuple[float, float, float]
-
-    def matches_audio(self, pcm):
-        """同一单元配置固定；字节与长度均相同才具有最终复用资格。"""
-        return self.audio_samples == len(pcm) // 2 and self.audio_digest == sha256(pcm).digest()
-
-
 @dataclass
 class _AudioUnit:
-    """会话拥有音频和事件；后台在协调锁内登记实时退出状态。"""
+    """会话独占的可变音频和事件，执行器只取得固定快照。"""
 
     ref: UnitRef
     converter: AudioConverter
@@ -160,19 +146,11 @@ class _AudioUnit:
     source_bytes: int = 0
     task: FinalTask | None = None
     events: deque | None = None
-    realtime: object = None
     realtime_event: SessionEvent | None = None
-    realtime_done: bool = True
     boundary: SegmentBoundary | None = None
     stream_start_sample: int | None = None
     stabilizer: TextStabilizer | None = None
     last_realtime_text: str = ""
-    optimization: dict = field(default_factory=dict)
-    auxiliary: object = None
-    endpoint_epoch: int = 0
-    early_result: EarlyFinalResult | None = None
-    pending_split: object = None
-    sentence_policy: object = None
 
 
 class Session:
@@ -201,12 +179,12 @@ class Session:
 
     @property
     def generation(self):
-        with self._runtime._condition:
+        with self._runtime.coordination:
             return self._generation
 
     @property
     def state(self):
-        with self._runtime._condition:
+        with self._runtime.coordination:
             if self._closed:
                 return "closed"
             if self._active is None:
@@ -219,38 +197,68 @@ class Session:
 
     def start(self) -> UnitRef:
         """开始独立音频单元；不覆盖仍在接收的输入。"""
-        with self._runtime._condition:
+        with self._runtime.coordination:
             return self._begin_unit(self.config.format)
 
     def _begin_unit(self, format):
         """共享单元入口；自动会话递交的音频已经标准化。"""
-        with self._runtime._condition:
+        with self._runtime.coordination:
             self._require_open()
             if self._active is not None:
                 raise ASRError("UNIT_ACTIVE", "start", "已有活动音频单元")
             if len(self._units) >= self.config.max_pending_units:
                 raise ASRError("RESULT_CAPACITY_EXCEEDED", "start", "未消费单元达到容量上限")
             ref = UnitRef(self.session_id, self._generation, self._next_unit)
-            unit = _AudioUnit(ref, AudioConverter(format))
+            unit = self._new_unit(ref, format)
             if self.config.stabilization is not None:
                 unit.stabilizer = TextStabilizer(ref, self.config.stabilization)
             if self.config.realtime:
-                self._runtime._realtime.add_unit(self, unit)
+                self._runtime.realtime.add_unit(self, ref)
             self._next_unit += 1
             self._units[ref.unit_id] = unit
             self._active = unit
             self._last_task = None
             return ref
 
+    def _new_unit(self, ref, format):
+        return _AudioUnit(ref, AudioConverter(format))
+
+    def audio_samples(self, ref):
+        """协调条件内查询进度，定时轮询不复制整段历史。"""
+        unit = self._units.get(ref.unit_id)
+        return len(unit.pcm) // 2 if unit is not None and unit.ref == ref else 0
+
+    def snapshot_audio(self, ref):
+        """仅在领取任务时复制该单元的固定标准输入。"""
+        unit = self._units.get(ref.unit_id)
+        return bytes(unit.pcm) if unit is not None and unit.ref == ref else b""
+
+    def accept_realtime(self, event):
+        """执行器只交付有归属的观察，不访问可变单元。"""
+        unit = self._units.get(event.unit.unit_id)
+        if unit is not None and unit.ref == event.unit:
+            self._record_realtime(unit, event)
+
+    def accept_completion(self, request, result, error, timing):
+        """协调条件内接收执行结果；发布有效性只由会话判断。"""
+        self._resolve(request.task, result, error, timing=timing)
+
+    def _dispatch_final(self, unit, task, pcm):
+        """登记完成前不释放协调条件，立即返回的执行也能关联原单元。"""
+        self._runtime.submit(
+            InferenceRequest(task, pcm, self.config.language, self.config.word_timestamps)
+        )
+        unit.task = task
+
     def _append_standard(self, unit, pcm):
         """接纳已转换的相邻采样，保持实时增量与单元缓冲一致。"""
         unit.pcm.extend(pcm)
-        if unit.realtime is not None:
-            self._runtime._realtime.audio_changed(unit, pcm)
+        if self.config.realtime:
+            self._runtime.realtime.audio_changed(unit.ref, pcm)
 
     def feed_audio(self, chunk) -> int:
         """只整理音频，不等待模型；复制已转换采样以隔离调用方修改。"""
-        with self._runtime._condition:
+        with self._runtime.coordination:
             self._require_open()
             unit = self._require_active()
             if unit.converter.state == "finished":
@@ -276,8 +284,8 @@ class Session:
             for frame in frames:
                 unit.pcm.extend(frame.pcm)
             unit.source_bytes += source_bytes
-            if unit.realtime is not None:
-                self._runtime._realtime.audio_changed(unit, bytes(unit.pcm[before:]))
+            if self.config.realtime:
+                self._runtime.realtime.audio_changed(unit.ref, bytes(unit.pcm[before:]))
             return (len(unit.pcm) - before) // 2
 
     def _require_active(self):
@@ -287,7 +295,7 @@ class Session:
 
     def finish(self) -> FinalTask:
         """刷新尾部并提交不可变完整音频；调用返回后可开始下一单元。"""
-        with self._runtime._condition:
+        with self._runtime.coordination:
             self._require_open()
             if self._active is None and self._last_task is not None:
                 return self._last_task
@@ -301,11 +309,13 @@ class Session:
             except ASRError as exc:
                 self._terminal(unit, "failed", error=exc)
                 raise
-            if unit.realtime is not None:
-                self._runtime._realtime.audio_changed(unit, bytes(unit.pcm[before:]))
-                self._runtime._realtime.finish_unit(unit)
-            task = self._runtime._submit(self, unit, bytes(unit.pcm))
-            unit.task = task
+            if self.config.realtime:
+                self._runtime.realtime.audio_changed(unit.ref, bytes(unit.pcm[before:]))
+                self._runtime.realtime.finish_unit(unit.ref)
+            pcm = bytes(unit.pcm)
+            samples = len(pcm) // 2
+            task = FinalTask(unit.ref, uuid4().hex, samples, samples, unit.boundary)
+            self._dispatch_final(unit, task, pcm)
             unit.pcm.clear()
             unit.converter.close()
             self._active = None
@@ -333,7 +343,7 @@ class Session:
                 )
                 for event in unit.events
             )
-        self._runtime._condition.notify_all()
+        self._runtime.coordination.notify_all()
 
     def _record_realtime(self, unit, event):
         """每个单元只保留最新观察；终态正文不被实时输出覆盖。"""
@@ -363,7 +373,7 @@ class Session:
 
     def cancel(self, target: UnitRef | None = None) -> bool:
         """取消当前输入或指定单元；不扩大到其他单元或会话。"""
-        with self._runtime._condition:
+        with self._runtime.coordination:
             self._require_open()
             if target is None:
                 unit = self._active
@@ -384,7 +394,7 @@ class Session:
             if unit is None or unit.events is not None:
                 return False
             if unit.task is not None:
-                self._runtime._cancel_queued(unit.task.task_id)
+                self._runtime.cancel_task(unit.task.task_id)
             if self._active is unit:
                 self._last_task = None
             self._terminal(unit, "cancelled")
@@ -412,19 +422,15 @@ class Session:
                 if kind == "final" and unit.stabilizer is not None
                 else None
             ),
-            optimization=dict(unit.optimization) or None,
-            source="early-final"
-            if kind == "final" and unit.optimization.get("early_reused")
-            else "final",
         )
 
     def reset(self) -> SessionChange:
         """失效旧代次并直接交付取消记录；保留输入配置。"""
-        with self._runtime._condition:
+        with self._runtime.coordination:
             self._require_open()
             change = self._clear_work()
             self._generation += 1
-            self._runtime._condition.notify_all()
+            self._runtime.coordination.notify_all()
             return replace(change, generation=self._generation)
 
     def _clear_work(self):
@@ -437,46 +443,37 @@ class Session:
                 discarded += len(unit.events)
                 continue
             if unit.task is not None:
-                self._runtime._cancel_queued(unit.task.task_id)
+                self._runtime.cancel_task(unit.task.task_id)
             self._terminal(unit, "cancelled")
             self._sequence += 1
             cancelled.append(replace(unit.events[0], sequence=self._sequence))
         self._units.clear()
         self._active = None
         self._last_task = None
-        running = self._runtime._running
-        pending = int(running is not None and running.session is self)
-        realtime = self._runtime._realtime
-        pending += int(
-            realtime is not None and realtime.busy is not None and realtime.busy.session is self
-        )
+        pending = self._runtime.pending_for(self.session_id)
         return SessionChange(self._generation, tuple(cancelled), discarded, pending)
 
     def close(self) -> SessionChange:
         """只取消自己的工作；共享模型由运行时拥有者关闭。"""
-        with self._runtime._condition:
+        with self._runtime.coordination:
             if self._close_result is None:
                 self._close_result = self._clear_work()
                 self._closed = True
-                self._runtime._sessions.pop(self.session_id, None)
-                self._runtime._condition.notify_all()
+                self._runtime.detach_session(self.session_id)
+                self._runtime.coordination.notify_all()
             return self._close_result
 
     def _terminal(self, unit, kind, *, result=None, error=None):
-        if unit.auxiliary is not None:
-            self._runtime._cancel_queued(unit.auxiliary.task.task_id)
-            unit.endpoint_epoch += 1
-        unit.early_result = unit.pending_split = None
         if kind == "cancelled" or (kind == "failed" and unit.task is None):
             unit.realtime_event = None
-            if unit.realtime is not None:
-                self._runtime._realtime.cancel_unit(unit)
+            if self.config.realtime:
+                self._runtime.realtime.cancel_unit(unit.ref)
         unit.events = deque([self._event(unit, kind, result=result, error=error)])
         unit.pcm.clear()
         unit.converter.close()
         if self._active is unit:
             self._active = None
-        self._runtime._condition.notify_all()
+        self._runtime.coordination.notify_all()
 
     def _next_event(self):
         """最终正文仍按单元排序；其他单元的实时观察可先交付。"""
@@ -497,7 +494,7 @@ class Session:
     def get_event(self, *, timeout=0.0) -> SessionEvent | None:
         """按单元顺序消费；慢消费者不持有模型执行锁。"""
         _validate_timeout(timeout, allow_none=True)
-        with self._runtime._condition:
+        with self._runtime.coordination:
             generation = self._generation
 
             def available():
@@ -505,7 +502,7 @@ class Session:
                     self._closed or generation != self._generation or self._next_event() is not None
                 )
 
-            if not self._runtime._condition.wait_for(available, timeout=timeout):
+            if not self._runtime.coordination.wait_for(available, timeout=timeout):
                 return None
             if self._closed or generation != self._generation:
                 return None

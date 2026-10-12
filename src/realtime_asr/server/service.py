@@ -27,9 +27,13 @@ class Service:
 
     def __init__(self, config):
         self.config = config
+        if config.realtime and config.capabilities.realtime_mode is None:
+            raise ASRError("BACKEND_INCOMPATIBLE", "configure_server", "引擎未声明实时能力")
         realtime = (
             RealtimeConfig(
-                mode="snapshot" if config.recognizer.backend == "whisper" else "native",
+                mode="snapshot"
+                if config.acoustic_boundaries
+                else config.capabilities.realtime_mode,
                 acoustic_boundaries=config.acoustic_boundaries,
             )
             if config.realtime
@@ -37,6 +41,7 @@ class Service:
         )
         self.runtime = ASRRuntime(
             config.recognizer,
+            engine=config.engine,
             realtime=realtime,
             limits=RuntimeLimits(
                 max_sessions=config.max_sessions,
@@ -203,7 +208,7 @@ class Service:
                 "active_next_wait": active,
                 "new_sessions": new_sessions,
                 "startup_only": startup
-                + ("recognizer", "vad_model", "token", "ssl_certfile", "ssl_keyfile"),
+                + ("recognizer", "engine", "vad_model", "token", "ssl_certfile", "ssl_keyfile"),
             },
         }
 
@@ -214,22 +219,23 @@ class Service:
 
     def capabilities(self):
         config = self.config
+        engine = self.runtime.capabilities
         return {
             "protocol_version": 1,
             "type": "capabilities",
             "ready": self.phase == "ready",
-            "backend": config.recognizer.backend,
-            "device": config.recognizer.device,
+            "backend": engine.backend,
+            "device": engine.device,
             "manual": True,
             "automatic": config.vad_model is not None,
             "realtime": config.realtime,
             "stable_text": config.realtime,
-            "word_timestamps": config.recognizer.backend == "whisper",
+            "word_timestamps": engine.word_timestamps,
             "acoustic_boundaries": config.realtime and config.acoustic_boundaries,
             "endpoint_optimization": config.vad_model is not None,
             "punctuation_split": config.vad_model is not None
             and config.realtime
-            and config.recognizer.backend == "whisper",
+            and engine.word_timestamps,
             "sample_types": ["int16", "float32"],
             "sample_rate_range": [1, 192000],
             "channels_range": [1, 8],

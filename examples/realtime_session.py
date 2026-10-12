@@ -17,9 +17,10 @@ def main():
     parser.add_argument("--backend", choices=("whisper", "nemotron"), default="whisper")
     parser.add_argument("--language")
     args = parser.parse_args()
-    mode = "native" if args.backend == "nemotron" else "snapshot"
+    model = RecognizerConfig(model_path=args.model, backend=args.backend)
+    mode = model.capabilities.realtime_mode
     with ASRRuntime(
-        RecognizerConfig(model_path=args.model, backend=args.backend),
+        model,
         realtime=RealtimeConfig(mode=mode),
     ) as runtime:
         session = runtime.create_session(SessionConfig(realtime=True, language=args.language))

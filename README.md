@@ -45,6 +45,8 @@ src/realtime_asr/
 │   ├── stabilizer.py        # 原文投影、稳定证据与最终差异
 │   └── endpoint.py          # 动态等待与句末锚点策略
 ├── backends/
+│   ├── base.py              # 通用整段、流式与能力契约
+│   ├── local.py             # 内置配置、模型组装与专有参数
 │   ├── whisper.py           # Whisper 整段与快照适配
 │   ├── nemotron.py          # Nemotron 识别器适配
 │   └── stream.py            # 原生流输入、解码、结束与关闭
@@ -52,6 +54,7 @@ src/realtime_asr/
     ├── recognizer.py        # 同步 SDK 与模型生命周期
     ├── asr.py               # ASRRuntime、最终调度及容量
     ├── realtime.py          # 实时执行、周期与原生排空
+    ├── tasks.py             # 固定音频、选项及任务归属
     ├── models/              # 显式准备、身份校验及准备阶段记录
     └── native/              # GPU 资源与原生运行库加载
 
@@ -63,6 +66,7 @@ evals/p4/                    # 自动分句与边界真实验收
 evals/p5/                    # 麦克风、CLI 与项目外安装验证
 evals/p6/                    # 真实网络、模型、浏览器、TLS 与安装验证
 evals/p7/                    # 文本、声学、端点 A/B、真实词时间与句末切段
+evals/p8/                    # 引擎边界、本地回归、受控远程及独立安装
 evals/module_organization.py # 目录迁移前后的真实回放
 
 examples/                    # 只通过公开 SDK 使用产品
@@ -82,11 +86,23 @@ tests/
 
 `audio` 提供标准音频与位置；`segmentation` 提供检测记录和切点；`session` 决定段归属、封口、取消和事件有效性。`runtime` 管理模型与推理调度，`backends` 处理模型专有调用和原生流。分句模块不提交 ASR 任务，后端不读取会话缓冲。
 
-`runtime/models` 与 `runtime/native` 是资源支持模块，可以被运行时和后端使用；这些模块不反向依赖会话、后端或执行器。会话与运行时保留现有提交、回交和协调锁关系。
+`runtime/models` 与 `runtime/native` 是资源支持模块，可以被运行时和后端使用；这些模块不反向依赖会话、后端或执行器。会话在显式协调条件内提交固定任务，并通过完成方法接收结果。队列不持有可变音频单元；实时执行器持有流和排空状态。
 
 `text` 只处理观察与文本策略，不持有模型或可变音频。辅助任务复用 `runtime/asr.py` 的最终模型、任务容量和工作线程；会话执行归属检查与左右切分。
 
 评估代码调用正式实现，再补充语料、测量和评分。`evals/p0/engines.py` 的 `EnginePool` 只用于评估，不作为产品运行时。整理前的内部模块路径已迁移，不保留旧 `core` 包；`from realtime_asr import ...` 的公开导出与签名保持。映射和执行证据见[目录整理 Plan](docs/plans/functional-module-organization.md)。
+
+## 自定义引擎
+
+`Recognizer(engine=...)`、`ASRRuntime(engine=...)` 和服务宿主的 `ServerConfig(engine=...)` 接受同一引擎契约。调用方可以实现本地模型或远程 API；引擎不需要提供本地路径。包内提供 Whisper、Nemotron 适配，不提供厂商云端适配器。
+
+引擎继承 `BaseTranscriptionEngine` 或实现相同方法。`capabilities` 返回固定的 `EngineCapabilities`；`prepare()` 准备资源，`close()` 释放资源。整段方法 `transcribe(audio, language=None, *, role="final", word_timestamps=False)` 接收 16 kHz 单声道、PCM16 除以 32768 后的 float32，返回 `RecognitionResult`。语言提示原样传入，厂商映射由引擎完成。能力字段分别声明整段、完整快照、原生流式和词时间；核心按能力组装角色。
+
+流式引擎通过 `create_streaming_session(language=None)` 为每个音频单元创建独立流。流实现 `StreamingSession` 的 `accept_audio()`、`get_result()`、`finish()`，可按需实现 `decode()` 和 `close()`。输入只包含新增标准音频；结果是本单元累计文本。`finish()` 必须排空尾部并返回累计结果，不能把厂商的单句结束直接变成核心会话的完成事件。
+
+注入后 SDK 接管引擎生命周期。同一运行时内，最终和实时角色可共用实例，运行时串行调用并只关闭一次；不同实例各自准备和关闭。`RealtimeConfig(engine=other_engine, mode="native")` 配置独立流式角色。最终角色仍需整段能力；只支持流式的引擎可作为独立实时角色。引擎准备失败后，调用方需新建实例和 SDK 对象。
+
+服务地址、连接池和凭据保存在适配器内。HTTP／WebSocket 客户端不能注入引擎或修改宿主的地址与凭据。自定义引擎使用方式见 [custom_engine.py](examples/custom_engine.py)，详细输入、错误及资源契约见 [P8.0 Spec](docs/specs/engine-and-runtime-boundaries.md)。
 
 ## 环境与安装
 

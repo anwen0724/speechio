@@ -1,17 +1,17 @@
 """共享最终模型与有界任务；协调锁不覆盖模型调用。"""
 
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from threading import Condition, Lock, Thread
 from time import monotonic
-from uuid import uuid4
 
 from realtime_asr.audio.conversion import AudioFormat
 from realtime_asr.errors import ASRError
 from realtime_asr.results import CloseError
 from realtime_asr.runtime.realtime import RealtimeConfig, RealtimeExecutor
 from realtime_asr.runtime.recognizer import Recognizer
-from realtime_asr.session.session import FinalTask, Session, SessionConfig, _validate_timeout
+from realtime_asr.runtime.tasks import InferenceRequest
+from realtime_asr.session.session import Session, SessionConfig, _validate_timeout
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -48,26 +48,13 @@ class RuntimeCloseResult:
     errors: tuple[CloseError, ...] = ()
 
 
-@dataclass(frozen=True)
-class _Job:
-    """执行器持有固定字节，不使用活动缓冲。"""
-
-    session: Session
-    task: FinalTask
-    pcm: bytes
-    unit: object
-    submitted_at: float
-    purpose: str = "final"
-    hint: object = None
-    epoch: int = 0
-    word_timestamps: bool = False
-
-
 class ASRRuntime:
     """拥有一个同步模型组件及后台调度，供多个独立会话使用。"""
 
-    def __init__(self, config, *, limits=None, realtime=None):
-        self._recognizer = Recognizer(config)
+    def __init__(self, config=None, *, engine=None, limits=None, realtime=None):
+        self._recognizer = Recognizer(config, engine=engine)
+        if not self._recognizer.capabilities.transcription:
+            raise ASRError("BACKEND_INCOMPATIBLE", "configure", "最终角色需要整段识别能力")
         if realtime is not None and not isinstance(realtime, RealtimeConfig):
             raise ASRError("INVALID_CONFIGURATION", "configure", "需要 RealtimeConfig")
         self._realtime_config = realtime
@@ -91,6 +78,16 @@ class ASRRuntime:
     def state(self):
         with self._condition:
             return self._state
+
+    @property
+    def capabilities(self):
+        """最终引擎的固定声明供 SDK 和服务使用，不触发准备。"""
+        return self._recognizer.capabilities
+
+    @property
+    def realtime_capabilities(self):
+        """实时角色可以独立选择引擎，不从最终模型名称推导能力。"""
+        return self._realtime.model.capabilities if self._realtime is not None else None
 
     @property
     def close_result(self):
@@ -135,9 +132,18 @@ class ASRRuntime:
                     errors += self._realtime.model.close().errors
                 if errors:
                     exc.cleanup_errors = errors
-                self._recognizer = Recognizer(self._recognizer.config)
-                if self._realtime is not None:
-                    self._realtime = RealtimeExecutor(self, self._realtime_config)
+                injected = self._recognizer.config is None or (
+                    self._realtime is not None and self._realtime.model.config is None
+                )
+                if injected:
+                    self._state = "closed"
+                    self._close_result = RuntimeCloseResult(
+                        "failed" if errors else "ok", errors=errors
+                    )
+                else:
+                    self._recognizer = Recognizer(self._recognizer.config)
+                    if self._realtime is not None:
+                        self._realtime = RealtimeExecutor(self, self._realtime_config)
                 raise
             if self._realtime is not None:
                 self._realtime.thread.start()
@@ -169,14 +175,20 @@ class ASRRuntime:
             self._sessions[session.session_id] = session
             return session
 
-    def create_auto_session(self, *, vad, segmentation=None, config=None, endpoint=None):
+    def create_auto_session(
+        self, *, vad=None, detector_factory=None, segmentation=None, config=None, endpoint=None
+    ):
         """显式准备检测器；加载不持有共享协调锁，失败不注册会话。"""
         from realtime_asr.segmentation.gate import SegmentationConfig
         from realtime_asr.segmentation.vad import VadConfig
         from realtime_asr.session.automatic import AutomaticSession
 
-        if not isinstance(vad, VadConfig):
-            raise ASRError("INVALID_CONFIGURATION", "configure", "需要 VadConfig")
+        if (
+            (vad is None) == (detector_factory is None)
+            or (vad is not None and not isinstance(vad, VadConfig))
+            or (detector_factory is not None and not callable(detector_factory))
+        ):
+            raise ASRError("INVALID_CONFIGURATION", "configure", "VAD 配置与工厂应且仅应提供一个")
         config = config if config is not None else SessionConfig()
         segmentation = segmentation if segmentation is not None else SegmentationConfig()
         if not isinstance(config, SessionConfig) or not isinstance(
@@ -187,7 +199,9 @@ class ASRRuntime:
             self._require_ready()
             if config.realtime and self._realtime is None:
                 raise ASRError("REALTIME_NOT_CONFIGURED", "create_session", "运行时未配置实时角色")
-        session = AutomaticSession(self, config, vad, segmentation, endpoint)
+        session = AutomaticSession(
+            self, config, vad, segmentation, endpoint, detector_factory=detector_factory
+        )
         with self._condition:
             self._require_ready()
             if len(self._sessions) >= self._limits.max_sessions:
@@ -195,70 +209,54 @@ class ASRRuntime:
             self._sessions[session.session_id] = session
         return session
 
-    def _submit(self, session, unit, pcm):
-        self._require_ready()
-        samples = len(pcm) // 2
-        early = unit.early_result
-        if early is not None and early.matches_audio(pcm):
-            task = FinalTask(unit.ref, uuid4().hex, samples, samples, unit.boundary)
-            unit.task = task
-            session._count_optimization(unit, "early_reused")
-            session._resolve(task, early.result, timing=early.timing)
-            return task
-        if early is not None:
-            unit.optimization["early_reuse_rejected"] = "audio-version-changed"
-        if (
-            self._tasks >= self._limits.max_tasks
-            or self._task_samples + samples > self._limits.max_task_audio_samples
-        ):
-            raise ASRError("TASK_CAPACITY_EXCEEDED", "finish", "最终任务容量不足，保留封口音频")
-        task = FinalTask(unit.ref, uuid4().hex, samples, samples, unit.boundary)
-        self._queue.append(
-            _Job(
-                session,
-                task,
-                pcm,
-                unit,
-                monotonic(),
-                word_timestamps=session.config.word_timestamps,
-            )
-        )
-        self._tasks += 1
-        self._task_samples += task.audio_samples
-        self._condition.notify_all()
-        return task
+    @property
+    def coordination(self):
+        """会话与执行器共同使用的交接条件，不保护外部模型调用。"""
+        return self._condition
 
-    def _submit_auxiliary(self, session, unit, *, purpose, hint=None):
-        """辅助快照共用物理预算，容量不足只跳过优化，不拒绝输入。"""
-        samples = len(unit.pcm) // 2
-        if unit.auxiliary is not None:
-            session._count_optimization(unit, "busy_skipped")
-            return False
-        if not samples:
-            return False
+    @property
+    def limits(self):
+        return self._limits
+
+    @property
+    def realtime(self):
+        """实时拥有者的交接入口；会话不操作其内部状态容器。"""
+        return self._realtime
+
+    @property
+    def progress_token(self):
+        """容量或实时退出改变时，自动输入应再次尝试递交。"""
+        return self._tasks, len(self._realtime.states) if self._realtime else 0
+
+    def pending_for(self, session_id):
+        """只报告仍在真实调用中的工作，不把逻辑取消视作物理退出。"""
+        pending = int(
+            self._running is not None and self._running.task.unit.session_id == session_id
+        )
+        if self._realtime is not None:
+            busy = self._realtime.busy
+            pending += int(busy is not None and busy.ref.session_id == session_id)
+        return pending
+
+    def detach_session(self, session_id):
+        """注销属于本运行时的会话，已执行任务仍保留自己的固定输入。"""
+        self._sessions.pop(session_id, None)
+        self._condition.notify_all()
+
+    def submit(self, request: InferenceRequest):
+        """只接纳固定任务；辅助容量不足返回 False，最终容量不足保留输入。"""
+        self._require_ready()
+        samples = request.task.audio_samples
         if (
             self._tasks >= self._limits.max_tasks
             or self._task_samples + samples > self._limits.max_task_audio_samples
         ):
-            session._count_optimization(unit, "capacity_skipped")
-            return False
-        task = FinalTask(unit.ref, uuid4().hex, samples, samples)
-        job = _Job(
-            session,
-            task,
-            bytes(unit.pcm),
-            unit,
-            monotonic(),
-            purpose=purpose,
-            hint=hint,
-            epoch=unit.endpoint_epoch,
-            word_timestamps=purpose == "punctuation" or session.config.word_timestamps,
-        )
-        unit.auxiliary = job
-        self._queue.append(job)
+            if request.priority == "auxiliary":
+                return False
+            raise ASRError("TASK_CAPACITY_EXCEEDED", "finish", "最终任务容量不足，保留封口音频")
+        self._queue.append(replace(request, submitted_at=monotonic()))
         self._tasks += 1
         self._task_samples += samples
-        session._count_optimization(unit, purpose + "_submitted")
         self._condition.notify_all()
         return True
 
@@ -278,7 +276,7 @@ class ASRRuntime:
                     result = self._recognizer.transcribe(
                         job.pcm,
                         format=AudioFormat(),
-                        language=job.session.config.language,
+                        language=job.language,
                         word_timestamps=job.word_timestamps,
                     )
             except ASRError as exc:
@@ -286,10 +284,9 @@ class ASRRuntime:
             completed_at = monotonic()
             with self._condition:
                 timing = (job.submitted_at, started_at, completed_at)
-                if job.purpose == "final":
-                    job.session._resolve(job.task, result, error, timing=timing)
-                else:
-                    job.session._resolve_auxiliary(job, result, error, timing)
+                session = self._sessions.get(job.task.unit.session_id)
+                if session is not None:
+                    session.accept_completion(job, result, error, timing)
                 self._tasks -= 1
                 self._task_samples -= job.task.audio_samples
                 self._running = None
@@ -305,7 +302,7 @@ class ASRRuntime:
             self._state = "closed"
             self._condition.notify_all()
 
-    def _cancel_queued(self, task_id):
+    def cancel_task(self, task_id):
         """只移除尚未执行的任务；运行引用在调用实际返回后释放。"""
         for job in self._queue:
             if job.task.task_id == task_id:
@@ -313,23 +310,31 @@ class ASRRuntime:
                 self._tasks -= 1
                 self._task_samples -= job.task.audio_samples
                 self._condition.notify_all()
-                if job.purpose != "final" and job.unit.auxiliary is job:
-                    job.unit.auxiliary = None
                 return True
         return False
 
+    def _realtime_ready(self, ref):
+        """最终任务的排空屏障由实时拥有者提供，不读取会话单元。"""
+        return self._realtime is None or self._realtime.is_complete(ref)
+
     def _has_work_ready(self):
         """本单元原生排空之前，最终任务不能领取模型执行资源。"""
-        return any(job.purpose != "final" or job.unit.realtime_done for job in self._queue)
+        return any(
+            job.priority != "final" or self._realtime_ready(job.task.unit) for job in self._queue
+        )
 
     def _next_job(self):
         """在有界队列中轮转会话，保持每个会话的任务相对顺序。"""
-        ready = [job for job in self._queue if job.purpose != "final" or job.unit.realtime_done]
-        job = next((job for job in ready if job.purpose == "final"), ready[0])
+        ready = [
+            job
+            for job in self._queue
+            if job.priority != "final" or self._realtime_ready(job.task.unit)
+        ]
+        job = next((job for job in ready if job.priority == "final"), ready[0])
         self._queue.remove(job)
         others, same_session = deque(), deque()
         for queued in self._queue:
-            if queued.session is job.session:
+            if queued.task.unit.session_id == job.task.unit.session_id:
                 same_session.append(queued)
             else:
                 others.append(queued)

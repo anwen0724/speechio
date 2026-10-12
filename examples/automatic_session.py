@@ -23,12 +23,11 @@ def main():
     parser.add_argument("--language", default=None)
     parser.add_argument("--realtime", action="store_true")
     args = parser.parse_args()
+    model = RecognizerConfig(model_path=args.model, backend=args.backend)
     realtime = None
     if args.realtime:
-        realtime = RealtimeConfig(mode="native" if args.backend == "nemotron" else "snapshot")
-    with ASRRuntime(
-        RecognizerConfig(model_path=args.model, backend=args.backend), realtime=realtime
-    ) as runtime:
+        realtime = RealtimeConfig(mode=model.capabilities.realtime_mode)
+    with ASRRuntime(model, realtime=realtime) as runtime:
         session = runtime.create_auto_session(
             vad=VadConfig(model_path=args.vad_model),
             config=SessionConfig(language=args.language, realtime=args.realtime),

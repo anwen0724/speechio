@@ -1,5 +1,6 @@
 """实时角色配置与后台执行，隐藏快照计时和原生流推进。"""
 
+from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from math import isfinite
 from threading import Lock, Thread
@@ -9,7 +10,7 @@ from uuid import uuid4
 import numpy as np
 
 from realtime_asr.errors import ASRError
-from realtime_asr.results import CloseError
+from realtime_asr.results import CloseError, RecognitionResult
 from realtime_asr.runtime.recognizer import Recognizer, RecognizerConfig
 from realtime_asr.segmentation.acoustic import AcousticBoundary, AcousticBoundaryDetector
 from realtime_asr.session.session import EventError, SessionEvent
@@ -17,10 +18,11 @@ from realtime_asr.session.session import EventError, SessionEvent
 
 @dataclass(frozen=True, kw_only=True)
 class RealtimeConfig:
-    """一个实时角色；显式 model 创建独立实例，None 共用最终模型。"""
+    """一个实时角色；model 或 engine 指定拥有者，缺省共用最终引擎。"""
 
     mode: str = "snapshot"
     model: RecognizerConfig | None = None
+    engine: object = None
     interval: float = 0.2
     initial_delay: float = 0.2
     min_snapshot_samples: int = 800
@@ -59,8 +61,10 @@ class RealtimeConfig:
         object.__setattr__(
             self, "boundary_followup_delays", tuple(sorted(set(self.boundary_followup_delays)))
         )
-        if self.mode not in ("snapshot", "native") or (
-            self.model is not None and not isinstance(self.model, RecognizerConfig)
+        if (
+            self.mode not in ("snapshot", "native")
+            or (self.model is not None and not isinstance(self.model, RecognizerConfig))
+            or (self.model is not None and self.engine is not None)
         ):
             raise ASRError("INVALID_CONFIGURATION", "configure", "实时模式或模型配置无效")
         for seconds in (self.interval, self.initial_delay):
@@ -83,7 +87,7 @@ class _RealtimeUnit:
     """跟踪单元的计时和在途观察，不持有可修改的快照。"""
 
     session: object
-    unit: object
+    ref: object
     created_at: float
     last_started: float | None = None
     last_samples: int = 0
@@ -107,18 +111,16 @@ class RealtimeExecutor:
         self.runtime = runtime
         self.config = config
         self.model = runtime._recognizer
-        self.shared = config.model is None
+        self.shared = config.model is None and (
+            config.engine is None or config.engine is self.model.engine
+        )
         if not self.shared:
-            self.model = Recognizer(config.model)
-        expected = "whisper" if config.mode == "snapshot" else "nemotron"
-        if self.model.config.backend != expected:
+            self.model = Recognizer(config.model, engine=config.engine)
+        capabilities = self.model.capabilities
+        available = capabilities.snapshot if config.mode == "snapshot" else capabilities.streaming
+        if not available:
             raise ASRError("BACKEND_INCOMPATIBLE", "configure", "实时路径与模型后端不匹配")
-        final_config = runtime._recognizer.config
-        if self.model.config.device == final_config.device == "cuda" and (
-            self.model.config.cuda_directory != final_config.cuda_directory
-            or self.model.config.cudnn_folder != final_config.cudnn_folder
-        ):
-            raise ASRError("INVALID_CONFIGURATION", "configure", "CUDA 角色需要相同运行库目录")
+        self.model.ensure_compatible(runtime._recognizer)
         self.model_lock = runtime._model_lock if self.shared else Lock()
         self.states = {}
         self.busy = None
@@ -126,49 +128,58 @@ class RealtimeExecutor:
         self.errors = []
         self.thread = Thread(target=self._run, name="ASRRealtimeWorker", daemon=True)
 
-    def add_unit(self, session, unit):
+    def add_unit(self, session, ref):
         """在开始时预留最大采样容量，登记成功后才占用单元序号。"""
         reserved = sum(state.session.config.max_audio_samples for state in self.states.values())
         if len(self.states) >= self.config.max_units or (
             reserved + session.config.max_audio_samples > self.config.max_audio_samples
         ):
             raise ASRError("REALTIME_CAPACITY_EXCEEDED", "start", "实时单元预留容量不足")
-        state = _RealtimeUnit(session, unit, monotonic())
+        state = _RealtimeUnit(session, ref, monotonic())
         if self.config.acoustic_boundaries:
             state.detector = AcousticBoundaryDetector(self.config.boundary_sensitivity)
-        self.states[unit.ref] = state
-        unit.realtime = state
-        unit.realtime_done = self.config.mode != "native"
+        self.states[ref] = state
 
-    def audio_changed(self, unit, pcm=b""):
-        """快照只唤醒调度；原生路径保存相邻增量，不覆盖未送音频。"""
-        if self.config.mode == "native" and not unit.realtime.invalid:
-            unit.realtime.pending.extend(pcm)
-        if unit.realtime.detector is not None and not unit.realtime.invalid:
-            events = unit.realtime.detector.feed(pcm)
-            if events:
-                unit.realtime.boundary = events[-1]
-                unit.realtime.boundary_pending = True
-                now = monotonic()
-                unit.realtime.followups = [
-                    now + delay for delay in self.config.boundary_followup_delays
-                ]
-        self.runtime._condition.notify_all()
-
-    def finish_unit(self, unit):
-        """停止快照或请求原生排空，控制调用不等待模型。"""
+    def audio_changed(self, ref, pcm=b""):
+        """只接收相邻增量与单元标识，流状态由本执行器独占。"""
+        state = self.states.get(ref)
+        if state is None or state.invalid:
+            return
         if self.config.mode == "native":
-            unit.realtime.ended = True
-            self.runtime._condition.notify_all()
-        else:
-            self.cancel_unit(unit)
+            state.pending.extend(pcm)
+        if state.detector is not None:
+            events = state.detector.feed(pcm)
+            if events:
+                state.boundary = events[-1]
+                state.boundary_pending = True
+                now = monotonic()
+                state.followups = [now + delay for delay in self.config.boundary_followup_delays]
+        self.runtime.coordination.notify_all()
 
-    def cancel_unit(self, unit):
-        """失效待处理输入，执行中的调用及流由后台退出后清理。"""
-        unit.realtime.invalid = True
-        unit.realtime.pending.clear()
-        unit.realtime.followups.clear()
-        self.runtime._condition.notify_all()
+    def finish_unit(self, ref):
+        """停止快照或请求原生排空，调用方不等待模型。"""
+        state = self.states.get(ref)
+        if state is None:
+            return
+        if self.config.mode == "native":
+            state.ended = True
+            self.runtime.coordination.notify_all()
+        else:
+            self.cancel_unit(ref)
+
+    def cancel_unit(self, ref):
+        """失效待处理输入；执行中的调用及流实际退出后才回收。"""
+        state = self.states.get(ref)
+        if state is None:
+            return
+        state.invalid = True
+        state.pending.clear()
+        state.followups.clear()
+        self.runtime.coordination.notify_all()
+
+    def is_complete(self, ref):
+        """本执行器维护排空屏障，不把退出标记写回会话单元。"""
+        return self.config.mode != "native" or ref not in self.states
 
     def stop(self):
         """使全部实时单元失效，唤醒执行线程完成资源清理。"""
@@ -176,7 +187,7 @@ class RealtimeExecutor:
         for state in self.states.values():
             state.invalid = True
             state.pending.clear()
-        self.runtime._condition.notify_all()
+        self.runtime.coordination.notify_all()
 
     def _select(self):
         """运行中的快照不可替换；尚未运行的版本在选择时固定。"""
@@ -192,7 +203,7 @@ class RealtimeExecutor:
                 return state, pcm, wait
         for ref, state in tuple(self.states.items()):
             native = self.config.mode == "native"
-            samples = len(state.pending) // 2 if native else len(state.unit.pcm) // 2
+            samples = len(state.pending) // 2 if native else state.session.audio_samples(state.ref)
             acoustic = state.detector is not None
             followup_due = acoustic and bool(state.followups) and state.followups[0] <= now
             if (native and not samples) or (
@@ -226,7 +237,7 @@ class RealtimeExecutor:
                 continue
             del self.states[ref]
             self.states[ref] = state
-            pcm = bytes(state.pending if native else state.unit.pcm)
+            pcm = bytes(state.pending) if native else state.session.snapshot_audio(state.ref)
             if native:
                 state.pending.clear()
             state.trigger_reason = "native" if native else "periodic"
@@ -244,10 +255,9 @@ class RealtimeExecutor:
 
     def _retire(self, state):
         """调用和流清理退出后释放登记，唤醒依赖排空的最终任务。"""
-        self.states.pop(state.unit.ref, None)
+        self.states.pop(state.ref, None)
         state.pending.clear()
-        state.unit.realtime_done = True
-        self.runtime._condition.notify_all()
+        self.runtime.coordination.notify_all()
 
     def _close_stream(self, state):
         """清理错误独立保留，不能覆盖先发生的识别错误。"""
@@ -255,9 +265,12 @@ class RealtimeExecutor:
         if stream is not None:
             try:
                 stream.close()
-            except ASRError as exc:
-                self.errors.append(CloseError(exc.code, exc.operation, exc.message))
-                return EventError(exc.code, exc.operation, exc.message)
+            except Exception as exc:
+                code = exc.code if isinstance(exc, ASRError) else "CLEANUP_FAILED"
+                operation = exc.operation if isinstance(exc, ASRError) else "close_stream"
+                message = exc.message if isinstance(exc, ASRError) else str(exc)
+                self.errors.append(CloseError(code, operation, message))
+                return EventError(code, operation, message)
         return None
 
     def _native_step(self, state, pcm, *, finishing, cleaning):
@@ -276,11 +289,19 @@ class RealtimeExecutor:
         else:
             state.stream.decode()
             result, error = state.stream.get_result(), None
-        return replace(result, requested_language=state.session.config.language), error
+        if not isinstance(result, RecognitionResult):
+            raise ASRError("BACKEND_INCOMPATIBLE", "read_stream", "流应返回 RecognitionResult")
+        return replace(
+            result,
+            requested_language=state.session.config.language,
+            segments=deepcopy(result.segments),
+            words=deepcopy(result.words),
+            backend_metadata=deepcopy(result.backend_metadata),
+        ), error
 
     def _run(self):
         """发布时再次核对归属，取消后返回的模型结果不进入会话。"""
-        condition = self.runtime._condition
+        condition = self.runtime.coordination
         while True:
             with condition:
                 state, pcm, delay = self._select()
@@ -308,12 +329,15 @@ class RealtimeExecutor:
                 except ASRError as exc:
                     error = EventError(exc.code, exc.operation, exc.message)
                     self._close_stream(state)
+                except Exception as exc:
+                    error = EventError("INFERENCE_FAILED", "realtime", str(exc))
+                    self._close_stream(state)
             samples = state.accepted_samples if self.config.mode == "native" else len(pcm) // 2
             state.observation_sequence += 1
             event = SessionEvent(
                 kind="realtime_failed" if error else "realtime",
                 sequence=0,
-                unit=state.unit.ref,
+                unit=state.ref,
                 task_id=uuid4().hex,
                 audio_samples=samples,
                 audio_version=samples,
@@ -329,7 +353,7 @@ class RealtimeExecutor:
             )
             with condition:
                 if not state.invalid:
-                    state.session._record_realtime(state.unit, event)
+                    state.session.accept_realtime(event)
                     if error:
                         state.invalid = True
                         state.pending.clear()

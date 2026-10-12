@@ -1,18 +1,26 @@
 """自动输入拥有连续转换和待递交录音段，复用现有会话任务与事件。"""
 
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from hashlib import sha256
 from threading import RLock
 from time import monotonic
+from uuid import uuid4
 
 import numpy as np
 
 from realtime_asr.audio.conversion import AudioConverter, AudioFormat
 from realtime_asr.errors import ASRError
+from realtime_asr.results import RecognitionResult
+from realtime_asr.runtime.tasks import InferenceRequest
 from realtime_asr.segmentation.gate import SegmentationGate
-from realtime_asr.segmentation.vad import VoiceActivityDetector
-from realtime_asr.session.session import EarlyFinalResult, Session, _validate_timeout
+from realtime_asr.segmentation.vad import (
+    VoiceActivity,
+    VoiceDetector,
+    create_detector,
+    local_detector_factory,
+)
+from realtime_asr.session.session import FinalTask, Session, _AudioUnit, _validate_timeout
 from realtime_asr.text.endpoint import EndpointConfig, SentenceBoundaryPolicy, SentenceHint
 
 
@@ -22,7 +30,7 @@ class _AutomaticInput:
 
     converter: AudioConverter
     gate: SegmentationGate
-    detector: VoiceActivityDetector
+    detector: VoiceDetector
     segments: deque = field(default_factory=deque)
     state: str = "listening"
     cancelled_units: set = field(default_factory=set)
@@ -39,10 +47,45 @@ class _SentenceCut:
     covered_samples: int
 
 
+@dataclass(frozen=True)
+class EarlyFinalResult:
+    """固定提前输入的结果与摘要，仅由自动会话决定复用。"""
+
+    audio_samples: int
+    audio_digest: bytes
+    result: RecognitionResult
+    timing: tuple[float, float, float]
+
+    def matches_audio(self, pcm):
+        return self.audio_samples == len(pcm) // 2 and self.audio_digest == sha256(pcm).digest()
+
+
+@dataclass(frozen=True)
+class _AuxiliaryRequest:
+    """请求用途和锚点由自动会话保存，不进入通用执行队列。"""
+
+    request: InferenceRequest
+    purpose: str
+    hint: SentenceHint | None
+    epoch: int
+
+
+@dataclass
+class _AutomaticUnit(_AudioUnit):
+    """自动语音策略的单元状态；普通会话与运行时不操作这些字段。"""
+
+    optimization: dict = field(default_factory=dict)
+    auxiliary: _AuxiliaryRequest | None = None
+    endpoint_epoch: int = 0
+    early_result: EarlyFinalResult | None = None
+    pending_split: _SentenceCut | None = None
+    sentence_policy: SentenceBoundaryPolicy | None = None
+
+
 class AutomaticSession(Session):
     """宿主只连续送音频；封口和后台任务使用普通会话的同一实现。"""
 
-    def __init__(self, runtime, config, vad, segmentation, endpoint=None):
+    def __init__(self, runtime, config, vad, segmentation, endpoint=None, *, detector_factory=None):
         super().__init__(runtime, config)
         self._endpoint = endpoint if endpoint is not None else EndpointConfig()
         if not isinstance(self._endpoint, EndpointConfig):
@@ -66,20 +109,18 @@ class AutomaticSession(Session):
         if self._endpoint.punctuation_split and (
             not config.realtime
             or config.stabilization is None
-            or runtime._recognizer.config.backend != "whisper"
+            or not runtime.capabilities.word_timestamps
         ):
-            raise ASRError(
-                "BACKEND_INCOMPATIBLE", "configure", "句末切段需要稳定观察和 Whisper 词时间"
-            )
+            raise ASRError("BACKEND_INCOMPATIBLE", "configure", "句末切段需要稳定观察和词时间能力")
         self._optimization_totals = {}
         self._input_lock = RLock()
-        self._vad_config = vad
+        self._detector_factory = detector_factory or local_detector_factory(vad)
         self._segmentation = segmentation
         minimum = int(segmentation.min_recording_duration * 16000)
         pre_roll = int(segmentation.pre_roll_duration * 16000)
         if (
             config.max_audio_samples < max(minimum, pre_roll, 1)
-            or config.max_audio_samples > runtime._limits.max_task_audio_samples
+            or config.max_audio_samples > runtime.limits.max_task_audio_samples
             or segmentation.max_buffer_samples < config.max_audio_samples + pre_roll + 1024
         ):
             raise ASRError("INVALID_CONFIGURATION", "configure", "自动段长与缓冲预算不一致")
@@ -90,12 +131,12 @@ class AutomaticSession(Session):
         return _AutomaticInput(
             AudioConverter(self.config.format),
             SegmentationGate(self._segmentation, max_segment_samples=self.config.max_audio_samples),
-            VoiceActivityDetector(self._vad_config),
+            create_detector(self._detector_factory),
         )
 
     @property
     def input_state(self):
-        with self._runtime._condition:
+        with self._runtime.coordination:
             if self._closed:
                 return "closed"
             return self._input.state
@@ -107,7 +148,7 @@ class AutomaticSession(Session):
     @property
     def optimization_status(self):
         """读取本代次诊断副本；关闭后仍可检查最后的释放前结论。"""
-        with self._runtime._condition:
+        with self._runtime.coordination:
             return dict(self._optimization_totals)
 
     def _count_optimization(self, unit, name):
@@ -116,7 +157,7 @@ class AutomaticSession(Session):
 
     @property
     def pending_segments(self):
-        with self._input_lock, self._runtime._condition:
+        with self._input_lock, self._runtime.coordination:
             if self._input is None:
                 return 0
             unassigned = sum(segment.unit is None for segment in self._input.segments)
@@ -151,7 +192,7 @@ class AutomaticSession(Session):
     def feed_audio(self, chunk):
         """本会话串行转换和检测；不持有全局锁，也不等待 ASR 模型。"""
         with self._input_lock:
-            with self._runtime._condition:
+            with self._runtime.coordination:
                 state = self._require_input()
                 self._apply_cancellations(state)
                 self._pump(state)
@@ -163,7 +204,7 @@ class AutomaticSession(Session):
                 if exc.code not in ("INVALID_AUDIO", "INPUT_CANCELLED", "SESSION_CLOSED"):
                     self._fail_input(state, exc)
                 raise
-            with self._runtime._condition:
+            with self._runtime.coordination:
                 self._check_generation(state)
                 self._pump(state)
             return sum(frame.end_sample - frame.start_sample for frame in frames)
@@ -175,10 +216,17 @@ class AutomaticSession(Session):
 
     def _detect_frames(self, state, frames):
         for frame in frames:
-            activity = state.detector.detect(
-                frame.pcm, frame.start_sample, recording=state.gate.active is not None
-            )
-            with self._runtime._condition:
+            try:
+                activity = state.detector.detect(
+                    frame.pcm, frame.start_sample, recording=state.gate.active is not None
+                )
+                if not isinstance(activity, VoiceActivity):
+                    raise ASRError("VAD_FAILED", "detect_vad", "检测器应返回 VoiceActivity")
+            except ASRError:
+                raise
+            except Exception as exc:
+                raise ASRError("VAD_FAILED", "detect_vad", str(exc)) from exc
+            with self._runtime.coordination:
                 self._check_generation(state)
                 if state.cancel_current:
                     # 转换已经接纳本块；取消掉本块尚未登记的段，保留转换时钟。
@@ -196,7 +244,7 @@ class AutomaticSession(Session):
                         unit.endpoint_epoch += 1
                         unit.early_result = None
                         if unit.auxiliary is not None and unit.auxiliary.purpose == "early":
-                            self._runtime._cancel_queued(unit.auxiliary.task.task_id)
+                            self._cancel_auxiliary(unit)
                         self._count_optimization(unit, "speech_resumed")
                 text = self._active.last_realtime_text if self._active is not None else ""
                 pause = self._endpoint.pause_for(text, self._segmentation.post_speech_silence)
@@ -238,6 +286,68 @@ class AutomaticSession(Session):
                     return
                 raise
 
+    def _new_unit(self, ref, format):
+        return _AutomaticUnit(ref, AudioConverter(format))
+
+    def _dispatch_final(self, unit, task, pcm):
+        """只由本会话决定精确复用，调度器不读取提前策略状态。"""
+        early = unit.early_result
+        if early is not None and early.matches_audio(pcm):
+            unit.task = task
+            self._count_optimization(unit, "early_reused")
+            self._resolve(task, early.result, timing=early.timing)
+            return
+        if early is not None:
+            unit.optimization["early_reuse_rejected"] = "audio-version-changed"
+        super()._dispatch_final(unit, task, pcm)
+
+    def _event(self, unit, kind, **fields):
+        event = super()._event(unit, kind, **fields)
+        return replace(
+            event,
+            optimization=dict(unit.optimization) or None,
+            source="early-final"
+            if kind == "final" and unit.optimization.get("early_reused")
+            else event.source,
+        )
+
+    def _terminal(self, unit, kind, **fields):
+        if unit.auxiliary is not None:
+            self._runtime.cancel_task(unit.auxiliary.request.task.task_id)
+            unit.endpoint_epoch += 1
+        unit.auxiliary = None
+        unit.early_result = unit.pending_split = None
+        super()._terminal(unit, kind, **fields)
+
+    def _cancel_auxiliary(self, unit):
+        """只在实际移除队列任务后清空在途槽，执行中的容量仍保留。"""
+        if self._runtime.cancel_task(unit.auxiliary.request.task.task_id):
+            unit.auxiliary = None
+
+    def _submit_auxiliary(self, unit, *, purpose, hint=None):
+        """策略固定快照与用途；容量不足只记录优化诊断。"""
+        if unit.auxiliary is not None:
+            self._count_optimization(unit, "busy_skipped")
+            return False
+        pcm = bytes(unit.pcm)
+        samples = len(pcm) // 2
+        if not samples:
+            return False
+        task = FinalTask(unit.ref, uuid4().hex, samples, samples)
+        request = InferenceRequest(
+            task,
+            pcm,
+            self.config.language,
+            word_timestamps=purpose == "punctuation" or self.config.word_timestamps,
+            priority="auxiliary",
+        )
+        if not self._runtime.submit(request):
+            self._count_optimization(unit, "capacity_skipped")
+            return False
+        unit.auxiliary = _AuxiliaryRequest(request, purpose, hint, unit.endpoint_epoch)
+        self._count_optimization(unit, purpose + "_submitted")
+        return True
+
     def _begin_unit(self, format):
         """新录音段建立独立文本策略，不沿用上一段稳定或候选。"""
         ref = super()._begin_unit(format)
@@ -262,7 +372,7 @@ class AutomaticSession(Session):
             stable.stable_text, event.audio_samples, observation_text=stable.raw_text
         )
         if hint is not None:
-            self._runtime._submit_auxiliary(self, unit, purpose="punctuation", hint=hint)
+            self._submit_auxiliary(unit, purpose="punctuation", hint=hint)
 
     def _apply_sentence_split(self, state):
         """在输入拥有者与协调锁内提交切分，保留快照之后新增的右侧音频。"""
@@ -284,8 +394,8 @@ class AutomaticSession(Session):
             return
         right = state.gate.split_at(segment.start_sample + cut)
         # 已启动的旧实时观察可能覆盖右侧，先失效，再封口固定左段。
-        if unit.realtime is not None:
-            self._runtime._realtime.cancel_unit(unit)
+        if self.config.realtime:
+            self._runtime.realtime.cancel_unit(unit.ref)
             unit.realtime_event = None
         unit.pcm[:] = segment.pcm
         segment.delivered_samples = cut
@@ -306,34 +416,39 @@ class AutomaticSession(Session):
             and (state.gate.silence_samples >= confirmed + int(threshold * 16000))
         ):
             state.early_requested = True
-            self._runtime._submit_auxiliary(self, unit, purpose="early")
+            self._submit_auxiliary(unit, purpose="early")
 
-    def _resolve_auxiliary(self, job, result, error, timing):
-        """只回交有效单元；在途失效任务的容量由运行时实际返回后释放。"""
-        unit = job.unit
-        if unit.auxiliary is job:
-            unit.auxiliary = None
+    def accept_completion(self, request, result, error, timing):
+        """通用结果以任务标识交回，策略用途只在本会话解析。"""
+        if request.priority == "final":
+            return super().accept_completion(request, result, error, timing)
+        unit = self._units.get(request.task.unit.unit_id)
+        if unit is None or unit.ref != request.task.unit:
+            return
+        context = unit.auxiliary
+        if context is None or context.request.task.task_id != request.task.task_id:
+            return
+        unit.auxiliary = None
         if (
             self._closed
-            or self._units.get(unit.ref.unit_id) is not unit
             or unit.events is not None
             or self._active is not unit
-            or (job.purpose == "early" and unit.endpoint_epoch != job.epoch)
+            or (context.purpose == "early" and unit.endpoint_epoch != context.epoch)
         ):
             return
         if error is not None:
-            self._count_optimization(unit, job.purpose + "_failed")
+            self._count_optimization(unit, context.purpose + "_failed")
             unit.optimization["last_error"] = error.code
             return
-        self._count_optimization(unit, job.purpose + "_completed")
-        if job.purpose == "early":
-            unit.optimization["early_samples"] = job.task.audio_samples
-            unit.optimization["early_task_id"] = job.task.task_id
+        self._count_optimization(unit, context.purpose + "_completed")
+        if context.purpose == "early":
+            unit.optimization["early_samples"] = request.task.audio_samples
+            unit.optimization["early_task_id"] = request.task.task_id
             unit.early_result = EarlyFinalResult(
-                job.task.audio_samples, sha256(job.pcm).digest(), result, timing
+                request.task.audio_samples, sha256(request.pcm).digest(), result, timing
             )
         else:
-            cut = SentenceBoundaryPolicy.locate(job.hint, result)
+            cut = SentenceBoundaryPolicy.locate(context.hint, result)
             if cut is None:
                 self._count_optimization(unit, "punctuation_unavailable")
                 unit.optimization["punctuation_skip_reason"] = (
@@ -342,7 +457,7 @@ class AutomaticSession(Session):
                     else "anchor-mismatch"
                 )
             else:
-                unit.pending_split = _SentenceCut(job.hint, cut, job.task.audio_samples)
+                unit.pending_split = _SentenceCut(context.hint, cut, request.task.audio_samples)
 
     def _apply_cancellations(self, state):
         """只在输入拥有者内改动分句状态，控制线程只登记失效目标。"""
@@ -363,7 +478,7 @@ class AutomaticSession(Session):
 
     def cancel(self, target=None):
         """立即失效任务；检测线程在下一边界清除自己的候选与缓存。"""
-        with self._runtime._condition:
+        with self._runtime.coordination:
             self._require_open()
             state = self._input
             current = state.gate.active
@@ -374,13 +489,13 @@ class AutomaticSession(Session):
                 changed = True
             if changed and ref is not None:
                 state.cancelled_units.add(ref)
-            self._runtime._condition.notify_all()
+            self._runtime.coordination.notify_all()
             return changed
 
     def finish_input(self):
         """只刷新一次源尾部；终止监听但不取消已固定任务。"""
         with self._input_lock:
-            with self._runtime._condition:
+            with self._runtime.coordination:
                 self._require_open()
                 state = self._input
                 if state.state == "failed":
@@ -394,13 +509,13 @@ class AutomaticSession(Session):
                 except ASRError as exc:
                     self._fail_input(state, exc)
                     raise
-            with self._runtime._condition:
+            with self._runtime.coordination:
                 self._check_generation(state)
                 self._pump(state)
 
     def finish(self):
         """手动封口当前自动段，继续监听；容量失败可原样重试。"""
-        with self._input_lock, self._runtime._condition:
+        with self._input_lock, self._runtime.coordination:
             state = self._require_input()
             self._apply_cancellations(state)
             segment = state.gate.seal()
@@ -417,10 +532,8 @@ class AutomaticSession(Session):
 
     def _wait_token(self):
         """只比较会影响递交或消费的公开流程状态，防止等待前漏通知。"""
-        realtime = self._runtime._realtime
         return (
-            self._runtime._tasks,
-            len(realtime.states) if realtime else 0,
+            *self._runtime.progress_token,
             tuple(unit.ref for unit in self._units.values() if unit.pending_split is not None),
             self._next_event() is not None,
             id(self._input),
@@ -432,7 +545,7 @@ class AutomaticSession(Session):
         _validate_timeout(timeout, allow_none=True)
         deadline = None if timeout is None else monotonic() + timeout
         while True:
-            with self._input_lock, self._runtime._condition:
+            with self._input_lock, self._runtime.coordination:
                 if self._closed:
                     return None
                 state = self._input
@@ -445,15 +558,15 @@ class AutomaticSession(Session):
             remaining = None if deadline is None else max(0, deadline - monotonic())
             if remaining == 0:
                 return None
-            with self._runtime._condition:
+            with self._runtime.coordination:
                 if token == self._wait_token():
-                    self._runtime._condition.wait(remaining)
+                    self._runtime.coordination.wait(remaining)
                 if self._input is not state:
                     return None
 
     def _fail_input(self, state, error):
         """检测错误只失败尚未固定的当前输入，不改写已提交段。"""
-        with self._runtime._condition:
+        with self._runtime.coordination:
             if self._input is not state or self._closed:
                 return
             if self._active is not None and self._active.task is None:
@@ -465,7 +578,7 @@ class AutomaticSession(Session):
 
     def close(self):
         """控制不等待检测锁；正在执行的检测保留自己的本地引用。"""
-        with self._runtime._condition:
+        with self._runtime.coordination:
             change = Session.close(self)
             self._input = None
             return change
@@ -473,7 +586,7 @@ class AutomaticSession(Session):
     def reset(self):
         """锁外重新准备检测；旧调用不能向新代次登记结果。"""
         fresh = self._new_input()
-        with self._runtime._condition:
+        with self._runtime.coordination:
             change = Session.reset(self)
             self._input = fresh
             self._vad_info = fresh.detector.info

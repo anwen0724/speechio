@@ -4,6 +4,7 @@ import hashlib
 from dataclasses import dataclass
 from math import isfinite
 from pathlib import Path
+from typing import Protocol
 
 import numpy as np
 
@@ -42,6 +43,42 @@ class VoiceActivity:
     webrtc: bool
     silero: bool
     rms: float
+
+
+class VoiceDetector(Protocol):
+    """一个输入代次的检测上下文，与 ASR 转写引擎具有不同职责。"""
+
+    info: dict
+
+    def detect(self, pcm: bytes, start_sample: int, *, recording=False) -> VoiceActivity:
+        """提供语音活动记录，不创建任务或发布会话事件。"""
+
+    def reset(self):
+        """取消当前录音时重置检测上下文，保留连续源时钟。"""
+
+
+def local_detector_factory(config):
+    """只组装默认检测路线；ONNX 与 WebRTC 选择不泄漏到自动会话。"""
+    if not isinstance(config, VadConfig):
+        raise ASRError("INVALID_CONFIGURATION", "configure", "需要 VadConfig")
+    return lambda: VoiceActivityDetector(config)
+
+
+def create_detector(factory):
+    """工厂属于模型外部边界，只在取得新上下文时检查契约。"""
+    try:
+        detector = factory()
+    except ASRError:
+        raise
+    except Exception as exc:
+        raise ASRError("VAD_MODEL_INVALID", "prepare_vad", str(exc)) from exc
+    if (
+        not isinstance(getattr(detector, "info", None), dict)
+        or not callable(getattr(detector, "detect", None))
+        or not callable(getattr(detector, "reset", None))
+    ):
+        raise ASRError("VAD_MODEL_INVALID", "prepare_vad", "检测器不符合 VoiceDetector 契约")
+    return detector
 
 
 class VoiceActivityDetector:

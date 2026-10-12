@@ -255,7 +255,7 @@ def _execute(args, stdin, output):
         )
         realtime = (
             RealtimeConfig(
-                mode="snapshot" if args.backend == "whisper" else "native",
+                mode=config.capabilities.realtime_mode,
                 acoustic_boundaries=args.acoustic_boundaries,
             )
             if (args.realtime)

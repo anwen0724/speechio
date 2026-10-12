@@ -5,6 +5,7 @@ from ipaddress import ip_address
 from math import isfinite
 
 from realtime_asr import ASRError, RecognizerConfig
+from realtime_asr.backends.base import validate_engine
 
 
 def is_loopback(host):
@@ -20,7 +21,8 @@ def is_loopback(host):
 class ServerConfig:
     """启动字段固定；运行字段通过明确的配置更新重新建立值。"""
 
-    recognizer: RecognizerConfig
+    recognizer: RecognizerConfig | None = None
+    engine: object = None
     host: str = "127.0.0.1"
     port: int = 8000
     token: str | None = None
@@ -48,7 +50,20 @@ class ServerConfig:
     send_timeout: float = 5
     close_timeout: float = 5
 
+    @property
+    def capabilities(self):
+        """配置只使用提供方声明，不能根据后端名称再推导能力。"""
+        return self.engine.capabilities if self.engine is not None else self.recognizer.capabilities
+
     def __post_init__(self):
+        if (self.recognizer is None) == (self.engine is None) or (
+            self.recognizer is not None and not isinstance(self.recognizer, RecognizerConfig)
+        ):
+            raise ASRError(
+                "INVALID_CONFIGURATION", "configure_server", "本地配置与引擎应且仅应提供一个"
+            )
+        if self.engine is not None:
+            validate_engine(self.engine)
         positive_ints = (
             self.port,
             self.max_sessions,
@@ -70,8 +85,7 @@ class ServerConfig:
             self.close_timeout,
         )
         if (
-            not isinstance(self.recognizer, RecognizerConfig)
-            or any(type(value) is not int or value <= 0 for value in positive_ints)
+            any(type(value) is not int or value <= 0 for value in positive_ints)
             or any(
                 type(value) not in (int, float) or not isfinite(value) or value <= 0
                 for value in seconds
@@ -89,10 +103,7 @@ class ServerConfig:
             )
             or type(self.realtime) is not bool
             or type(self.acoustic_boundaries) is not bool
-            or (
-                self.acoustic_boundaries
-                and (not self.realtime or self.recognizer.backend != "whisper")
-            )
+            or (self.acoustic_boundaries and (not self.realtime or not self.capabilities.snapshot))
             or type(self.proxy_tls) is not bool
         ):
             raise ASRError("INVALID_CONFIGURATION", "configure_server", "服务配置无效")
