@@ -243,6 +243,10 @@ def _run_input(runtime, args, output, index, source, format, blocks, *, micropho
 def main(argv=None, *, stdin=None, stdout=None, stderr=None):
     """安装入口与模块入口共用同一流程；标准流由进程拥有。"""
     argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] in ("models", "gpu-runtime"):
+        from realtime_asr.cli.resources import main as resources
+
+        return resources(argv[1:], gpu=argv[0] == "gpu-runtime", stdout=stdout)
     if argv and argv[0] == "serve":
         from realtime_asr.server.__main__ import main as serve
 

@@ -550,6 +550,10 @@ microphone = [
     { name = "pyaudio" },
     { name = "soxr" },
 ]
+models = [
+    { name = "huggingface-hub" },
+    { name = "requests" },
+]
 nemotron = [
     { name = "onnxruntime" },
     { name = "requests" },
@@ -590,6 +594,7 @@ requires-dist = [
     { name = "fastapi", marker = "extra == 'server'", specifier = ">=0.115,<1" },
     { name = "faster-whisper", marker = "extra == 'whisper'", specifier = "==1.2.1" },
     { name = "httpx", marker = "extra == 'client'", specifier = ">=0.28,<1" },
+    { name = "huggingface-hub", marker = "extra == 'models'", specifier = ">=0.34,<1" },
     { name = "huggingface-hub", marker = "extra == 'whisper'", specifier = ">=0.34,<1" },
     { name = "numpy", specifier = ">=2,<3" },
     { name = "onnxruntime", marker = "extra == 'nemotron'", specifier = ">=1.31,<2" },
@@ -599,6 +604,7 @@ requires-dist = [
     { name = "pvporcupine", marker = "extra == 'wake-porcupine'", specifier = "==4.0.3" },
     { name = "pyaudio", marker = "extra == 'microphone'", specifier = "==0.2.14" },
     { name = "pydantic", marker = "extra == 'server'", specifier = ">=2.11,<3" },
+    { name = "requests", marker = "extra == 'models'", specifier = ">=2.32,<3" },
     { name = "requests", marker = "extra == 'nemotron'", specifier = ">=2.32,<3" },
     { name = "sherpa-onnx", marker = "extra == 'nemotron'", specifier = "==1.13.4" },
     { name = "soundfile", marker = "extra == 'audio'", specifier = ">=0.13,<0.14" },
@@ -610,7 +616,7 @@ requires-dist = [
     { name = "websocket-client", marker = "extra == 'client'", specifier = ">=1.8,<2" },
     { name = "websockets", marker = "extra == 'server'", specifier = ">=15,<17" },
 ]
-provides-extras = ["whisper", "nemotron", "audio", "vad", "wake-porcupine", "wake-openwakeword", "microphone", "server", "client"]
+provides-extras = ["models", "whisper", "nemotron", "audio", "vad", "wake-porcupine", "wake-openwakeword", "microphone", "server", "client"]
 
 [package.metadata.requires-dev]
 dev = [

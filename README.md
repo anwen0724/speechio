@@ -598,7 +598,7 @@ Spec、实施 Plan 与状态入口分别为 [P0 Spec](docs/specs/runtime-and-cor
 
 默认关闭唤醒。自动持续输入可以在宿主提供 `WakeConfig` 后启用；手动会话和 HTTP 整段保持直接识别。SDK 的 `create_auto_session(..., wake=...)` 使用本地 CPU Porcupine 或 OpenWakeWord，检测状态按输入代次隔离。激活宽限、正文等待、固定前置裁剪与继续窗口都按标准音频样本位置推进。
 
-Porcupine 安装 `wake-porcupine` extra，设置 `PICOVOICE_ACCESS_KEY`，选择内置 keywords 或本地 .ppn 文件；非英语参数使用本地 .pv。密钥不写入命令参数或服务协议。OpenWakeWord 安装 `wake-openwakeword` extra，显式提供关键词 .onnx、melspectrogram.onnx 和 embedding_model.onnx。模型准备时不隐式联网，具体模型工具见后续部署说明。项目 uv 配置只排除 openwakeword 0.6.0 的 TFLite 依赖，因为当前路线固定使用 ONNX。项目外的 ONNX 安装可使用 [排除文件](packaging/wake-onnx-excludes.txt)；不将此文件用于任意其他模型环境。
+Porcupine 安装 `wake-porcupine` extra，设置 `PICOVOICE_ACCESS_KEY`，选择内置 keywords 或本地 .ppn 文件；非英语参数使用本地 .pv。密钥不写入命令参数或服务协议。OpenWakeWord 安装 `wake-openwakeword` extra，显式提供关键词 .onnx、melspectrogram.onnx 和 embedding_model.onnx。模型准备时不隐式联网，具体模型工具见[部署说明](packaging/README.md)。项目 uv 配置只排除 openwakeword 0.6.0 的 TFLite 依赖，因为当前路线固定使用 ONNX。项目外的 ONNX 安装可使用 [排除文件](packaging/wake-onnx-excludes.txt)；不将此文件用于任意其他模型环境。
 
 本地与服务宿主使用 `--wake`、`--wake-backend`、`--wake-keywords` 或 `--wake-models`、`--wake-feature-dir`，并可配置 `--wake-activation-delay`、`--wake-speech-timeout`、`--wake-trim-duration` 与 `--wake-followup-window`。服务配置后，远程 CLI 的 `--mode auto --wake` 只申请该宿主角色。默认继续窗口为零，独立唤醒词与正文之间有停顿时，应按实际使用配置有限窗口。
 
@@ -607,3 +607,21 @@ Porcupine 安装 `wake-porcupine` extra，设置 `PICOVOICE_ACCESS_KEY`，选择
 公开 `Session.audio_snapshot()` 提供当前单元已经确定归属的标准音频副本及半开范围。自动模式不包含尚未确定归属的回溯尾部；观察不结束输入。可以通过 [录音保存示例](examples/save_audio.py)保存标准 WAV，或使用 [热键听写示例](examples/hotkey_dictation.py)在终端用 Space 开始／结束、Esc 取消并退出。热键不接管其他应用。
 
 Porcupine 的正向实际检测仍需 AccessKey，人工口述、首词裁剪质量、终端热键与其他平台应分别验收。当前验证范围见 STATUS，不把受控检测或浏览器模拟采集当成人工设备验收。
+
+
+## 模型工具与部署交付
+
+正式资源命令不加载识别模型，默认离线。显式准备与校验示例：
+
+```powershell
+uv run --no-sync realtime-asr models list
+uv run --no-sync realtime-asr models prepare --kind whisper --path .runtime/models/whisper-tiny --download
+uv run --no-sync realtime-asr models verify --path .runtime/models/whisper-tiny
+uv run --no-sync realtime-asr gpu-runtime verify --path .runtime/cudnn/9.16.0.29
+```
+
+模型工具支持 Whisper tiny、Nemotron 的 560ms／1120ms／80ms、固定 Silero v6 和 OpenWakeWord Alexa ONNX 资源。Porcupine 自定义文件和 AccessKey 由使用者提供。下载必须明确 --download；损坏或冲突文件不会被重写为成功缓存。
+
+[构建与部署说明](packaging/README.md)提供 uv 环境、按用途安装 extras、完整 wheel、Windows GPU 边界和 Linux CPU 镜像的运行命令。CPU 镜像包含同一服务包及浏览器静态资源，使用非 root 用户、只读模型与 TLS 卷，以及运行时 Token。运行包不需要 Node 或 evals。
+
+本次在四种新建 Windows 环境及项目外完成实际 CPU／GPU、CLI、服务、客户端、Chrome 和保存示例验证；Linux CPU 镜像完成实际 TLS／鉴权、两会话长输入、延后消费、健康与正常停止。支持仅限实测组合，详细证据和仍未验收事项见 [交付记录](docs/acceptance/p10-delivery.md)。正式语料评分、人工设备、Porcupine 正向及双实时收益没有被这些结果代替。

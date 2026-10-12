@@ -15,6 +15,7 @@ realtime-asr-server = "realtime_asr.server.__main__:main"
 realtime-asr-remote = "realtime_asr.client.__main__:main"
 
 [project.optional-dependencies]
+models = ["huggingface-hub>=0.34,<1", "requests>=2.32,<3"]
 whisper = ["faster-whisper==1.2.1", "huggingface-hub>=0.34,<1"]
 nemotron = ["sherpa-onnx==1.13.4", "onnxruntime>=1.31,<2", "requests>=2.32,<3"]
 audio = ["soundfile>=0.13,<0.14", "soxr>=1,<2"]
