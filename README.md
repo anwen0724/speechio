@@ -1,8 +1,8 @@
 # realtime-asr
 
-独立实时 ASR 项目。当前提供同步整段识别 SDK、连续会话 SDK、基本实时识别、自动分句、麦克风采集和本地命令行。支持完整音频、有限分块、本地文件、连续输入及原始 stdin。真实评估入口独立放在 `evals/`。
+独立实时 ASR 项目。当前提供同步整段识别 SDK、连续会话 SDK、基本实时识别、自动分句、麦克风采集、本地命令行及 HTTP／WebSocket 共享服务。Python 远程客户端和最小浏览器入口调用同一服务协议。真实评估入口独立放在 `evals/`。
 
-同步 SDK 分块入口在全部输入结束后返回完整结果。连续会话可在上一单元推理期间接收下一单元，通过实时与最终事件消费结果。基本实时支持 Whisper 完整快照和 Nemotron 原生增量。自动会话通过双 VAD 确认录音段，提供前置保护与统一回溯。麦克风与命令行复用这些接口。实时稳定与合并、服务、浏览器界面和唤醒尚未实现。产品范围见 [PRD](docs/PRD.md)，系统设计见 [Architecture](docs/ARCHITECTURE.md)，实际验收见 [STATUS](docs/STATUS.md)。
+同步 SDK 分块入口在全部输入结束后返回完整结果。连续会话可在上一单元推理期间接收下一单元，通过实时与最终事件消费结果。基本实时支持 Whisper 完整快照和 Nemotron 原生增量。自动会话通过双 VAD 确认录音段，提供前置保护与统一回溯。接入层复用这些接口；实时稳定与合并、候选、完整浏览器工作台和唤醒仍待后续阶段。产品范围见 [PRD](docs/PRD.md)，系统设计见 [Architecture](docs/ARCHITECTURE.md)，实际验收见 [STATUS](docs/STATUS.md)。
 
 ## 代码结构
 
@@ -14,6 +14,7 @@ src/realtime_asr/
 ├── __main__.py              # python -m realtime_asr
 ├── errors.py                # 公共错误与错误记录
 ├── results.py               # 识别与关闭结果
+├── protocol.py              # 共享二进制音频包编码，不依赖网络框架
 ├── audio/
 │   ├── conversion.py        # 格式、连续转换、凑帧与标准样本位置
 │   ├── files.py             # 标准 WAV 与通用文件有限块解码
@@ -23,6 +24,16 @@ src/realtime_asr/
 │   ├── input.py             # raw stdin 与可停止管道读取
 │   ├── output.py            # 文本与 JSONL 出口
 │   └── runner.py            # 公开 SDK 接入与自有资源关闭
+├── server/
+│   ├── app.py               # HTTP / WebSocket 与 ASGI 生命周期
+│   ├── config.py            # 启动、容量、TLS 与运行配置
+│   ├── schemas.py           # 外部协议严格校验
+│   ├── service.py           # 共享运行时与自有会话
+│   ├── connection.py        # 连接控制、有界发送与排空
+│   └── __main__.py          # 正式服务启动器
+├── client/
+│   ├── connection.py        # RemoteClient / RemoteSession
+│   └── __main__.py          # remote 文件、stdin 与客户端麦克风
 ├── session/
 │   ├── session.py           # 单元归属、控制、任务与有序事件
 │   └── automatic.py         # 持续源输入与待递交自动段
@@ -46,9 +57,11 @@ evals/p2/                    # 连续会话真实验收
 evals/p3/                    # 实时联合运行与资源测量
 evals/p4/                    # 自动分句与边界真实验收
 evals/p5/                    # 麦克风、CLI 与项目外安装验证
+evals/p6/                    # 真实网络、模型、浏览器、TLS 与安装验证
 evals/module_organization.py # 目录迁移前后的真实回放
 
 examples/                    # 只通过公开 SDK 使用产品
+web/                         # React / TypeScript / Vite 浏览器源码
 tests/
 ├── audio/                   # 音频格式、转换与文件
 ├── cli/                     # 命令行公开行为与外部输入输出
@@ -56,6 +69,8 @@ tests/
 ├── segmentation/            # 检测、分句与边界保护
 ├── backends/                # 模型适配与原生流
 ├── runtime/                 # 模型资源与执行调度
+├── server/                  # 协议、归属、并发、容量与清理
+├── web/                     # 外部网络可控的浏览器行为测试
 └── evals/                   # 评估工具行为
 ```
 
@@ -67,6 +82,8 @@ tests/
 
 ## 环境与安装
 
+网络服务安装 `server`，远程接入安装 `client`。`server` 组不包含识别后端、VAD、SoundFile 或 PyAudio；`client` 组不包含模型或设备库。文件客户端另需 `audio`，客户端麦克风另需 `microphone`。这些依赖组可以按使用范围组合。
+
 使用 uv 和 64 位 CPython 3.12。开发解释器由 `.python-version` 固定为已安装的 3.12.14，Python 依赖由 `uv.lock` 锁定。以下命令在项目根目录执行：
 
 ```powershell
@@ -76,7 +93,7 @@ uv run --no-sync python -m evals.p0 environment
 
 uv 建立根目录 `.venv`，不向 Anaconda 或其他项目环境安装依赖。`uv run` 也应带上所需 extras；省略 extras 会按较小的依赖集合重新同步环境。
 
-基础包只安装 NumPy，后端依赖按 extras 安装。P0 评估通过项目根目录的 `evals/` 运行，使用开发依赖组中的 SciPy 和 psutil，M10 使用 `tests/`。wheel 只包含 `src/realtime_asr/` 中的核心、运行支持和正式 CLI，不包含评估工具、测试或语料。源码分发包保留评估和测试源码，供开发验证使用。
+基础包只安装 NumPy，后端依赖按 extras 安装。P0 评估通过项目根目录的 `evals/` 运行，使用开发依赖组中的 SciPy 和 psutil，M10 使用 `tests/`。wheel 包含 `src/realtime_asr/` 的正式模块及浏览器构建资源，不包含评估工具、测试、语料或 Node.js 环境。源码分发包保留评估、测试及前端源码，供开发验证使用。
 
 ## 本地命令行与麦克风
 
@@ -134,6 +151,73 @@ with MicrophoneInput(MicrophoneConfig()) as microphone:
 将采集器的实际 `format` 用于 `SessionConfig`，再把原始块交给 `session.feed_audio()`。采集器不重采样，也不关闭外部会话。需要完整尾部时，先调用 `close()` 并检查 CloseResult，再读取尚未消费的已接收队列；pending 表示在途读取或清理仍未退出，不代表已释放。
 
 具体契约见 [P5 Spec](docs/specs/microphone-and-cli.md)。`python -m evals.p5` 显式运行真实模型和本机设备验证，不作为产品运行入口。公开语料对照、真实设备采集和人工口述质量分别记录；当前实际验证及未验收事项见 [P5 Plan](docs/plans/p5-microphone-and-cli.md)。
+
+## 网络服务与远程接入
+
+服务只访问显式指定的本地模型。先同步依赖，再运行正式入口；没有 VAD 时只开放手动输入。
+
+```powershell
+uv sync --locked --extra whisper --extra vad --extra server --extra client --extra audio --extra microphone
+uv run --no-sync realtime-asr serve --model .runtime/models/whisper-tiny --vad-model .runtime/models/vad/silero-v6.onnx
+```
+
+`realtime-asr-server` 和 `python -m realtime_asr.server` 使用同一启动器。默认监听 `127.0.0.1:8000`，一个 worker 共享一个 ASRRuntime。存活接口是 `/api/v1/live`；模型准备中 `/api/v1/ready` 返回 503，准备成功后返回 200。容量满与模型未就绪分别报告。
+
+HTTP 的 `POST /api/v1/transcribe` 接收 `application/octet-stream` 原始小端音频。用 sample_rate、channels、sample_type 和可选 language 声明输入，默认 16 kHz、单声道、int16；不提交 WAV 文件头或服务器路径。WebSocket 使用 `/api/v1/ws`，第一条 open 取得新会话；音频包和控制都绑定这个会话及代次。完整字段与错误见 [P6 Spec](docs/specs/network-service.md)。
+
+远程客户端不需要本地识别模型。文件命令先解码再用 HTTP 递交；stdin 和麦克风用 WebSocket。全局参数放在输入子命令之前：
+
+```powershell
+uv run --no-sync realtime-asr remote --url http://127.0.0.1:8000 --language zh-CN file first.wav second.wav
+uv run --no-sync realtime-asr remote --url http://127.0.0.1:8000 --output jsonl stdin --sample-rate 48000 --channels 2
+uv run --no-sync realtime-asr remote --url http://127.0.0.1:8000 mic --mode auto --realtime --duration 10
+```
+
+`realtime-asr-remote` 与 `python -m realtime_asr.client` 使用同一客户端入口。stdin 是原始声明格式，麦克风是客户端所在电脑的设备。text 只把最终正文写到 stdout；JSONL 保留 ready、应答、核心事件、错误和 closed。输入读取与结果输出独立，标准流不主动关闭。
+
+Python 接入使用 `realtime_asr.client.RemoteClient`。以下示例中的 pcm 是调用方已有的完整 PCM16 字节：
+
+```python
+from realtime_asr.client import RemoteClient
+
+with RemoteClient("http://127.0.0.1:8000") as client:
+    response = client.transcribe(pcm, language="zh-CN")
+    print(response["result"]["text"])
+
+    with client.connect(mode="manual", realtime=False, language="zh-CN") as session:
+        session.start()
+        session.feed_audio(pcm)
+        session.finish()
+        while True:
+            message = session.get_message(timeout=5)
+            if message is None:
+                continue
+            event = message.get("event", {})
+            if event.get("kind") == "final":
+                print(event["result"]["text"])
+            if event.get("kind") in ("completed", "failed", "cancelled"):
+                break
+```
+
+客户端 send 与 receive 可独立调用；正常 close 会先排空，`close(graceful=False)` 立即断开并取消本连接工作。网络失败不会自动重连或重放音频。其他会话和共享模型继续由服务管理。服务配置、指标和能力通过 `/api/v1/config`、`metrics` 和 `capabilities` 查询；PATCH 仅接受 Spec 声明的运行字段。
+
+配置 Token 后，HTTP 使用 Bearer，浏览器在第一条 open 递交；启动器与 remote 默认读取 `REALTIME_ASR_TOKEN`，可用 `--token-env` 指定变量。Token 不放入 URL。非回环监听必须同时提供 Token 和 TLS 证书／私钥，或者显式声明代理 TLS 与可信代理地址；可信代理列表不能包含 `*`。HTTPS/WSS 客户端默认校验证书，可向 RemoteClient 传入显式配置 CA 的 SSLContext。
+
+## 最小浏览器入口与构建
+
+浏览器页面由 React、TypeScript 和 Vite 构建，源文件在 web。页面提供连接、自动／手动采集、结束、取消、重置、断开、预览、最终列表和复制。AudioWorklet 递交设备实际采样率的 float32 单声道，服务完成连续转换。自动停止使用 EOF，重新开始时建立新代次；重置不删除已展示的最终历史。
+
+开发时使用当前 Node.js 24。先构建页面，再启动 Python 服务；根路径 `http://127.0.0.1:8000/` 提供同源页面。缺少构建时根路径明确返回 503，API 仍独立可用。
+
+```powershell
+npm --prefix web ci
+npm --prefix web run build
+uv build
+```
+
+静态资源构建到 `src/realtime_asr/server/static/`，随 wheel 交付；已构建的安装包不需要 Node.js。node_modules 与静态生成目录不进入 Git。若使用 Vite 开发服务器，`npm --prefix web run dev` 通过 `/api` 代理到本地 8000 服务。
+
+页面只保留当前内存中的 Token。打开失败、输入失败或连接断开时释放自有设备流和音频图；正常停止先递交短尾再释放采集资源，连接继续交付该输入的结果。实时失败是可观察错误，不能冒充最终，也不结束其他有效任务。最小入口不包含后续稳定、候选或完整时间线。
 
 ## Python SDK
 
@@ -359,9 +443,14 @@ uv run --locked --extra whisper --extra nemotron python -m evals.p0 run
 uv run --no-sync python -m unittest discover -s tests -t . -v
 uv run --no-sync ruff check src evals tests examples
 uv run --no-sync ruff format --check src evals tests examples
+npm --prefix web run check
+npm --prefix web run format:check
+npm --prefix web run build
 uv build
 ```
 
 类和方法的中文注释说明职责与业务规则。模型外部边界替身用于失败及调度检查，不能作为真实模型的文本或性能证据。
+
+P6 的真实网络验证使用 `uv run --no-sync python -m evals.p6`，要求已准备本地 CPU／CUDA Whisper、Nemotron、VAD、公开录音、本机 Chrome 和 OpenSSL。验证器自己启动和关闭回环服务，记录 HTTP、两种 WebSocket、远程 CLI、浏览器和证书验证。独立 wheel 的基础／client／server 环境检查由 `evals/p6/installed_check.py` 执行，`--environments` 指定三个独立环境的父目录，`--outside` 指定项目目录之外的工作目录。公开音源及自动化浏览器不替代人工口述、其他平台或正式语料质量验收。
 
 Spec、实施 Plan 与状态入口分别为 [P0 Spec](docs/specs/runtime-and-corpus-baseline.md)、[P0 Plan](docs/plans/p0-runtime-and-corpus-baseline.md) 和 [STATUS](docs/STATUS.md)。

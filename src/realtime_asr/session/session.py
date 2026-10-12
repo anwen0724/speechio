@@ -101,6 +101,7 @@ class SessionEvent:
     boundary: SegmentBoundary | None = None
     stream_start_sample: int | None = None
     stream_end_sample: int | None = None
+    submitted_at_monotonic: float | None = None
 
 
 @dataclass(frozen=True)
@@ -265,7 +266,7 @@ class Session:
             self._last_task = task
             return task
 
-    def _resolve(self, task, result=None, error=None):
+    def _resolve(self, task, result=None, error=None, *, timing=None):
         """后台结果只登记到仍有效的单元；消费顺序由会话决定。"""
         unit = self._units.get(task.unit.unit_id)
         if unit is None or unit.ref != task.unit or unit.events is not None:
@@ -275,6 +276,17 @@ class Session:
         else:
             self._terminal(unit, "final", result=result)
             unit.events.append(self._event(unit, "completed"))
+        if timing is not None:
+            submitted, started, completed = timing
+            unit.events = deque(
+                replace(
+                    event,
+                    submitted_at_monotonic=submitted,
+                    started_at_monotonic=started,
+                    completed_at_monotonic=completed,
+                )
+                for event in unit.events
+            )
         self._runtime._condition.notify_all()
 
     def _record_realtime(self, unit, event):

@@ -1,0 +1,128 @@
+.panel-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+.panel-heading h2 {
+  margin: 0;
+  font-size: 17px;
+}
+.status,
+.tag {
+  font-size: 12px;
+  border-radius: 20px;
+  padding: 4px 10px;
+  background: #edf4f1;
+  color: #3f6d61;
+  white-space: nowrap;
+}
+.status.recording {
+  background: #daf4e9;
+  color: #076749;
+}
+.status.error {
+  background: #ffebe6;
+  color: #a42b18;
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  font-size: 13px;
+  color: #556760;
+  margin: 16px 0;
+}
+.field input,
+.field select {
+  min-width: 0;
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #fafcfb;
+  color: #192c37;
+}
+button {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px 12px;
+  background: white;
+  cursor: pointer;
+  color: #24483f;
+}
+button:hover:not(:disabled) {
+  background: #edf6f2;
+  border-color: #7baa9c;
+}
+button:disabled {
+  opacity: 0.42;
+  cursor: default;
+}
+button.primary {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+.actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 9px;
+  margin: 22px 0;
+}
+.hint,
+.empty {
+  color: #7b8a84;
+  font-size: 13px;
+}
+.error {
+  padding: 12px;
+  background: #fff1ed;
+  color: #9d341f;
+  border-radius: 8px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.preview {
+  color: #0e7966;
+  font-size: 20px;
+  overflow-wrap: anywhere;
+}
+.finals {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 500px;
+  overflow-y: auto;
+}
+.finals li {
+  border-top: 1px solid var(--line);
+  padding: 16px 0;
+}
+.finals li p {
+  margin: 7px 0 0;
+  font-size: 17px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.result-meta {
+  font-size: 11px;
+  color: #7c8b83;
+}
+.count {
+  color: #82958a;
+  font-size: 13px;
+}
+.text-button {
+  padding: 3px 7px;
+  font-size: 12px;
+  border: 0;
+  color: var(--accent);
+}
+input:focus-visible,
+select:focus-visible,
+button:focus-visible {
+  outline: 2px solid #178d79;
+  outline-offset: 3px;
+}

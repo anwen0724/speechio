@@ -14,3 +14,5 @@ build/
 AGENTS.md
 /.idea/
 /.codegraph/
+/web/node_modules/
+/src/realtime_asr/server/static/

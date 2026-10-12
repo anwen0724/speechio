@@ -3,6 +3,7 @@
 from collections import deque
 from dataclasses import dataclass
 from threading import Condition, Lock, Thread
+from time import monotonic
 from uuid import uuid4
 
 from realtime_asr.audio.conversion import AudioFormat
@@ -55,6 +56,7 @@ class _Job:
     task: FinalTask
     pcm: bytes
     unit: object
+    submitted_at: float
 
 
 class ASRRuntime:
@@ -198,7 +200,7 @@ class ASRRuntime:
         ):
             raise ASRError("TASK_CAPACITY_EXCEEDED", "finish", "最终任务容量不足，保留封口音频")
         task = FinalTask(unit.ref, uuid4().hex, samples, samples, unit.boundary)
-        self._queue.append(_Job(session, task, pcm, unit))
+        self._queue.append(_Job(session, task, pcm, unit, monotonic()))
         self._tasks += 1
         self._task_samples += task.audio_samples
         self._condition.notify_all()
@@ -218,13 +220,20 @@ class ASRRuntime:
             result, error = None, None
             try:
                 with self._model_lock:
+                    started_at = monotonic()
                     result = self._recognizer.transcribe(
                         job.pcm, format=AudioFormat(), language=job.session.config.language
                     )
             except ASRError as exc:
                 error = exc
+            completed_at = monotonic()
             with self._condition:
-                job.session._resolve(job.task, result, error)
+                job.session._resolve(
+                    job.task,
+                    result,
+                    error,
+                    timing=(job.submitted_at, started_at, completed_at),
+                )
                 self._tasks -= 1
                 self._task_samples -= job.task.audio_samples
                 self._running = None

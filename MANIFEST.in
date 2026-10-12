@@ -1,8 +1,13 @@
 include README.md pyproject.toml .python-version
 recursive-include src *.py
-recursive-include evals *.py
-recursive-include tests *.py
+recursive-include evals *.py *.mjs
+recursive-include tests *.py *.mjs
 recursive-include examples *.py
+include web/package.json web/package-lock.json web/tsconfig.json web/vite.config.ts
+include web/.prettierrc.json web/index.html
+recursive-include web/src *.ts *.tsx *.css
+recursive-include web/public *.js
+prune web/node_modules
 prune .runtime
 prune .venv
 prune artifacts

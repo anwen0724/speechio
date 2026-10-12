@@ -29,6 +29,8 @@ def parse_args(argv=None):
     """子命令分别声明源格式，避免麦克风设备与 ASR 设备混用。"""
     parser = argparse.ArgumentParser(prog="realtime-asr", description="本地实时音频识别")
     commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("serve", help="运行共享 HTTP / WebSocket 服务（需要 server 依赖）")
+    commands.add_parser("remote", help="接入远程服务（需要 client 依赖）")
     devices = commands.add_parser("devices", help="列出输入设备，不加载模型")
     devices.add_argument("--channels", type=_positive_int, default=1)
     devices.add_argument("--output", choices=("text", "jsonl"), default="text")

@@ -189,6 +189,15 @@ def _run_input(runtime, args, output, index, source, format, blocks, *, micropho
 
 def main(argv=None, *, stdin=None, stdout=None, stderr=None):
     """安装入口与模块入口共用同一流程；标准流由进程拥有。"""
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == "serve":
+        from realtime_asr.server.__main__ import main as serve
+
+        return serve(argv[1:])
+    if argv and argv[0] == "remote":
+        from realtime_asr.client.__main__ import main as remote
+
+        return remote(argv[1:], stdin=stdin, stdout=stdout, stderr=stderr)
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
