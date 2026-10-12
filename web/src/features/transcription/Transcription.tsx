@@ -1,11 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
 import { asError, BrowserSession } from './connection';
 import type { Mode, RealtimeMerge, WireMessage } from './connection';
+import type { CandidateResult, CompletionMode, UnitRef } from './connection';
+import { CandidatePanel } from './CandidatePanel';
+import type { CandidateAction } from './CandidatePanel';
 import './transcription.css';
 
 type Status =
   'disconnected' | 'preparing' | 'ready' | 'recording' | 'draining' | 'closed' | 'error';
 type FinalText = {
+  taskId?: string | null;
   key: string;
   text: string;
   generation: number;
@@ -42,6 +46,11 @@ export function Transcription() {
   const [mode, setMode] = useState<Mode>('auto');
   const [stableText, setStableText] = useState(false);
   const [dualRealtime, setDualRealtime] = useState(false);
+  const [completionMode, setCompletionMode] = useState<CompletionMode>('final');
+  const [retainForCorrection, setRetainForCorrection] = useState(false);
+  const [candidateAvailable, setCandidateAvailable] = useState(false);
+  const [candidate, setCandidate] = useState<CandidateResult>();
+  const [correctionTarget, setCorrectionTarget] = useState<UnitRef>();
   const [status, setStatus] = useState<Status>('disconnected');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -57,6 +66,7 @@ export function Transcription() {
   >(undefined);
   const [finals, setFinals] = useState<FinalText[]>([]);
   const session = useRef<BrowserSession | undefined>(undefined);
+  const latestUnit = useRef<UnitRef | undefined>(undefined);
   const mounted = useRef(true);
 
   useEffect(() => {
@@ -78,14 +88,46 @@ export function Transcription() {
 
   function receive(owner: BrowserSession, message: WireMessage) {
     if (!mounted.current || session.current !== owner) return;
+    if (message.command === 'start' && message.unit) latestUnit.current = message.unit;
+    if (message.type === 'ready') setCandidateAvailable(message.candidate?.enabled ?? false);
+    if (message.resume) {
+      setPreview(undefined);
+      setCandidate(undefined);
+    }
     if (message.type === 'closed') {
       setStatus('closed');
+      setCorrectionTarget(undefined);
       owner.dispose().catch((error) => fail(owner, asError(error)));
       return;
     }
     const event = message.event;
     if (!event) return;
     const key = `${event.unit.session_id}:${event.unit.generation}:${event.unit.unit_id}`;
+    if (
+      event.kind === 'realtime' &&
+      (!latestUnit.current ||
+        event.unit.generation > latestUnit.current.generation ||
+        (event.unit.generation === latestUnit.current.generation &&
+          event.unit.unit_id > latestUnit.current.unit_id))
+    )
+      latestUnit.current = event.unit;
+    const latest = latestUnit.current;
+    const isLatestUnit =
+      !latest ||
+      (latest.session_id === event.unit.session_id &&
+        latest.generation === event.unit.generation &&
+        latest.unit_id === event.unit.unit_id);
+    if (event.candidate && isLatestUnit) setCandidate(event.candidate);
+    if (event.kind === 'correction' && event.candidate?.text) {
+      const correction = event.candidate;
+      setFinals((current) =>
+        current.map((item) =>
+          item.key === key && item.taskId === correction.replaces_task_id
+            ? { ...item, text: correction.text, mismatch: false }
+            : item,
+        ),
+      );
+    }
     if (event.kind === 'realtime' && event.result) {
       const stable = event.stabilization;
       const rawText = event.result.text;
@@ -110,6 +152,7 @@ export function Transcription() {
       setFinals((current) => [
         ...current.filter((item) => item.key !== key),
         {
+          taskId: event.task_id,
           key,
           text,
           generation: event.unit.generation,
@@ -119,6 +162,7 @@ export function Transcription() {
         },
       ]);
       setPreview((current) => (current?.key === key ? undefined : current));
+      if (retainForCorrection && event.task_id && isLatestUnit) setCorrectionTarget(event.unit);
     }
     if (event.kind === 'completed') {
       setFinals((current) =>
@@ -133,6 +177,10 @@ export function Transcription() {
     setBusy(true);
     setError('');
     setStatus('preparing');
+    setCorrectionTarget(undefined);
+    setCandidate(undefined);
+    setCandidateAvailable(false);
+    latestUnit.current = undefined;
     const previous = session.current;
     session.current = undefined;
     if (previous) await previous.dispose();
@@ -143,7 +191,7 @@ export function Transcription() {
     );
     session.current = owner;
     try {
-      await owner.connect(token, stableText, dualRealtime);
+      await owner.connect(token, { stableText, dualRealtime, completionMode, retainForCorrection });
       if (mounted.current && session.current === owner) setStatus('ready');
     } catch (error) {
       fail(owner, asError(error));
@@ -158,6 +206,10 @@ export function Transcription() {
     setBusy(true);
     setError('');
     if (action === 'close') setStatus('draining');
+    if (action === 'start' || action === 'reset' || action === 'cancel') {
+      setCorrectionTarget(undefined);
+      setCandidate(undefined);
+    }
     try {
       await owner[action]();
       if (mounted.current && session.current === owner) {
@@ -169,6 +221,23 @@ export function Transcription() {
       await owner.dispose();
     } finally {
       if (mounted.current && session.current === owner) setBusy(false);
+    }
+  }
+
+  async function candidateAction(action: CandidateAction) {
+    const owner = session.current;
+    if (!owner) return;
+    setBusy(true);
+    setError('');
+    try {
+      if (action.kind === 'candidate') await owner.requestCandidate(action.source, action.hint);
+      else if (action.kind === 'resume') await owner.resume();
+      else if (correctionTarget) await owner.requestCorrection(correctionTarget);
+    } catch (error) {
+      // 控制拒绝不销毁仍在采集的连接，保留输入供继续或正常结束。
+      if (session.current === owner && mounted.current) setError(asError(error).message);
+    } finally {
+      if (session.current === owner && mounted.current) setBusy(false);
     }
   }
 
@@ -229,6 +298,29 @@ export function Transcription() {
           双实时合并
         </label>
         <p className="hint">连接时申请麦克风权限。凭据仅保留在当前页面内存。</p>
+        <label className="field">
+          完成策略
+          <select
+            aria-label="完成策略"
+            value={completionMode}
+            disabled={connected || busy}
+            onChange={(event) =>
+              setCompletionMode(event.target.value === 'candidate' ? 'candidate' : 'final')
+            }
+          >
+            <option value="final">最终模型</option>
+            <option value="candidate">候选模型</option>
+          </select>
+        </label>
+        <label className="stable-option">
+          <input
+            type="checkbox"
+            checked={retainForCorrection}
+            disabled={connected || busy}
+            onChange={(event) => setRetainForCorrection(event.target.checked)}
+          />
+          保留最近整轮供修正
+        </label>
         <div className="actions">
           <button
             className="primary"
@@ -343,6 +435,17 @@ export function Transcription() {
           </p>
         )}
       </section>
+      <CandidatePanel
+        value={candidate}
+        available={candidateAvailable}
+        busy={busy}
+        recording={status === 'recording'}
+        canResume={mode === 'manual' && status === 'recording'}
+        canCorrect={connected && correctionTarget !== undefined}
+        onAction={(action) => {
+          candidateAction(action).catch((error) => setError(asError(error).message));
+        }}
+      />
       <section className="final-panel" aria-label="最终结果">
         <div className="panel-heading">
           <h2>

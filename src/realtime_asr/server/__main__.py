@@ -5,7 +5,12 @@ import os
 import sys
 
 from realtime_asr import ASRError, RecognizerConfig
-from realtime_asr.cli.args import add_realtime_model_args, realtime_roles
+from realtime_asr.cli.args import (
+    add_candidate_model_args,
+    add_realtime_model_args,
+    candidate_role,
+    realtime_roles,
+)
 from realtime_asr.server import ServerConfig, create_app
 
 
@@ -13,6 +18,7 @@ def parser():
     command = argparse.ArgumentParser(prog="realtime-asr serve", description="共享本地 ASR 服务")
     command.add_argument("--model", required=True)
     add_realtime_model_args(command)
+    add_candidate_model_args(command)
     command.add_argument("--backend", choices=("whisper", "nemotron"), default="whisper")
     command.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     command.add_argument("--cudnn-folder")
@@ -67,15 +73,29 @@ def main(argv=None):
             cuda_directory=args.pop("cuda_directory"),
         )
         realtime, ultrafast = realtime_roles(options, recognizer)
+        candidate = candidate_role(options, recognizer)
         for role in ("realtime", "ultrafast"):
             for field in ("model", "backend", "device"):
                 args.pop(role + "_" + field)
+        for name in (
+            "candidates",
+            "candidate_model",
+            "candidate_backend",
+            "candidate_device",
+            "candidate_only",
+        ):
+            args.pop(name)
         args.pop("acoustic_boundaries")
         args["realtime_config"] = realtime
         args["ultrafast_config"] = ultrafast
         args["token"] = os.environ.get(args.pop("token_env"))
         args["allowed_origins"] = tuple(args.pop("allowed_origin"))
-        config = ServerConfig(recognizer=recognizer, **args)
+        config = ServerConfig(
+            recognizer=None if options.candidate_only else recognizer,
+            candidate_config=candidate,
+            final_enabled=not options.candidate_only,
+            **args,
+        )
         import uvicorn
 
         app = create_app(config)

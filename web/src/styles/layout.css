@@ -49,6 +49,7 @@ select {
 }
 .connection-panel,
 .preview-panel,
+.candidate-panel,
 .final-panel {
   border: 1px solid var(--line);
   border-radius: 16px;
@@ -58,7 +59,7 @@ select {
 }
 .connection-panel {
   grid-column: 1;
-  grid-row: 2 / 4;
+  grid-row: 2 / 5;
 }
 .preview-panel {
   grid-column: 2;
@@ -72,6 +73,17 @@ select {
   grid-column: 2;
   min-height: 270px;
 }
+.candidate-panel {
+  grid-column: 2;
+  height: 300px;
+  display: flex;
+  flex-direction: column;
+}
+.candidate-content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
 @media (max-width: 700px) {
   .workspace {
     grid-template-columns: minmax(0, 1fr);
@@ -80,6 +92,7 @@ select {
   }
   .connection-panel,
   .preview-panel,
+  .candidate-panel,
   .final-panel {
     grid-column: 1;
     grid-row: auto;

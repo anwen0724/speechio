@@ -13,6 +13,7 @@ from realtime_asr.results import RecognitionResult
 from realtime_asr.runtime.tasks import InferenceRequest
 from realtime_asr.segmentation.acoustic import AcousticBoundary
 from realtime_asr.segmentation.gate import SegmentBoundary
+from realtime_asr.session.candidates import CandidateResult, CandidateState, RetainedCorrection
 from realtime_asr.text.realtime_merge import (
     RealtimeMergeConfig,
     RealtimeMerger,
@@ -52,12 +53,16 @@ class SessionConfig:
     stabilization: StabilizationConfig | None = None
     word_timestamps: bool = False
     merge: RealtimeMergeConfig | None = None
+    completion_mode: str = "final"
+    retain_for_correction: bool = False
 
     def __post_init__(self):
         """创建时检查外部配置，不在每个输入块重复验证配置。"""
         if (
             not isinstance(self.realtime, bool)
             or type(self.word_timestamps) is not bool
+            or self.completion_mode not in ("final", "candidate")
+            or type(self.retain_for_correction) is not bool
             or (
                 self.merge is not None
                 and (not isinstance(self.merge, RealtimeMergeConfig) or not self.realtime)
@@ -136,6 +141,10 @@ class SessionEvent:
     optimization: dict | None = None
     realtime_role: str | None = None
     merge: RealtimeMergeResult | None = None
+    candidate: CandidateResult | None = None
+    resume_epoch: int = 0
+    resume_id: str | None = None
+    candidate_start_sample: int = 0
 
 
 @dataclass(frozen=True)
@@ -164,12 +173,23 @@ class _AudioUnit:
     stream_start_sample: int | None = None
     stabilizer: TextStabilizer | None = None
     last_realtime_text: str = ""
+    candidates: CandidateState | None = None
+    candidate_events: dict[str, SessionEvent] = field(default_factory=dict)
+    completion_source: str = "final"
+    candidate_reused: bool = False
+    sealed_pcm: bytes = b""
 
 
 class Session:
     """隐藏连续输入、固定音频及输出归属，宿主只操作公开控制接口。"""
 
     def __init__(self, runtime, config: SessionConfig):
+        if not runtime.final_enabled and config.completion_mode != "candidate":
+            raise ASRError("BACKEND_INCOMPATIBLE", "create_session", "候选专用宿主要求候选完成策略")
+        if (config.completion_mode == "candidate" or config.retain_for_correction) and (
+            runtime.candidate_config is None
+        ):
+            raise ASRError("CANDIDATE_NOT_CONFIGURED", "create_session", "完成或修正需要候选角色")
         if config.merge is not None and (
             runtime.realtime is None or not runtime.realtime.has_ultrafast
         ):
@@ -185,6 +205,35 @@ class Session:
         self._last_task = None
         self._closed = False
         self._close_result = None
+        self._retained = None
+
+    @property
+    def active_unit(self):
+        """返回当前输入归属，调用方无需读取会话内部音频容器。"""
+        with self._runtime.coordination:
+            return self._active.ref if self._active is not None else None
+
+    @property
+    def retained_audio_samples(self):
+        """只计显式修正保留与封口保留，不把引用数当作额外音频副本。"""
+        with self._runtime.coordination:
+            recent = len(self._retained.pcm) // 2 if self._retained is not None else 0
+            return recent + sum(len(unit.sealed_pcm) // 2 for unit in self._units.values())
+
+    @property
+    def pending_candidates(self):
+        """用于公开排空，已失效的旧调用仍由运行时保留物理容量。"""
+        with self._runtime.coordination:
+            recent = (
+                self._retained.state.pending_count + int(self._retained.event is not None)
+                if self._retained is not None
+                else 0
+            )
+            return recent + sum(
+                unit.candidates.pending_count + len(unit.candidate_events)
+                for unit in self._units.values()
+                if unit.candidates is not None
+            )
 
     @property
     def session_id(self):
@@ -227,12 +276,15 @@ class Session:
                 raise ASRError("RESULT_CAPACITY_EXCEEDED", "start", "未消费单元达到容量上限")
             ref = UnitRef(self.session_id, self._generation, self._next_unit)
             unit = self._new_unit(ref, format)
+            if self._runtime.candidate_config is not None:
+                unit.candidates = CandidateState(ref)
             if self.config.merge is not None:
                 unit.merger = RealtimeMerger(ref, self.config.merge)
             if self.config.stabilization is not None:
                 unit.stabilizer = TextStabilizer(ref, self.config.stabilization)
             if self.config.realtime:
                 self._runtime.realtime.add_unit(self, ref)
+            self._clear_correction()
             self._next_unit += 1
             self._units[ref.unit_id] = unit
             self._active = unit
@@ -260,12 +312,133 @@ class Session:
 
     def accept_completion(self, request, result, error, timing):
         """协调条件内接收执行结果；发布有效性只由会话判断。"""
+        if request.role == "candidate" and request.priority == "auxiliary":
+            self._accept_candidate(request, result, error, timing)
+            return
         self._resolve(request.task, result, error, timing=timing)
+
+    def _accept_candidate(self, job, result, error, timing):
+        context = self._retained
+        if context is not None and job.task.unit == context.unit:
+            if job.task.task_id == context.state.replacing("correction"):
+                self._accept_correction(context, job, result, error, timing)
+                return
+        unit = self._units.get(job.task.unit.unit_id)
+        if unit is None or unit.ref != job.task.unit or unit.events is not None:
+            return
+        value = unit.candidates.resolve(
+            job.task.task_id,
+            result if result is not None else RecognitionResult(text=""),
+            unit.task.audio_version if unit.task is not None else len(unit.pcm) // 2,
+        )
+        if value is None:
+            return
+        if error is not None:
+            value = replace(value, status="failed", **getattr(error, "candidate_execution", {}))
+        submitted, started, completed = timing
+        event = replace(
+            self._event(
+                unit, "candidate_failed" if error else "candidate", result=result, error=error
+            ),
+            task_id=value.request.request_id,
+            audio_start_sample=value.request.start_sample,
+            audio_samples=job.task.audio_samples,
+            audio_version=value.request.audio_version,
+            candidate=value,
+            source=value.request.kind,
+            submitted_at_monotonic=submitted,
+            started_at_monotonic=started,
+            completed_at_monotonic=completed,
+        )
+        unit.candidate_events.pop(value.request.kind, None)
+        unit.candidate_events[value.request.kind] = event
+        self._runtime.coordination.notify_all()
+
+    def _accept_correction(self, context, job, result, error, timing):
+        """修正只关联原最终任务，不产生第二个最终或完成事件。"""
+        value = context.state.resolve(
+            job.task.task_id,
+            result if result is not None else RecognitionResult(text=""),
+            len(context.pcm) // 2,
+        )
+        if value is None:
+            return
+        value = replace(value, replaces_task_id=context.task_id)
+        if error is None and not value.text:
+            error = ASRError("CANDIDATE_EMPTY", "correct", "重试后仍无修正正文，保留原最终正文")
+        if error is not None:
+            value = replace(value, status="failed", **getattr(error, "candidate_execution", {}))
+        submitted, started, completed = timing
+        context.event = SessionEvent(
+            kind="correction_failed" if error else "correction",
+            sequence=0,
+            unit=context.unit,
+            task_id=job.task.task_id,
+            audio_samples=job.task.audio_samples,
+            audio_version=job.task.audio_version,
+            result=result,
+            error=EventError(error.code, error.operation, error.message) if error else None,
+            source="correction",
+            candidate=value,
+            submitted_at_monotonic=submitted,
+            started_at_monotonic=started,
+            completed_at_monotonic=completed,
+            resume_epoch=value.request.resume_epoch,
+            resume_id=value.request.resume_id,
+            candidate_start_sample=value.request.candidate_start_sample,
+        )
+        self._runtime.coordination.notify_all()
+
+    def request_correction(self, unit):
+        """对最近保留的完整单元接纳修正，输入范围不依赖当前活动单元。"""
+        with self._runtime.coordination:
+            self._require_open()
+            context = self._retained
+            if context is None or context.unit != unit:
+                raise ASRError("CORRECTION_UNAVAILABLE", "correct", "目标没有可用的整轮修正上下文")
+            samples = len(context.pcm) // 2
+            request = context.state.describe("correction", False, 0, samples)
+            task = FinalTask(unit, request.request_id, samples, samples)
+            job = InferenceRequest(
+                task,
+                context.pcm,
+                self.config.language,
+                self.config.word_timestamps,
+                priority="auxiliary",
+                role="candidate",
+                retry_empty=True,
+            )
+            if not self._runtime.submit(job, replace_task_id=context.state.replacing("correction")):
+                raise ASRError("CANDIDATE_CAPACITY_EXCEEDED", "correct", "修正任务容量不足")
+            context.state.accept(request, "", job.pcm)
+            context.event = None
+            return request
+
+    def _clear_correction(self):
+        if self._retained is not None:
+            for request_id in self._retained.state.clear():
+                self._runtime.cancel_task(request_id)
+            self._retained = None
 
     def _dispatch_final(self, unit, task, pcm):
         """登记完成前不释放协调条件，立即返回的执行也能关联原单元。"""
+        if self.config.completion_mode == "candidate":
+            unit.completion_source = "candidate-final"
+            cached = unit.candidates.reusable_whole(pcm)
+            if cached is not None:
+                unit.task = task
+                unit.candidate_reused = True
+                self._resolve(task, cached)
+                return
         self._runtime.submit(
-            InferenceRequest(task, pcm, self.config.language, self.config.word_timestamps)
+            InferenceRequest(
+                task,
+                pcm,
+                self.config.language,
+                self.config.word_timestamps,
+                role="candidate" if self.config.completion_mode == "candidate" else "final",
+                retry_empty=self.config.completion_mode == "candidate",
+            )
         )
         unit.task = task
 
@@ -312,6 +485,84 @@ class Session:
             raise ASRError("NO_ACTIVE_UNIT", "session", "没有活动音频单元")
         return self._active
 
+    def _drain_ready_audio(self, unit):
+        """把已生成的标准短块加入本单元，不结束源转换。"""
+        for frame in unit.converter.drain_ready():
+            self._append_standard(unit, frame.pcm)
+
+    def request_candidate(self, *, kind="whole", hint=False):
+        """固定当前输入与准确正文，接纳后立即返回请求描述。"""
+        with self._runtime.coordination:
+            self._require_open()
+            config = self._runtime.candidate_config
+            if config is None:
+                raise ASRError("CANDIDATE_NOT_CONFIGURED", "candidate", "运行时未配置候选角色")
+            if kind not in ("tail", "whole") or type(hint) is not bool:
+                raise ASRError("INVALID_CONFIGURATION", "candidate", "候选种类或提示开关无效")
+            unit = self._require_active()
+            if unit.converter.state != "open":
+                raise ASRError("UNIT_SEALED", "candidate", "候选只接受未封口输入")
+            self._drain_ready_audio(unit)
+            end = len(unit.pcm) // 2
+            if not end:
+                raise ASRError("INVALID_AUDIO", "candidate", "候选输入没有标准样本")
+            start = max(0, end - config.tail_samples) if kind == "tail" else 0
+            request = unit.candidates.describe(kind, hint, start, end)
+            task = FinalTask(unit.ref, request.request_id, end - start, end)
+            job = InferenceRequest(
+                task,
+                bytes(unit.pcm[start * 2 :]),
+                self.config.language,
+                word_timestamps=self.config.word_timestamps,
+                priority="auxiliary",
+                role="candidate",
+                retry_empty=not hint,
+            )
+            if not self._runtime.submit(job, replace_task_id=unit.candidates.replacing(kind)):
+                raise ASRError("CANDIDATE_CAPACITY_EXCEEDED", "candidate", "候选任务容量不足")
+            unit.candidates.accept(request, unit.last_realtime_text, job.pcm)
+            unit.candidate_events.pop(kind, None)
+            return request
+
+    def resume(self, *, expected_audio_samples=None):
+        """确认标准输入边界，保留同一单元的完整音频和源转换状态。"""
+        with self._runtime.coordination:
+            self._require_open()
+            if self._runtime.candidate_config is None:
+                raise ASRError("CANDIDATE_NOT_CONFIGURED", "resume", "运行时未配置候选角色")
+            unit = self._require_active()
+            self._drain_ready_audio(unit)
+            samples = len(unit.pcm) // 2
+            if expected_audio_samples is not None:
+                if type(expected_audio_samples) is not int or expected_audio_samples < 0:
+                    raise ASRError("INVALID_CONFIGURATION", "resume", "预期采样边界应为非负整数")
+                if expected_audio_samples != samples:
+                    raise ASRError(
+                        "RESUME_BOUNDARY_MISMATCH", "resume", "采样边界与已接纳输入不一致"
+                    )
+            ack, old_requests = unit.candidates.resume(samples)
+            for request_id in old_requests:
+                self._runtime.cancel_task(request_id)
+            unit.candidate_events.clear()
+            unit.realtime_events.clear()
+            unit.last_realtime_text = ""
+            if unit.stabilizer is not None:
+                unit.stabilizer = TextStabilizer(unit.ref, self.config.stabilization)
+            if unit.merger is not None:
+                unit.merger = RealtimeMerger(unit.ref, self.config.merge)
+            self._runtime.coordination.notify_all()
+            return ack
+
+    def observation_context(self, ref, audio_end_sample):
+        """执行器领取输入时固定继续归属，不在迟到回交时改写代次。"""
+        unit = self._units.get(ref.unit_id)
+        state = unit.candidates if unit is not None and unit.ref == ref else None
+        return (
+            (state.epoch, state.resume_id, state.start_sample)
+            if state is not None
+            else (0, None, 0)
+        )
+
     def finish(self) -> FinalTask:
         """刷新尾部并提交不可变完整音频；调用返回后可开始下一单元。"""
         with self._runtime.coordination:
@@ -334,6 +585,8 @@ class Session:
             pcm = bytes(unit.pcm)
             samples = len(pcm) // 2
             task = FinalTask(unit.ref, uuid4().hex, samples, samples, unit.boundary)
+            if self.config.retain_for_correction:
+                unit.sealed_pcm = pcm
             self._dispatch_final(unit, task, pcm)
             unit.pcm.clear()
             unit.converter.close()
@@ -346,6 +599,18 @@ class Session:
         unit = self._units.get(task.unit.unit_id)
         if unit is None or unit.ref != task.unit or unit.events is not None:
             return
+        if error is None and unit.sealed_pcm and unit.ref.unit_id == self._next_unit - 1:
+            state = unit.candidates
+            retained_state = CandidateState(
+                unit.ref,
+                epoch=state.epoch,
+                resume_id=state.resume_id,
+                start_sample=state.start_sample,
+            )
+            self._clear_correction()
+            self._retained = RetainedCorrection(
+                unit.ref, task.task_id, unit.sealed_pcm, retained_state
+            )
         if error is not None:
             self._terminal(unit, "failed", error=error)
         else:
@@ -367,6 +632,14 @@ class Session:
     def _record_realtime(self, unit, event):
         """每个角色保留一个最新槽；只用准确路更新稳定和端点证据。"""
         if self._units.get(unit.ref.unit_id) is unit and unit.events is None:
+            if unit.candidates is not None and (
+                event.resume_epoch != unit.candidates.epoch
+                or (
+                    unit.candidates.epoch > 0
+                    and event.audio_samples <= unit.candidates.start_sample
+                )
+            ):
+                return
             role = event.realtime_role
             if event.kind == "realtime":
                 observation = TextObservation(
@@ -415,6 +688,9 @@ class Session:
                     raise ASRError("INVALID_TARGET", "cancel", "目标不属于已创建的会话单元")
                 if target.generation < self._generation:
                     return False
+                if self._retained is not None and self._retained.unit == target:
+                    self._clear_correction()
+                    return True
                 unit = self._units.get(target.unit_id)
                 if unit is not None and unit.ref != target:
                     raise ASRError("INVALID_TARGET", "cancel", "目标代次与音频单元不匹配")
@@ -450,6 +726,17 @@ class Session:
                 if kind == "final" and unit.stabilizer is not None
                 else None
             ),
+            resume_epoch=unit.candidates.epoch if unit.candidates is not None else 0,
+            resume_id=unit.candidates.resume_id if unit.candidates is not None else None,
+            candidate_start_sample=unit.candidates.start_sample
+            if unit.candidates is not None
+            else 0,
+            source=unit.completion_source,
+            optimization=(
+                {"completion_mode": "candidate", "candidate_reused": unit.candidate_reused}
+                if unit.completion_source == "candidate-final"
+                else None
+            ),
         )
 
     def reset(self) -> SessionChange:
@@ -467,6 +754,7 @@ class Session:
         discarded = 0
         for unit in self._units.values():
             discarded += len(unit.realtime_events)
+            discarded += len(unit.candidate_events)
             if unit.events is not None:
                 discarded += len(unit.events)
                 continue
@@ -476,6 +764,8 @@ class Session:
             self._sequence += 1
             cancelled.append(replace(unit.events[0], sequence=self._sequence))
         self._units.clear()
+        discarded += int(self._retained is not None and self._retained.event is not None)
+        self._clear_correction()
         self._active = None
         self._last_task = None
         pending = self._runtime.pending_for(self.session_id)
@@ -492,11 +782,16 @@ class Session:
             return self._close_result
 
     def _terminal(self, unit, kind, *, result=None, error=None):
+        if unit.candidates is not None:
+            for request_id in unit.candidates.clear():
+                self._runtime.cancel_task(request_id)
         if kind == "cancelled" or (kind == "failed" and unit.task is None):
             unit.realtime_events.clear()
+            unit.candidate_events.clear()
             if self.config.realtime:
                 self._runtime.realtime.cancel_unit(unit.ref)
         unit.events = deque([self._event(unit, kind, result=result, error=error)])
+        unit.sealed_pcm = b""
         unit.pcm.clear()
         unit.converter.close()
         if self._active is unit:
@@ -505,18 +800,24 @@ class Session:
 
     def _next_event(self):
         """最终正文仍按单元排序；其他单元的实时观察可先交付。"""
+        if self._retained is not None and self._retained.event is not None:
+            return self._retained, "correction"
         first = next(iter(self._units.values()), None)
         if first is None:
             return None
         if first.events and first.events[0].kind == "completed":
-            return first, False
+            return first, "terminal"
         if first.realtime_events:
-            return first, True
+            return first, "realtime"
+        if first.candidate_events:
+            return first, "candidate"
         if first.events:
-            return first, False
+            return first, "terminal"
         for unit in self._units.values():
             if unit.realtime_events:
-                return unit, True
+                return unit, "realtime"
+            if unit.candidate_events:
+                return unit, "candidate"
         return None
 
     def get_event(self, *, timeout=0.0) -> SessionEvent | None:
@@ -534,9 +835,16 @@ class Session:
                 return None
             if self._closed or generation != self._generation:
                 return None
-            unit, realtime = self._next_event()
+            unit, source = self._next_event()
             self._sequence += 1
-            if realtime:
+            if source == "correction":
+                event = unit.event
+                unit.event = None
+                return replace(event, sequence=self._sequence)
+            if source == "candidate":
+                event = unit.candidate_events.pop(next(iter(unit.candidate_events)))
+                return replace(event, sequence=self._sequence)
+            if source == "realtime":
                 event = unit.realtime_events.pop(next(iter(unit.realtime_events)))
                 return replace(
                     event,

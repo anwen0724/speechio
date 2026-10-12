@@ -167,6 +167,12 @@ class Recognizer:
         if type(word_timestamps) is not bool:
             raise ASRError("INVALID_CONFIGURATION", "transcribe", "词时间戳开关应为布尔值")
 
+    def _candidate(self, pcm, language, *, word_timestamps=False):
+        """候选仍是整段输入，使用通用候选角色而不读取任何会话状态。"""
+        with self._operation():
+            self._validate_options(language, word_timestamps)
+            return self._infer(pcm, language, role="candidate", word_timestamps=word_timestamps)
+
     def _snapshot(self, pcm, language):
         """识别固定的标准音频快照，使用实时角色参数。"""
         with self._operation():

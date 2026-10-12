@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 
 const require = createRequire(resolve("web/package.json"));
 const { chromium } = require("playwright");
+const candidates = process.argv[3] === "candidates";
 const browser = await chromium.launch({
   executablePath: "C:/Program Files/Google/Chrome/Application/chrome.exe",
   headless: true,
@@ -33,6 +34,17 @@ async function run() {
       generation: 0,
       unit_id,
     });
+    let epoch = 0;
+    const candidate = (kind, request_id) => ({
+      request: {unit: unit(2), request_id, kind, hint: false, start_sample: 0,
+        end_sample: 16000, audio_version: 16000, resume_epoch: epoch,
+        resume_id: epoch ? "resume-fixture" : null, candidate_start_sample: epoch ? 16000 : 0},
+      text: kind === "correction" ? "整轮修正正文" : "独立整轮候选",
+      live_text: "", model_text: "独立整轮候选", status: "whole", current: true,
+      matched: false, used_fuzzy_match: false, anchor_length: 0, distance: 0,
+      attempts: 1, added_silence_samples: 0,
+      replaces_task_id: kind === "correction" ? "final-fixture" : null,
+    });
     socket.onMessage((payload) => {
       if (typeof payload !== "string") return;
       const command = JSON.parse(payload);
@@ -45,8 +57,32 @@ async function run() {
         });
         return;
       }
-      if (command.type === "open")
-        send({ type: "ready", request_id: command.request_id });
+      if (command.type === "open") {
+        if (candidates) {
+          assert.equal(command.completion_mode, "candidate");
+          assert.equal(command.retain_for_correction, true);
+        }
+        send({ type: "ready", request_id: command.request_id, candidate: {enabled: candidates} });
+      }
+      if (candidates && ["candidate", "correct"].includes(command.type)) {
+        const value = candidate(command.type === "correct" ? "correction" : "whole", command.request_id);
+        send({type: "ack", command: command.type, request_id: command.request_id, candidate_request: value.request});
+        send({type: "event", event: {kind: command.type === "correct" ? "correction" : "candidate",
+          unit: unit(2), sequence: 3, result: {text: value.text}, error: null, candidate: value, resume_epoch: epoch}});
+      }
+      if (candidates && command.type === "resume") {
+        epoch = 1;
+        send({type: "ack", request_id: command.request_id, resume: {unit: unit(2), resume_epoch: 1,
+          resume_id: "resume-fixture", candidate_start_sample: 16000}});
+        for (const [resume_epoch, text] of [[0, "旧代次不能回来"], [1, "继续后的新正文"]])
+          send({type: "event", event: {kind: "realtime", unit: unit(2), sequence: 4, result: {text}, error: null, resume_epoch}});
+      }
+      if (candidates && command.type === "finish") {
+        send({type: "ack", request_id: command.request_id});
+        for (const kind of ["final", "completed"])
+          send({type: "event", event: {kind, unit: unit(2), sequence: 5,
+            task_id: "final-fixture", result: kind === "final" ? {text: "结束正文"} : null, error: null, resume_epoch: epoch}});
+      }
       if (command.type === "open" && process.argv[3] === "stable")
         assert.equal(command.stable_text, true);
       if (command.type === "open" && process.argv[3] === "dual")
@@ -144,6 +180,10 @@ async function run() {
     await page.getByLabel("稳定文本", { exact: true }).check();
   if (process.argv[3] === "dual")
     await page.getByLabel("双实时合并", { exact: true }).check({ timeout: 1500 });
+  if (candidates) {
+    await page.getByLabel("完成策略", {exact: true}).selectOption("candidate", {timeout: 1500});
+    await page.getByLabel("保留最近整轮供修正", {exact: true}).check();
+  }
   await page.getByRole("button", { name: "连接", exact: true }).click();
   if (process.argv[3] === "auth-error") {
     await page.getByRole("alert").waitFor();
@@ -155,6 +195,20 @@ async function run() {
   }
   await page.getByText("已连接", { exact: true }).waitFor();
   await page.getByRole("button", { name: "开始采集", exact: true }).click();
+  if (candidates) {
+    await page.getByRole("button", {name: "整轮候选", exact: true}).click();
+    await page.getByLabel("候选正文", {exact: true}).getByText("独立整轮候选", {exact: true}).waitFor();
+    await page.getByRole("button", {name: "同轮继续", exact: true}).click();
+    await page.locator(".preview-panel").getByText("继续后的新正文", {exact: true}).waitFor();
+    assert.equal(await page.getByText("旧代次不能回来", {exact: true}).count(), 0);
+    await page.getByRole("button", {name: "结束当前输入", exact: true}).click();
+    await page.locator(".finals").getByText("结束正文", {exact: true}).waitFor();
+    await page.getByRole("button", {name: "修正最近整轮", exact: true}).click();
+    await page.locator(".finals").getByText("整轮修正正文", {exact: true}).waitFor();
+    assert.equal(await page.locator(".finals").getByText("结束正文", {exact: true}).count(), 0);
+    console.log("candidate, resume fencing and correction: passed");
+    return;
+  }
   if (process.argv[3] === "auto-eof") {
     await page.getByText("采集中", { exact: true }).waitFor();
     await page

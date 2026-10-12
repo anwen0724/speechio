@@ -8,6 +8,8 @@ from time import monotonic
 from realtime_asr.audio.conversion import AudioFormat
 from realtime_asr.errors import ASRError
 from realtime_asr.results import CloseError
+from realtime_asr.runtime.candidates import CandidateConfig, execute_candidate
+from realtime_asr.runtime.engines import EngineResources
 from realtime_asr.runtime.realtime import RealtimeConfig, RealtimeGroup
 from realtime_asr.runtime.recognizer import Recognizer
 from realtime_asr.runtime.tasks import InferenceRequest
@@ -37,6 +39,7 @@ class RuntimeCapacity:
     task_audio_samples: int
     realtime_units: int = 0
     realtime_reserved_samples: int = 0
+    retained_audio_samples: int = 0
 
 
 @dataclass(frozen=True)
@@ -51,7 +54,34 @@ class RuntimeCloseResult:
 class ASRRuntime:
     """拥有一个同步模型组件及后台调度，供多个独立会话使用。"""
 
-    def __init__(self, config=None, *, engine=None, limits=None, realtime=None, ultrafast=None):
+    def __init__(
+        self,
+        config=None,
+        *,
+        engine=None,
+        limits=None,
+        realtime=None,
+        ultrafast=None,
+        candidate=None,
+        final_enabled=True,
+    ):
+        if type(final_enabled) is not bool or (
+            candidate is not None and not isinstance(candidate, CandidateConfig)
+        ):
+            raise ASRError("INVALID_CONFIGURATION", "configure", "最终开关或候选配置无效")
+        self._final_enabled = final_enabled
+        if not final_enabled:
+            if (
+                config is not None
+                or engine is not None
+                or candidate is None
+                or candidate.model is None
+                and candidate.engine is None
+            ):
+                raise ASRError(
+                    "INVALID_CONFIGURATION", "configure", "候选专用宿主只接受明确的候选模型或引擎"
+                )
+            config, engine = candidate.model, candidate.engine
         self._recognizer = Recognizer(config, engine=engine)
         if not self._recognizer.capabilities.transcription:
             raise ASRError("BACKEND_INCOMPATIBLE", "configure", "最终角色需要整段识别能力")
@@ -61,6 +91,7 @@ class ASRRuntime:
         if ultrafast is not None and realtime is None:
             raise ASRError("INVALID_CONFIGURATION", "configure", "极速角色需要准确实时角色")
         self._ultrafast_config = ultrafast
+        self._candidate_config = candidate
         if limits is not None and not isinstance(limits, RuntimeLimits):
             raise ASRError("INVALID_CONFIGURATION", "configure", "需要 RuntimeLimits")
         self._limits = limits if limits is not None else RuntimeLimits()
@@ -75,7 +106,34 @@ class ASRRuntime:
         self._worker = None
         self._close_result = None
         self._model_lock = Lock()
+        self._engines = EngineResources(self._recognizer, self._model_lock)
         self._realtime = RealtimeGroup(self, realtime, ultrafast) if realtime is not None else None
+        self._assemble_candidate()
+
+    def _assemble_candidate(self):
+        config = self._candidate_config
+        if not self._final_enabled:
+            self._candidate = self._recognizer, self._model_lock
+        else:
+            self._candidate = (
+                self._engines.assign(model=config.model, engine=config.engine)
+                if config is not None
+                else None
+            )
+        if self._candidate is not None and not self._candidate[0].capabilities.transcription:
+            raise ASRError("BACKEND_INCOMPATIBLE", "configure", "候选角色需要整段识别能力")
+
+    @property
+    def final_enabled(self):
+        return self._final_enabled
+
+    @property
+    def candidate_config(self):
+        return self._candidate_config
+
+    @property
+    def candidate_capabilities(self):
+        return self._candidate[0].capabilities if self._candidate is not None else None
 
     @property
     def state(self):
@@ -107,7 +165,12 @@ class ASRRuntime:
             reserved = self._realtime.reserved_samples if self._realtime else 0
             units = self._realtime.unit_count if self._realtime else 0
             return RuntimeCapacity(
-                len(self._sessions), self._tasks, self._task_samples, units, reserved
+                len(self._sessions),
+                self._tasks,
+                self._task_samples,
+                units,
+                reserved,
+                sum(session.retained_audio_samples for session in self._sessions.values()),
             )
 
     def __enter__(self):
@@ -128,19 +191,13 @@ class ASRRuntime:
             if self._state == "ready":
                 return
             try:
-                self._recognizer.prepare()
-                if self._realtime is not None:
-                    self._realtime.prepare()
+                self._engines.prepare()
             except BaseException as exc:
                 # 第二角色失败时一起回收，重试使用新资源拥有者。
-                errors = self._recognizer.close().errors
-                if self._realtime is not None:
-                    errors += self._realtime.close_models()
+                errors = self._engines.close()
                 if errors:
                     exc.cleanup_errors = errors
-                injected = self._recognizer.config is None or (
-                    self._realtime is not None and self._realtime.injected
-                )
+                injected = self._engines.injected
                 if injected:
                     self._state = "closed"
                     self._close_result = RuntimeCloseResult(
@@ -148,10 +205,12 @@ class ASRRuntime:
                     )
                 else:
                     self._recognizer = Recognizer(self._recognizer.config)
+                    self._engines = EngineResources(self._recognizer, self._model_lock)
                     if self._realtime is not None:
                         self._realtime = RealtimeGroup(
                             self, self._realtime_config, self._ultrafast_config
                         )
+                    self._assemble_candidate()
                 raise
             if self._realtime is not None:
                 self._realtime.start()
@@ -250,17 +309,21 @@ class ASRRuntime:
         self._sessions.pop(session_id, None)
         self._condition.notify_all()
 
-    def submit(self, request: InferenceRequest):
+    def submit(self, request: InferenceRequest, *, replace_task_id=None):
         """只接纳固定任务；辅助容量不足返回 False，最终容量不足保留输入。"""
         self._require_ready()
-        samples = request.task.audio_samples
+        samples = request.reserved_samples
+        replaced = next((job for job in self._queue if job.task.task_id == replace_task_id), None)
+        old_samples = replaced.reserved_samples if replaced is not None else 0
         if (
-            self._tasks >= self._limits.max_tasks
-            or self._task_samples + samples > self._limits.max_task_audio_samples
+            self._tasks - int(replaced is not None) >= self._limits.max_tasks
+            or self._task_samples - old_samples + samples > self._limits.max_task_audio_samples
         ):
             if request.priority == "auxiliary":
                 return False
             raise ASRError("TASK_CAPACITY_EXCEEDED", "finish", "最终任务容量不足，保留封口音频")
+        if replaced is not None:
+            self.cancel_task(replaced.task.task_id)
         self._queue.append(replace(request, submitted_at=monotonic()))
         self._tasks += 1
         self._task_samples += samples
@@ -278,14 +341,22 @@ class ASRRuntime:
                 self._running = job
             result, error = None, None
             try:
-                with self._model_lock:
+                model, model_lock = (
+                    self._candidate
+                    if job.role == "candidate"
+                    else (self._recognizer, self._model_lock)
+                )
+                with model_lock:
                     started_at = monotonic()
-                    result = self._recognizer.transcribe(
-                        job.pcm,
-                        format=AudioFormat(),
-                        language=job.language,
-                        word_timestamps=job.word_timestamps,
-                    )
+                    if job.role == "candidate":
+                        result = execute_candidate(model, job)
+                    else:
+                        result = model.transcribe(
+                            job.pcm,
+                            format=AudioFormat(),
+                            language=job.language,
+                            word_timestamps=job.word_timestamps,
+                        )
             except ASRError as exc:
                 error = exc
             completed_at = monotonic()
@@ -295,16 +366,16 @@ class ASRRuntime:
                 if session is not None:
                     session.accept_completion(job, result, error, timing)
                 self._tasks -= 1
-                self._task_samples -= job.task.audio_samples
+                self._task_samples -= job.reserved_samples
                 self._running = None
                 self._condition.notify_all()
             # 异常栈也可能引用音频；物理任务退出后不在空闲线程中保留它。
             job = result = error = None
         if self._realtime is not None:
             self._realtime.join()
-        cleanup = self._recognizer.close()
+        cleanup_errors = self._engines.close()
         with self._condition:
-            errors = cleanup.errors + (self._realtime.close_models() if self._realtime else ())
+            errors = cleanup_errors + (self._realtime.errors if self._realtime else ())
             self._close_result = RuntimeCloseResult("failed" if errors else "ok", errors=errors)
             self._state = "closed"
             self._condition.notify_all()
@@ -315,7 +386,7 @@ class ASRRuntime:
             if job.task.task_id == task_id:
                 self._queue.remove(job)
                 self._tasks -= 1
-                self._task_samples -= job.task.audio_samples
+                self._task_samples -= job.reserved_samples
                 self._condition.notify_all()
                 return True
         return False
@@ -362,10 +433,7 @@ class ASRRuntime:
                 self._realtime.stop()
             self._condition.notify_all()
             if self._worker is None:
-                cleanup = self._recognizer.close()
-                errors = cleanup.errors
-                if self._realtime is not None:
-                    errors += self._realtime.close_models()
+                errors = self._engines.close()
                 self._close_result = RuntimeCloseResult("failed" if errors else "ok", errors=errors)
                 self._state = "closed"
                 return self._close_result

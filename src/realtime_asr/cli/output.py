@@ -33,7 +33,8 @@ class Output:
                     self.stderr.write(f"[{fields['code']}] {fields['message']}\n")
                     self.stderr.flush()
             elif kind == "status":
-                self.stderr.write(f"[{fields['status']}] {fields.get('source', '')}\n")
+                reason = " " + fields["reason"] if fields.get("reason") else ""
+                self.stderr.write(f"[{fields['status']}] {fields.get('source', '')}{reason}\n")
                 self.stderr.flush()
             elif kind == "error":
                 self.stderr.write(f"[{fields['code']}] {fields['message']}\n")
@@ -61,6 +62,14 @@ class Output:
                 else:
                     text = event.result.text
                 self.stderr.write(f"[{event.source}:{event.unit.unit_id}] {text}\n")
+                self.stderr.flush()
+            elif event.candidate is not None:
+                value = event.candidate
+                self.stderr.write(
+                    f"[{event.kind}:{value.status}:{event.unit.unit_id}] {value.text}\n"
+                )
+                if event.error is not None:
+                    self.stderr.write(f"[{event.error.code}] {event.error.message}\n")
                 self.stderr.flush()
             elif event.error is not None:
                 self.stderr.write(f"[{event.error.code}] {event.error.message}\n")

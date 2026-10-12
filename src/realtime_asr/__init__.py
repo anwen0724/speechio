@@ -16,12 +16,14 @@ from realtime_asr.runtime.asr import (
     RuntimeCloseResult,
     RuntimeLimits,
 )
+from realtime_asr.runtime.candidates import CandidateConfig
 from realtime_asr.runtime.realtime import RealtimeConfig
 from realtime_asr.runtime.recognizer import Recognizer, RecognizerConfig
 from realtime_asr.segmentation.acoustic import AcousticBoundaryDetector
 from realtime_asr.segmentation.gate import SegmentationConfig, SegmentBoundary
 from realtime_asr.segmentation.vad import VadConfig, VoiceActivity, VoiceDetector
 from realtime_asr.session.automatic import AutomaticSession
+from realtime_asr.session.candidates import CandidateRequest, CandidateResult, ResumeAck
 from realtime_asr.session.session import (
     EventError,
     FinalTask,
@@ -38,8 +40,15 @@ from realtime_asr.text.realtime_merge import (
     RealtimeMergeResult,
 )
 from realtime_asr.text.stabilizer import StabilizationConfig, TextObservation, TextStabilizer
+from realtime_asr.text.tail_repair import TailRepairResult, repair_tail
 
 __all__ = [
+    "CandidateConfig",
+    "CandidateRequest",
+    "CandidateResult",
+    "ResumeAck",
+    "TailRepairResult",
+    "repair_tail",
     "RealtimeMergeConfig",
     "RealtimeMergeResult",
     "RealtimeMerger",

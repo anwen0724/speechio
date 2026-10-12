@@ -135,8 +135,10 @@ class LocalEngine(BaseTranscriptionEngine):
     def transcribe(self, audio, language=None, *, role="final", word_timestamps=False):
         if self.config.backend == "whisper":
             mapped = {"zh-CN": "zh", "en-US": "en"}.get(language, language)
+            # 候选使用完整识别参数，模型内部仍只维护最终与实时两种参数组。
+            parameter_role = "final" if role == "candidate" else role
             result = self._model.transcribe(
-                audio, language=mapped, role=role, word_timestamps=word_timestamps
+                audio, language=mapped, role=parameter_role, word_timestamps=word_timestamps
             )
             if mapped is not None:
                 result = replace(

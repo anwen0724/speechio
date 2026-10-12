@@ -151,6 +151,7 @@ class RemoteSession:
         self._socket, self._format, self._timeout = socket, format, timeout
         self._session_id, self._generation = ready["session_id"], ready["generation"]
         self._mode = ready["mode"]
+        self._candidate_available = ready.get("candidate", {}).get("enabled", False)
         self._unit = None
         self._sequence = 0
         self._tail = b""
@@ -175,6 +176,11 @@ class RemoteSession:
     def generation(self):
         """最近成功 reset 的代次，只由控制应答更新。"""
         return self._generation
+
+    @property
+    def candidate_available(self):
+        """宿主角色来自 ready 声明，客户端不会自行选择远端模型。"""
+        return self._candidate_available
 
     def _receive(self):
         try:
@@ -294,6 +300,26 @@ class RemoteSession:
         with self._operation_lock:
             self._check_tail()
             return self._command("end_input")
+
+    def request_candidate(self, *, kind="whole", hint=False):
+        """应答描述固定快照，模型结果仍通过 get_message 独立读取。"""
+        with self._operation_lock:
+            return self._command("candidate", candidate_kind=kind, hint=hint)
+
+    def resume(self, *, expected_audio_samples=None):
+        """继续使用同一连接和输入序号，不重发旧音频。"""
+        with self._operation_lock:
+            fields = (
+                {"expected_audio_samples": expected_audio_samples}
+                if expected_audio_samples is not None
+                else {}
+            )
+            return self._command("resume", **fields)
+
+    def request_correction(self, unit):
+        """整轮修正要求原完成单元，不能把当前音频当作旧录音。"""
+        with self._operation_lock:
+            return self._command("correct", unit=unit)
 
     def cancel(self, unit=None):
         """取消本连接目标；自动模式保留持续源，手动模式丢弃本单元余量。"""

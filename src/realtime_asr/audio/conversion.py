@@ -83,6 +83,11 @@ class AudioConverter:
             self._append_pcm(self._resample(mono))
         return self._take_frames()
 
+    def drain_ready(self) -> list[AudioFrame]:
+        """交付已经生成的标准短块，不结束输入或刷新重采样滤波器。"""
+        self._require_open()
+        return self._take_frames(tail=True)
+
     def finish(self) -> list[AudioFrame]:
         """正常结束输入，交付滤波输出和有效短尾块。"""
         if self.state == "finished":

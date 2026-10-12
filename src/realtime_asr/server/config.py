@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from ipaddress import ip_address
 from math import isfinite
 
-from realtime_asr import ASRError, RealtimeConfig, RecognizerConfig
+from realtime_asr import ASRError, CandidateConfig, RealtimeConfig, RecognizerConfig
 from realtime_asr.backends.base import validate_engine
 
 
@@ -25,6 +25,8 @@ class ServerConfig:
     engine: object = None
     realtime_config: RealtimeConfig | None = None
     ultrafast_config: RealtimeConfig | None = None
+    candidate_config: CandidateConfig | None = None
+    final_enabled: bool = True
     host: str = "127.0.0.1"
     port: int = 8000
     token: str | None = None
@@ -55,9 +57,21 @@ class ServerConfig:
     @property
     def capabilities(self):
         """配置只使用提供方声明，不能根据后端名称再推导能力。"""
+        if not self.final_enabled:
+            config = self.candidate_config
+            return (
+                config.engine.capabilities
+                if config.engine is not None
+                else config.model.capabilities
+            )
         return self.engine.capabilities if self.engine is not None else self.recognizer.capabilities
 
     def __post_init__(self):
+        if type(self.final_enabled) is not bool or (
+            self.candidate_config is not None
+            and not isinstance(self.candidate_config, CandidateConfig)
+        ):
+            raise ASRError("INVALID_CONFIGURATION", "configure_server", "候选角色或最终开关无效")
         if (
             any(
                 config is not None and not isinstance(config, RealtimeConfig)
@@ -70,14 +84,29 @@ class ServerConfig:
             or (self.realtime_config is not None and self.acoustic_boundaries)
         ):
             raise ASRError("INVALID_CONFIGURATION", "configure_server", "实时角色或声学配置冲突")
-        if (self.recognizer is None) == (self.engine is None) or (
-            self.recognizer is not None and not isinstance(self.recognizer, RecognizerConfig)
+        invalid_primary = (
+            (self.recognizer is None) == (self.engine is None)
+            if self.final_enabled
+            else (
+                self.recognizer is not None
+                or self.engine is not None
+                or self.candidate_config is None
+                or self.candidate_config.model is None
+                and self.candidate_config.engine is None
+            )
+        )
+        if (
+            invalid_primary
+            or self.recognizer is not None
+            and not isinstance(self.recognizer, RecognizerConfig)
         ):
             raise ASRError(
                 "INVALID_CONFIGURATION", "configure_server", "本地配置与引擎应且仅应提供一个"
             )
         if self.engine is not None:
             validate_engine(self.engine)
+        if self.candidate_config is not None and self.candidate_config.engine is not None:
+            validate_engine(self.candidate_config.engine)
         positive_ints = (
             self.port,
             self.max_sessions,

@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-from collections import OrderedDict, deque
+from collections import Counter, OrderedDict, deque
 from dataclasses import asdict
 from time import monotonic
 
@@ -15,8 +15,15 @@ from realtime_asr.protocol import decode_audio_packet
 from realtime_asr.server.schemas import AudioMetadata, Command
 
 
-def is_realtime(message):
-    return message.get("event", {}).get("kind") == "realtime"
+def preview_key(message):
+    """只有可替换预览参与合并；最终、完成及连接错误保持关键出口。"""
+    event = message.get("event", {})
+    kind = event.get("kind")
+    if kind == "realtime":
+        return event["unit"], ("realtime", event.get("realtime_role"))
+    if kind in ("candidate", "candidate_failed", "correction", "correction_failed"):
+        return event["unit"], ("candidate", event["source"])
+    return None
 
 
 class Outbox:
@@ -29,24 +36,21 @@ class Outbox:
         self.sending = False
 
     def put(self, message):
-        dropped = 0
-        if is_realtime(message):
-            unit = message["event"]["unit"]
+        dropped = Counter()
+        key = preview_key(message)
+        if key is not None:
             for old in tuple(self.queue):
-                if (
-                    is_realtime(old)
-                    and old["event"]["unit"] == unit
-                    and old["event"].get("realtime_role") == message["event"].get("realtime_role")
-                ):
+                if preview_key(old) == key:
                     self.queue.remove(old)
-                    dropped += 1
+                    dropped[old["event"]["kind"]] += 1
         while len(self.queue) >= self.capacity:
-            old = next((item for item in self.queue if is_realtime(item)), None)
+            old = next((item for item in self.queue if preview_key(item) is not None), None)
             if old is not None:
                 self.queue.remove(old)
-                dropped += 1
-            elif is_realtime(message):
-                return dropped + 1
+                dropped[old["event"]["kind"]] += 1
+            elif key is not None:
+                dropped[message["event"]["kind"]] += 1
+                return dropped
             else:
                 raise ASRError("SLOW_CONSUMER", "send", "关键消息发送缓冲已满")
         self.queue.append(message)
@@ -78,6 +82,9 @@ class Connection:
         self.close_task = None
         self.cache = OrderedDict()
         self.outbox = Outbox(service.config.max_pending_messages)
+        self.control_gate = asyncio.Lock()
+        self.resume_epochs = {}
+        self.candidate_requests = {}
 
     def message(self, kind, *, generation=None, **fields):
         return {
@@ -90,7 +97,8 @@ class Connection:
 
     def emit(self, message):
         dropped = self.outbox.put(message)
-        self.service.counts["realtime_dropped"] += dropped
+        self.service.counts["realtime_dropped"] += dropped["realtime"]
+        self.service.counts["candidate_dropped"] += sum(dropped.values()) - dropped["realtime"]
 
     def abort(self, error_code, message, *, code=1013):
         """失败清楚结束当前连接；不尝试为残缺输入生成最终。"""
@@ -114,6 +122,7 @@ class Connection:
                 mode=self.options.mode,
                 format=self.options.format.model_dump(),
                 expected_audio_sequence=0,
+                candidate=self.service.capabilities()["candidate"],
                 text_options={
                     name: getattr(self.options, name)
                     for name in (
@@ -123,6 +132,8 @@ class Connection:
                         "early_transcription_silence",
                         "dynamic_silence",
                         "punctuation_split",
+                        "completion_mode",
+                        "retain_for_correction",
                     )
                 },
             )
@@ -251,8 +262,12 @@ class Connection:
         self.service.counts["source_frames"] += metadata.frame_count
 
     async def _command(self, text):
-        payload = json.loads(text)
-        command = Command.model_validate(payload)
+        """应答先进入唯一出口，事件消费者随后领取新代次的观察。"""
+        command = Command.model_validate(json.loads(text))
+        async with self.control_gate:
+            await self._apply_command(command)
+
+    async def _apply_command(self, command):
         fingerprint = command.model_dump()
         cached = self.cache.get(command.request_id)
         if cached is not None:
@@ -264,7 +279,7 @@ class Connection:
             raise ASRError("SESSION_MISMATCH", "control", "命令不属于本连接当前代次")
         if self.closing and command.type not in ("cancel", "reset", "ping", "close"):
             raise ASRError("INPUT_CLOSED", "control", "连接正在结束输入")
-        if command.unit is not None and command.type not in ("cancel", "finish"):
+        if command.unit is not None and command.type not in ("cancel", "finish", "correct"):
             raise ASRError("INVALID_MESSAGE", "control", "该命令不接受 unit")
         kind = command.type
         fields = {}
@@ -272,6 +287,11 @@ class Connection:
             if self.options.mode != "manual":
                 raise ASRError("MODE_UNAVAILABLE", "start", "自动输入不单独开始音频单元")
             unit = await asyncio.to_thread(self.session.start)
+            self.candidate_requests = {
+                key: value
+                for key, value in self.candidate_requests.items()
+                if key[1] != "correction"
+            }
             self.active, self.last_task = unit, None
             self.active_has_audio = False
             self.audio_sequence = 0
@@ -291,6 +311,29 @@ class Connection:
             if self.options.mode != "auto":
                 raise ASRError("MODE_UNAVAILABLE", "end_input", "仅自动输入使用持续 EOF")
             await asyncio.to_thread(self.session.finish_input)
+        elif kind == "candidate":
+            request = await asyncio.to_thread(
+                self.session.request_candidate, kind=command.candidate_kind, hint=command.hint
+            )
+            fields["candidate_request"] = asdict(request)
+            self.candidate_requests[request.unit.unit_id, request.kind] = request.request_id
+        elif kind == "resume":
+            resume = await asyncio.to_thread(
+                self.session.resume, expected_audio_samples=command.expected_audio_samples
+            )
+            fields["resume"] = asdict(resume)
+            self.resume_epochs[resume.unit.unit_id] = resume.resume_epoch
+            self.candidate_requests = {
+                key: value
+                for key, value in self.candidate_requests.items()
+                if key[0] != resume.unit.unit_id
+            }
+        elif kind == "correct":
+            request = await asyncio.to_thread(
+                self.session.request_correction, command.unit.to_ref()
+            )
+            fields["candidate_request"] = asdict(request)
+            self.candidate_requests[request.unit.unit_id, request.kind] = request.request_id
         elif kind == "cancel":
             target = command.unit.to_ref() if command.unit is not None else None
             fields["cancelled"] = await asyncio.to_thread(self.session.cancel, target)
@@ -302,6 +345,8 @@ class Connection:
             self.audio_sequence = 0
             self.active = self.last_task = None
             self.pending_units.clear()
+            self.resume_epochs.clear()
+            self.candidate_requests.clear()
             self.outbox.keep_generation(self.generation)
             fields["change"] = asdict(change)
         elif kind == "close":
@@ -322,17 +367,36 @@ class Connection:
 
     async def _events(self):
         while not self.closed:
+            # SDK 可能等待别的会话正在转换的全局协调条件，不能占据网络控制锁。
             event = await asyncio.to_thread(self.session.get_event, timeout=0.05)
-            if event is None or event.unit.generation != self.generation:
+            if event is None:
                 continue
-            self.service.observe(event)
-            try:
-                self.emit(self.message("event", event=asdict(event)))
-            except ASRError as exc:
-                self.abort(exc.code, exc.message)
-                await asyncio.Future()
-            if event.kind in ("completed", "failed", "cancelled"):
-                self.pending_units.discard(event.unit.unit_id)
+            async with self.control_gate:
+                if event.unit.generation != self.generation:
+                    continue
+                if event.resume_epoch < self.resume_epochs.get(event.unit.unit_id, 0):
+                    continue
+                if event.candidate is not None:
+                    request = event.candidate.request
+                    if (
+                        self.candidate_requests.get((event.unit.unit_id, request.kind))
+                        != request.request_id
+                    ):
+                        continue
+                self.service.observe(event)
+                try:
+                    self.emit(self.message("event", event=asdict(event)))
+                except ASRError as exc:
+                    self.abort(exc.code, exc.message)
+                    await asyncio.Future()
+                if event.kind in ("completed", "failed", "cancelled"):
+                    self.pending_units.discard(event.unit.unit_id)
+                    self.resume_epochs.pop(event.unit.unit_id, None)
+                    self.candidate_requests = {
+                        key: value
+                        for key, value in self.candidate_requests.items()
+                        if key[0] != event.unit.unit_id or key[1] == "correction"
+                    }
 
     async def _drain_close(self):
         try:
@@ -351,7 +415,12 @@ class Connection:
                     if self.options.mode == "auto"
                     else len(self.pending_units)
                 )
-                if not pending and not self.outbox.queue and not self.outbox.sending:
+                if (
+                    not pending
+                    and not self.session.pending_candidates
+                    and not self.outbox.queue
+                    and not self.outbox.sending
+                ):
                     break
                 if monotonic() >= deadline:
                     raise ASRError("DRAIN_TIMEOUT", "close", "等待本连接结束超时")

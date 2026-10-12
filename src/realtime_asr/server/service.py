@@ -49,6 +49,8 @@ class Service:
             engine=config.engine,
             realtime=realtime,
             ultrafast=config.ultrafast_config,
+            candidate=config.candidate_config,
+            final_enabled=config.final_enabled,
             limits=RuntimeLimits(
                 max_sessions=config.max_sessions,
                 max_tasks=config.max_tasks,
@@ -84,6 +86,11 @@ class Service:
             not options.realtime or self.runtime.ultrafast_capabilities is None
         ):
             raise ASRError("REALTIME_NOT_CONFIGURED", "admit", "双实时需要启用实时并配置极速角色")
+        if options.completion_mode == "candidate" or options.retain_for_correction:
+            if self.runtime.candidate_capabilities is None:
+                raise ASRError("CANDIDATE_NOT_CONFIGURED", "admit", "服务未配置候选角色")
+        if not config.final_enabled and options.completion_mode != "candidate":
+            raise ASRError("MODE_UNAVAILABLE", "admit", "服务只支持候选完成策略")
         if options.mode == "auto" and config.vad_model is None:
             raise ASRError("MODE_UNAVAILABLE", "admit", "服务未配置自动模式")
         if options.mode != "auto" and (
@@ -101,6 +108,8 @@ class Service:
             stabilization=StabilizationConfig() if options.stable_text else None,
             word_timestamps=options.word_timestamps,
             merge=RealtimeMergeConfig() if options.dual_realtime else None,
+            completion_mode=options.completion_mode,
+            retain_for_correction=options.retain_for_correction,
         )
 
         def create():
@@ -224,6 +233,8 @@ class Service:
                     "engine",
                     "realtime_config",
                     "ultrafast_config",
+                    "candidate_config",
+                    "final_enabled",
                     "vad_model",
                     "token",
                     "ssl_certfile",
@@ -251,6 +262,21 @@ class Service:
             "realtime": config.realtime,
             "stable_text": config.realtime,
             "dual_realtime": self.runtime.ultrafast_capabilities is not None,
+            "final_enabled": config.final_enabled,
+            "candidate": {
+                "enabled": self.runtime.candidate_capabilities is not None,
+                "engine": asdict(self.runtime.candidate_capabilities)
+                if self.runtime.candidate_capabilities is not None
+                else None,
+                "kinds": ["tail", "whole"] if config.candidate_config is not None else [],
+                "resume": config.candidate_config is not None,
+                "correction": config.candidate_config is not None,
+                "tail_seconds": config.candidate_config.tail_seconds
+                if config.candidate_config is not None
+                else None,
+                "completion_modes": (["final"] if config.final_enabled else [])
+                + (["candidate"] if config.candidate_config is not None else []),
+            },
             "realtime_roles": {
                 role: asdict(capability) if capability is not None else None
                 for role, capability in (
@@ -269,7 +295,8 @@ class Service:
             "sample_rate_range": [1, 192000],
             "channels_range": [1, 8],
             "authentication_required": config.token is not None,
-            "controls": ["start", "finish", "end_input", "cancel", "reset", "ping", "close"],
+            "controls": ["start", "finish", "end_input", "cancel", "reset", "ping", "close"]
+            + (["candidate", "resume", "correct"] if config.candidate_config is not None else []),
             "limits": {
                 name: getattr(config, name)
                 for name in (
@@ -287,6 +314,8 @@ class Service:
 
     async def transcribe(self, request, options):
         """有限上传、后台最终与完成交付；所有路径回收本请求会话。"""
+        if not self.config.final_enabled:
+            raise ASRError("MODE_UNAVAILABLE", "transcribe", "候选专用宿主不提供独立 HTTP 最终识别")
         session = await self.open_session(options)
         self.counts["http_requests"] += 1
         request_id = session.session_id

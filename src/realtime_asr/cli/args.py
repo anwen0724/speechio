@@ -33,36 +33,74 @@ def add_realtime_model_args(parser):
         parser.add_argument(f"--{role}-device", choices=("cpu", "cuda"))
 
 
+def add_candidate_model_args(parser):
+    """模型角色只由本地与服务宿主选择，远程客户端不接收模型路径。"""
+    parser.add_argument("--candidates", action="store_true")
+    parser.add_argument("--candidate-model")
+    parser.add_argument("--candidate-backend", choices=("whisper", "nemotron"))
+    parser.add_argument("--candidate-device", choices=("cpu", "cuda"))
+    parser.add_argument("--candidate-only", action="store_true")
+
+
+def add_candidate_request_args(parser):
+    """本地与远程共用候选请求选项，不包含模型组装字段。"""
+    parser.add_argument("--candidate-kind", choices=("tail", "whole"), default="whole")
+    parser.add_argument("--candidate-every", type=_positive_seconds, default=2.0)
+    parser.add_argument("--candidate-hint", action="store_true")
+    parser.add_argument("--completion-mode", choices=("final", "candidate"))
+    parser.add_argument("--retain-for-correction", action="store_true")
+    parser.add_argument("--correct-after-final", action="store_true")
+
+
+def _local_role_model(args, role, primary):
+    """统一角色的路径、设备继承和 GPU 运行库复用，不加载模型。"""
+    from realtime_asr import ASRError, RecognizerConfig
+
+    path = getattr(args, role + "_model")
+    backend = getattr(args, role + "_backend")
+    device = getattr(args, role + "_device")
+    if path is None:
+        if backend is not None or device is not None:
+            raise ASRError("INVALID_CONFIGURATION", "configure_cli", "角色后端或设备需要模型路径")
+        return None
+    selected_device = device or primary.device
+    return RecognizerConfig(
+        model_path=path,
+        backend=backend or primary.backend,
+        device=selected_device,
+        cudnn_folder=primary.cudnn_folder if selected_device == "cuda" else None,
+        cuda_directory=primary.cuda_directory if selected_device == "cuda" else None,
+    )
+
+
+def candidate_role(args, primary):
+    """候选专用时主路径属于候选；正常模式缺省共用最终引擎。"""
+    from realtime_asr import CandidateConfig
+
+    model = _local_role_model(args, "candidate", primary)
+    if not (args.candidates or args.candidate_only or model is not None):
+        return None
+    if args.candidate_only and model is None:
+        model = primary
+    return CandidateConfig(model=model)
+
+
 def realtime_roles(args, final):
     """外部角色参数转为 SDK 配置，模式只从声明能力选择。"""
-    from realtime_asr import ASRError, RealtimeConfig, RecognizerConfig
+    from realtime_asr import ASRError, RealtimeConfig
 
     roles = {}
     for role in ("realtime", "ultrafast"):
         path = getattr(args, role + "_model")
-        backend = getattr(args, role + "_backend")
-        device = getattr(args, role + "_device")
-        if (path is None and (backend is not None or device is not None)) or (
-            path is not None and not args.realtime
-        ):
+        model = _local_role_model(args, role, final)
+        if path is not None and not args.realtime:
             raise ASRError(
                 "INVALID_CONFIGURATION", "configure_cli", "角色选项需要模型路径并启用实时"
             )
         if role == "ultrafast" and path is None or not args.realtime:
             roles[role] = None
             continue
-        model = None
-        selected = final
-        if path is not None:
-            selected_device = device or final.device
-            selected = RecognizerConfig(
-                model_path=path,
-                backend=backend or final.backend,
-                device=selected_device,
-                cudnn_folder=final.cudnn_folder if selected_device == "cuda" else None,
-                cuda_directory=final.cuda_directory if selected_device == "cuda" else None,
-            )
-            model = selected
+        selected = model if model is not None else final
         roles[role] = RealtimeConfig(
             mode=selected.capabilities.realtime_mode,
             model=model,
@@ -88,6 +126,8 @@ def parse_args(argv=None):
         command.add_argument("--cudnn-folder")
         command.add_argument("--cuda-directory")
         add_realtime_model_args(command)
+        add_candidate_model_args(command)
+        add_candidate_request_args(command)
         command.add_argument("--language")
         command.add_argument(
             "--mode", choices=("auto", "manual"), default="auto" if name == "mic" else "manual"
@@ -127,6 +167,20 @@ def parse_args(argv=None):
             command.add_argument("--sample-type", choices=("int16", "float32"), default="int16")
     args = parser.parse_args(argv)
     if args.command != "devices":
+        args.candidates = args.candidates or args.candidate_model is not None
+        args.completion_mode = args.completion_mode or (
+            "candidate" if args.candidate_only else "final"
+        )
+        if args.candidate_only and args.completion_mode != "candidate":
+            parser.error("候选专用模式要求候选完成策略")
+        if args.correct_after_final:
+            args.retain_for_correction = True
+            if args.mode != "manual":
+                parser.error("结束后修正只支持手动输入")
+        if (args.completion_mode == "candidate" or args.retain_for_correction) and not (
+            args.candidates or args.candidate_model or args.candidate_only
+        ):
+            parser.error("候选完成或修正要求配置候选角色")
         if args.dual_realtime and (not args.realtime or args.ultrafast_model is None):
             parser.error("双实时要求 --realtime 和 --ultrafast-model")
         if args.mode != "auto" and (

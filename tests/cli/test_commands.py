@@ -16,6 +16,66 @@ class CommandTests(unittest.TestCase):
     def setUp(self):
         test_recognizer.RecognizerTests.setUp(self)
 
+    def test_cli_candidates_arrive_before_eof_and_late_correction_is_drained(self):
+        received = Event()
+
+        class Input:
+            first = True
+
+            def read(self, count):
+                if self.first:
+                    self.first = False
+                    return b"\x01\x00" * 1024
+                if not received.wait(5):
+                    raise OSError("候选未在 EOF 前交付")
+                return b""
+
+        class Output(io.StringIO):
+            def write(self, text):
+                record = json.loads(text)
+                if record["record_type"] == "event" and record["event"]["kind"] == "candidate":
+                    received.set()
+                return super().write(text)
+
+        def inference(audio, **options):
+            return iter([SimpleNamespace(text="speech system", start=0, end=0.1)]), SimpleNamespace(
+                language="en", language_probability=1
+            )
+
+        stdout, stderr = Output(), io.StringIO()
+        with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=inference):
+            code = main(
+                [
+                    "stdin",
+                    "--model",
+                    str(self.path),
+                    "--candidates",
+                    "--candidate-every",
+                    "0.01",
+                    "--completion-mode",
+                    "candidate",
+                    "--correct-after-final",
+                    "--output",
+                    "jsonl",
+                ],
+                stdin=Input(),
+                stdout=stdout,
+                stderr=stderr,
+            )
+        self.assertEqual(code, 0, stderr.getvalue() + stdout.getvalue())
+        events = [
+            record["event"]
+            for line in stdout.getvalue().splitlines()
+            if (record := json.loads(line))["record_type"] == "event"
+        ]
+        self.assertEqual([event["kind"] for event in events].count("final"), 1)
+        self.assertTrue(
+            next(event for event in events if event["kind"] == "final")["optimization"][
+                "candidate_reused"
+            ]
+        )
+        self.assertTrue(any(event["kind"] == "correction" for event in events))
+
     def test_dual_cli_streams_both_roles_before_stdin_eof(self):
         received = Event()
         roles = set()

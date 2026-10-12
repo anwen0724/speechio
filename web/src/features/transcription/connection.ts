@@ -5,6 +5,42 @@ const unitSchema = z.object({
   generation: z.number().int().nonnegative(),
   unit_id: z.number().int().positive(),
 });
+export type UnitRef = z.infer<typeof unitSchema>;
+const candidateRequestSchema = z.object({
+  unit: unitSchema,
+  request_id: z.string(),
+  kind: z.enum(['tail', 'whole', 'correction']),
+  hint: z.boolean(),
+  start_sample: z.number().int(),
+  end_sample: z.number().int(),
+  audio_version: z.number().int(),
+  resume_epoch: z.number().int(),
+  resume_id: z.string().nullable(),
+  candidate_start_sample: z.number().int(),
+});
+const candidateSchema = z
+  .object({
+    request: candidateRequestSchema,
+    text: z.string(),
+    live_text: z.string(),
+    model_text: z.string(),
+    status: z.string(),
+    current: z.boolean(),
+    matched: z.boolean(),
+    used_fuzzy_match: z.boolean(),
+    attempts: z.number().int(),
+    added_silence_samples: z.number().int(),
+    replaces_task_id: z.string().nullable(),
+  })
+  .passthrough();
+export type CandidateResult = z.infer<typeof candidateSchema>;
+export type CompletionMode = 'final' | 'candidate';
+type OpenOptions = {
+  stableText: boolean;
+  dualRealtime: boolean;
+  completionMode: CompletionMode;
+  retainForCorrection: boolean;
+};
 const mergeSchema = z
   .object({
     unit: unitSchema,
@@ -34,9 +70,23 @@ const mergeSchema = z
 export type RealtimeMerge = z.infer<typeof mergeSchema>;
 const eventSchema = z
   .object({
-    kind: z.enum(['realtime', 'final', 'completed', 'failed', 'realtime_failed', 'cancelled']),
+    kind: z.enum([
+      'realtime',
+      'final',
+      'completed',
+      'failed',
+      'realtime_failed',
+      'cancelled',
+      'candidate',
+      'candidate_failed',
+      'correction',
+      'correction_failed',
+    ]),
     unit: unitSchema,
     sequence: z.number().int(),
+    task_id: z.string().nullable().optional(),
+    resume_epoch: z.number().int().optional(),
+    candidate: candidateSchema.nullable().optional(),
     result: z.object({ text: z.string() }).passthrough().nullable(),
     error: z.object({ code: z.string(), message: z.string() }).nullable(),
     realtime_role: z.enum(['accurate', 'ultrafast']).nullable().optional(),
@@ -69,7 +119,17 @@ const messageSchema = z
     session_id: z.string().optional(),
     generation: z.number().int().nonnegative().optional(),
     request_id: z.string().nullable().optional(),
+    command: z.string().optional(),
     unit: unitSchema.optional(),
+    candidate: z.object({ enabled: z.boolean() }).passthrough().optional(),
+    resume: z
+      .object({
+        unit: unitSchema,
+        resume_epoch: z.number().int(),
+        resume_id: z.string(),
+        candidate_start_sample: z.number().int(),
+      })
+      .optional(),
     event: eventSchema.optional(),
     code: z.string().optional(),
     message: z.string().optional(),
@@ -212,6 +272,7 @@ export class BrowserSession {
   private capturing = false;
   private inputEnded = false;
   private ready: Pending | undefined;
+  private resumeEpoch = 0;
 
   constructor(
     readonly mode: Mode,
@@ -220,7 +281,7 @@ export class BrowserSession {
   ) {}
 
   /** 先取得实际设备格式，再以 open 鉴权；成功连接尚未开始递交音频。 */
-  async connect(token: string, stableText = false, dualRealtime = false) {
+  async connect(token: string, options: OpenOptions) {
     try {
       this.capture = await Capture.create(
         undefined,
@@ -250,8 +311,10 @@ export class BrowserSession {
             token: token || null,
             mode: this.mode,
             realtime: true,
-            ...(stableText ? { stable_text: true } : {}),
-            ...(dualRealtime ? { dual_realtime: true } : {}),
+            ...(options.stableText ? { stable_text: true } : {}),
+            ...(options.dualRealtime ? { dual_realtime: true } : {}),
+            completion_mode: options.completionMode,
+            retain_for_correction: options.retainForCorrection,
             format: { sample_rate: this.sampleRate, channels: 1, sample_type: 'float32' },
           }),
         );
@@ -276,6 +339,13 @@ export class BrowserSession {
     try {
       if (typeof data !== 'string') throw new Error('服务响应不是 JSON 文本');
       const message = messageSchema.parse(JSON.parse(data));
+      // 应答先建立继续边界；已经发送到网络的旧观察也不能恢复旧预览。
+      if (message.resume) this.resumeEpoch = message.resume.resume_epoch;
+      if (
+        message.event?.unit.unit_id === this.unitId &&
+        (message.event.resume_epoch ?? 0) < this.resumeEpoch
+      )
+        return;
       if (message.type === 'ready' && this.ready) {
         clearTimeout(this.ready.timer);
         this.ready.resolve(message);
@@ -300,7 +370,7 @@ export class BrowserSession {
     }
   }
 
-  private command(type: string) {
+  private command(type: string, fields: Record<string, unknown> = {}) {
     const socket = this.socket;
     if (!socket || socket.readyState !== WebSocket.OPEN || this.disposed)
       return Promise.reject(new Error('会话没有连接'));
@@ -318,6 +388,7 @@ export class BrowserSession {
           request_id: requestId,
           session_id: this.sessionId,
           generation: this.generation,
+          ...fields,
         }),
       );
     });
@@ -342,6 +413,7 @@ export class BrowserSession {
       const message = await this.command('start');
       if (!message.unit) throw new Error('start 缺少音频单元');
       this.unitId = message.unit.unit_id;
+      this.resumeEpoch = 0;
       this.sequence = 0;
     }
     this.capturing = true;
@@ -406,6 +478,22 @@ export class BrowserSession {
     this.inputEnded = false;
     this.sequence = 0;
     this.unitId = null;
+    this.resumeEpoch = 0;
+  }
+
+  /** 候选控制只递交请求，不停止当前采集。 */
+  requestCandidate(kind: 'tail' | 'whole', hint: boolean) {
+    return this.command('candidate', { candidate_kind: kind, hint });
+  }
+
+  /** 刷新设备短尾，再让服务返回实际标准音频边界。 */
+  async resume() {
+    if (this.capture && this.capturing) await this.capture.flush();
+    return this.command('resume');
+  }
+
+  requestCorrection(unit: UnitRef) {
+    return this.command('correct', { unit });
   }
 
   /** 请求正常排空，收到 closed 前继续接收本连接的最终消息。 */

@@ -2,7 +2,7 @@
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from realtime_asr import AudioFormat, UnitRef
 
@@ -43,6 +43,8 @@ class Open(Versioned):
     language: Annotated[str, Field(min_length=1)] | None = None
     realtime: bool = True
     dual_realtime: bool = False
+    completion_mode: Literal["final", "candidate"] = "final"
+    retain_for_correction: bool = False
     max_audio_seconds: PositiveSeconds | None = None
     max_pending_units: PositiveInt | None = None
     webrtc_mode: Annotated[int, Field(ge=0, le=3)] = 3
@@ -66,11 +68,36 @@ class Unit(StrictModel):
 
 
 class Command(Versioned):
-    type: Literal["start", "finish", "end_input", "cancel", "reset", "ping", "close"]
+    type: Literal[
+        "start",
+        "finish",
+        "end_input",
+        "cancel",
+        "reset",
+        "ping",
+        "close",
+        "candidate",
+        "resume",
+        "correct",
+    ]
     request_id: RequestId
     session_id: str
     generation: NonnegativeInt
     unit: Unit | None = None
+    candidate_kind: Literal["tail", "whole"] = "whole"
+    hint: bool = False
+    expected_audio_samples: NonnegativeInt | None = None
+
+    @model_validator(mode="after")
+    def command_fields(self):
+        """只接纳该操作真正使用的字段，避免看似成功却被忽略的控制。"""
+        if self.type != "candidate" and self.model_fields_set & {"candidate_kind", "hint"}:
+            raise ValueError("候选字段只用于 candidate")
+        if self.type != "resume" and "expected_audio_samples" in self.model_fields_set:
+            raise ValueError("采样边界只用于 resume")
+        if self.type == "correct" and self.unit is None:
+            raise ValueError("correct 要求 unit")
+        return self
 
 
 class AudioMetadata(Versioned):

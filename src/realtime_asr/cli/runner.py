@@ -24,7 +24,8 @@ from realtime_asr import (
     list_input_devices,
 )
 from realtime_asr.audio.files import audio_file_chunks
-from realtime_asr.cli.args import parse_args, realtime_roles
+from realtime_asr.cli.args import candidate_role, parse_args, realtime_roles
+from realtime_asr.cli.candidates import CandidateTicker
 from realtime_asr.cli.input import stdin_blocks
 from realtime_asr.cli.output import Output
 
@@ -32,12 +33,14 @@ from realtime_asr.cli.output import Output
 class _EventConsumer:
     """stdin 等待下一块时仍消费结果，保存输出失败供输入线程处理。"""
 
-    def __init__(self, session, output, index, source, *, automatic):
+    def __init__(self, session, output, index, source, *, automatic, correct_after_final=False):
         self.session = session
         self.output = output
         self.index = index
         self.source = source
         self.automatic = automatic
+        self.correct_after_final = correct_after_final
+        self.correction_pending = False
         self.finished = Event()
         self.stopping = Event()
         self.done = Event()
@@ -51,7 +54,12 @@ class _EventConsumer:
                 event = self.session.get_event(timeout=0.05)
                 if event is not None:
                     self.output.event(event, input_index=self.index, source=self.source)
-                    if event.kind in ("failed", "realtime_failed"):
+                    if event.kind == "final" and self.correct_after_final:
+                        self.correction_pending = True
+                        self.session.request_correction(event.unit)
+                    if event.kind in ("correction", "correction_failed"):
+                        self.correction_pending = False
+                    if event.kind in ("failed", "realtime_failed", "correction_failed"):
                         raise ASRError(event.error.code, event.error.operation, event.error.message)
                     if event.kind in ("completed", "cancelled"):
                         self.terminals += 1
@@ -61,7 +69,7 @@ class _EventConsumer:
                         if self.automatic
                         else self.terminals >= 1
                     )
-                    if empty:
+                    if empty and not self.correction_pending:
                         break
         except Exception as exc:
             self.error = exc
@@ -103,6 +111,8 @@ def _session(runtime, args, format):
         stabilization=StabilizationConfig() if args.stable_text else None,
         word_timestamps=args.word_timestamps,
         merge=RealtimeMergeConfig() if args.dual_realtime else None,
+        completion_mode=args.completion_mode,
+        retain_for_correction=args.retain_for_correction,
     )
     if args.mode == "auto":
         return runtime.create_auto_session(
@@ -131,7 +141,21 @@ def _session(runtime, args, format):
 def _run_input(runtime, args, output, index, source, format, blocks, *, microphone=None):
     """明确正常封口和失败取消，并对自己创建的消费线程负责。"""
     session = _session(runtime, args, format)
-    consumer = _EventConsumer(session, output, index, source, automatic=args.mode == "auto")
+    consumer = _EventConsumer(
+        session,
+        output,
+        index,
+        source,
+        automatic=args.mode == "auto",
+        correct_after_final=args.correct_after_final,
+    )
+    ticker = CandidateTicker(args, format, session.request_candidate)
+
+    def accept(block):
+        session.feed_audio(block)
+        if skipped := ticker.accept(block):
+            output.record("status", status="candidate_skipped", reason=skipped, source=source)
+
     reason, code = "eof", 0
     cleanup_error = None
     try:
@@ -153,14 +177,14 @@ def _run_input(runtime, args, output, index, source, format, blocks, *, micropho
                     consumer.check()
                     pcm = microphone.read_audio(timeout=0.05)
                     if pcm:
-                        session.feed_audio(pcm)
+                        accept(pcm)
                 reason = "duration"
             else:
                 if args.command == "stdin":
                     blocks = stdin_blocks(blocks, format, consumer.check)
                 for block in blocks:
                     consumer.check()
-                    session.feed_audio(block)
+                    accept(block)
         except KeyboardInterrupt:
             reason, code = "interrupt", 130
         # 先停止设备，再接纳已经成功入队的尾部；不释放使用中的模型。
@@ -255,7 +279,14 @@ def _execute(args, stdin, output):
             cuda_directory=args.cuda_directory,
         )
         realtime, ultrafast = realtime_roles(args, config)
-        runtime = ASRRuntime(config, realtime=realtime, ultrafast=ultrafast)
+        candidate = candidate_role(args, config)
+        runtime = ASRRuntime(
+            None if args.candidate_only else config,
+            realtime=realtime,
+            ultrafast=ultrafast,
+            candidate=candidate,
+            final_enabled=not args.candidate_only,
+        )
         output.record("status", status="preparing", input_index=0, source=source)
         runtime.prepare()
         if args.command == "mic":

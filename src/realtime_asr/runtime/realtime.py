@@ -3,7 +3,7 @@
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from math import isfinite
-from threading import Lock, Thread
+from threading import Thread
 from time import monotonic
 from uuid import uuid4
 
@@ -11,7 +11,7 @@ import numpy as np
 
 from realtime_asr.errors import ASRError
 from realtime_asr.results import CloseError, RecognitionResult
-from realtime_asr.runtime.recognizer import Recognizer, RecognizerConfig
+from realtime_asr.runtime.recognizer import RecognizerConfig
 from realtime_asr.segmentation.acoustic import AcousticBoundary, AcousticBoundaryDetector
 from realtime_asr.session.session import EventError, SessionEvent
 
@@ -314,6 +314,14 @@ class RealtimeExecutor:
                 # 输入可以在解码期间继续到达；动作必须与本次领取的增量一致。
                 finishing, cleaning = state.ended, state.invalid
                 trigger, boundary = state.trigger_reason, state.boundary
+                input_end = (
+                    state.accepted_samples + len(pcm) // 2
+                    if self.config.mode == "native"
+                    else len(pcm) // 2
+                )
+                epoch, resume_id, candidate_start = state.session.observation_context(
+                    state.ref, input_end
+                )
             result, error = None, None
             with self.model_lock:
                 started = monotonic()
@@ -344,6 +352,9 @@ class RealtimeExecutor:
                 error=error,
                 source=self.config.mode,
                 realtime_role=self.role,
+                resume_epoch=epoch,
+                resume_id=resume_id,
+                candidate_start_sample=candidate_start,
                 started_at_monotonic=started,
                 completed_at_monotonic=monotonic(),
                 stream_finished=self.config.mode == "native" and finishing and error is None,
@@ -374,35 +385,16 @@ class RealtimeGroup:
         ):
             raise ASRError("INVALID_CONFIGURATION", "configure", "极速角色需要明确的模型或引擎")
         self.runtime = runtime
-        self._models = [(runtime._recognizer, runtime._model_lock)]
         self.executors = {}
         for role, config in (("accurate", accurate), ("ultrafast", ultrafast)):
             if config is None:
                 continue
-            model, lock = self._role_model(config)
+            model, lock = runtime._engines.assign(model=config.model, engine=config.engine)
             self.executors[role] = RealtimeExecutor(runtime, config, role, model, lock)
-
-    def _role_model(self, config):
-        """注入实例按身份共享；显式本地配置仍创建独立模型拥有者。"""
-        if config.model is None:
-            engine = config.engine if config.engine is not None else self._models[0][0].engine
-            for model, lock in self._models:
-                if model.engine is engine:
-                    return model, lock
-        model = Recognizer(config.model, engine=config.engine)
-        for other, _ in self._models:
-            model.ensure_compatible(other)
-        owned = model, Lock()
-        self._models.append(owned)
-        return owned
 
     @property
     def has_ultrafast(self):
         return "ultrafast" in self.executors
-
-    @property
-    def injected(self):
-        return any(model.config is None for model, _ in self._models)
 
     def capabilities(self, role):
         executor = self.executors.get(role)
@@ -431,10 +423,6 @@ class RealtimeGroup:
             for executor in self.executors.values()
         )
 
-    def prepare(self):
-        for model, _ in self._models[1:]:
-            model.prepare()
-
     def start(self):
         for executor in self.executors.values():
             executor.thread.start()
@@ -443,12 +431,10 @@ class RealtimeGroup:
         for executor in self.executors.values():
             executor.thread.join()
 
-    def close_models(self):
-        """执行线程全部退出后关闭独立拥有者；最终引擎由运行时关闭。"""
-        errors = tuple(error for executor in self.executors.values() for error in executor.errors)
-        for model, _ in self._models[1:]:
-            errors += model.close().errors
-        return errors
+    @property
+    def errors(self):
+        """只聚合流清理错误；角色模型统一由资源拥有者关闭。"""
+        return tuple(error for executor in self.executors.values() for error in executor.errors)
 
     def add_unit(self, session, ref):
         enabled = tuple(

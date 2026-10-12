@@ -126,12 +126,38 @@ assert all(stream.samples == 525 and stream.closed for engine in (accurate, fast
 print(json.dumps({'controlled_installed_dual': True, 'roles': sorted(roles)}))
 """
 
+CANDIDATE_PROBE = (
+    PROBE
+    + """
+engine = Engine()
+with sdk.ASRRuntime(engine=engine, candidate=sdk.CandidateConfig()) as runtime:
+    session = runtime.create_session(sdk.SessionConfig(
+        completion_mode='candidate', retain_for_correction=True))
+    unit = session.start()
+    session.feed_audio(np.zeros(525, np.int16))
+    session.resume(expected_audio_samples=525)
+    session.request_candidate()
+    candidate = session.get_event(timeout=5)
+    assert candidate.candidate.request.resume_epoch == 1
+    session.finish()
+    final = session.get_event(timeout=5)
+    assert final.optimization['candidate_reused']
+    assert session.get_event(timeout=5).kind == 'completed'
+    session.request_correction(unit)
+    correction = session.get_event(timeout=5)
+    assert correction.candidate.replaces_task_id == final.task_id
+assert engine.prepared == engine.closed == 1
+print(json.dumps({'controlled_installed_candidates': True, 'package': sdk.__file__}))
+"""
+)
+
 
 def main():
     parser = argparse.ArgumentParser(description="P8 wheel 项目外检查，复用已准备的三种依赖环境")
     parser.add_argument("--environments", type=Path, default=Path(".runtime/p6-installed"))
     parser.add_argument("--outside", type=Path, required=True)
     parser.add_argument("--dual", action="store_true")
+    parser.add_argument("--candidates", action="store_true")
     args = parser.parse_args()
     project = Path.cwd()
     outside = args.outside.resolve()
@@ -181,6 +207,13 @@ def main():
                 env,
             )
         )
+    if args.candidates:
+        output = invoke(
+            [str(environments / "base/Scripts/python.exe"), "-I", "-c", CANDIDATE_PROBE],
+            outside,
+            env,
+        )
+        report["p8_candidates_api"] = json.loads(output.splitlines()[-1])
     with zipfile.ZipFile(wheel_path) as wheel:
         names = [name for name in wheel.namelist() if name.startswith("realtime_asr/")]
         for name in names:
@@ -193,7 +226,11 @@ def main():
     report["dependency_profiles_reused"] = True
     report["package_reinstalled_from_current_wheel"] = True
     Path(
-        "artifacts/p8-1/installed.json" if args.dual else "artifacts/p8/installed.json"
+        "artifacts/p8-candidates/installed.json"
+        if args.candidates
+        else "artifacts/p8-1/installed.json"
+        if args.dual
+        else "artifacts/p8/installed.json"
     ).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print("P8 installed wheel checks passed")
 

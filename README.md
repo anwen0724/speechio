@@ -2,7 +2,7 @@
 
 独立实时 ASR 项目。当前提供同步整段识别 SDK、连续会话 SDK、实时识别与稳定文本、自动分句和结束优化、麦克风采集、本地命令行及 HTTP／WebSocket 共享服务。Python 远程客户端和最小浏览器入口调用同一服务协议。真实评估入口独立放在 `evals/`。
 
-同步 SDK 分块入口在全部输入结束后返回完整结果。连续会话可在上一单元推理期间接收下一单元，通过实时与最终事件消费结果。基本实时支持 Whisper 完整快照和 Nemotron 原生增量。自动会话通过双 VAD 确认录音段，提供前置保护与统一回溯。可选策略提供声学触发、提前推理、动态等待及有词时间证据的句末切段。双实时可分别配置准确与极速角色，保留原文并按锚点合并有限尾部。接入层复用这些接口；候选、完整浏览器工作台和唤醒仍待后续阶段。产品范围见 [PRD](docs/PRD.md)，系统设计见 [Architecture](docs/ARCHITECTURE.md)，实际验收见 [STATUS](docs/STATUS.md)。
+同步 SDK 分块入口在全部输入结束后返回完整结果。连续会话可在上一单元推理期间接收下一单元，通过实时与最终事件消费结果。基本实时支持 Whisper 完整快照和 Nemotron 原生增量。自动会话通过双 VAD 确认录音段，提供前置保护与统一回溯。可选策略提供声学触发、提前推理、动态等待及有词时间证据的句末切段。双实时可分别配置准确与极速角色，保留原文并按锚点合并有限尾部。候选支持固定尾部／整轮快照、手动同轮继续、候选完成和最近整轮修正。SDK、CLI、服务与浏览器使用相同核心接口；唤醒与完整工作台仍待后续阶段。产品范围见 [PRD](docs/PRD.md)，系统设计见 [Architecture](docs/ARCHITECTURE.md)，实际验收见 [STATUS](docs/STATUS.md)。
 
 ## 代码结构
 
@@ -581,3 +581,15 @@ P6 的真实网络验证使用 `uv run --no-sync python -m evals.p6`，要求已
 P7 的真实验证使用 `uv run --no-sync python -m evals.p7`，要求同机已准备三条模型路径、VAD、公开 WAV 与 Chrome。`evals/p7/report.py` 可从既有 `matrix.json` 核对最终模型输入与左右连续性，生成等待和模型调用对照，不重新推理。报告区分源 EOF 等待、封口任务到交付，以及未测的正式质量和峰值内存／显存。`evals/p7/installed_check.py --outside <项目外目录>` 将本次 wheel 重新安装到已准备的独立 base／client／server 依赖环境，再执行项目外检查；环境父目录可用 `--environments` 指定。
 
 Spec、实施 Plan 与状态入口分别为 [P0 Spec](docs/specs/runtime-and-corpus-baseline.md)、[P0 Plan](docs/plans/p0-runtime-and-corpus-baseline.md) 和 [STATUS](docs/STATUS.md)。
+
+## 候选与同轮继续
+
+宿主通过 `ASRRuntime(candidate=CandidateConfig())` 显式开启候选，默认复用主模型。独立模型使用 `CandidateConfig(model=...)` 或宿主注入的 `engine`。模型实例由运行时统一准备与关闭。会话的 `request_candidate(kind="tail"|"whole", hint=False)` 异步返回固定范围的请求，结果从 `get_event()` 消费。候选不会自动成为最终正文。
+
+手动接收期间调用 `resume()`，保留完整音频历史并更新继续代次；旧代次预览不再发布。`SessionConfig(completion_mode="candidate")` 让候选角色执行完成任务，只复用同版本有效整轮候选。默认 `final` 策略保持原来的最终模型。
+
+`retain_for_correction=True` 只保留最近完成单元，`request_correction(unit)` 的结果关联原最终任务，失败保留原正文。开始新单元、重置、取消对应单元和关闭会释放保留上下文。完整程序见 [候选示例](examples/candidates.py)。
+
+本地与服务启动器支持 `--candidates`、独立 `--candidate-model` 和 `--candidate-only`。本地转写与远程转写支持 `--candidate-kind`、`--candidate-every`、`--candidate-hint`、`--completion-mode`、`--retain-for-correction` 和手动模式的 `--correct-after-final`。周期按输入音频时长计算；文本输出的候选写 stderr，最终正文写 stdout。远程参数只申请宿主已有角色。
+
+浏览器在连接前选择完成策略和修正保留。连接成功后按宿主能力启用候选按钮；同轮继续仅用于手动采集，修正成功更新原最终正文。候选区域独立显示来源、范围、状态及发布时的新旧关系。候选模型计算期间仍继续递交麦克风音频。

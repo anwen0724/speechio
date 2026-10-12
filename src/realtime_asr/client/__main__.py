@@ -1,14 +1,23 @@
-"""远程命令行；文件用 HTTP，连续输入用独立的 WebSocket。"""
+"""远程命令行；基本文件使用 HTTP，候选与连续音频使用 WebSocket。"""
 
 import argparse
 import json
 import os
 import sys
+from contextlib import closing
+from itertools import chain
 from threading import Event, Thread
 from time import monotonic
 
 from realtime_asr import ASRError, AudioFormat, MicrophoneConfig, MicrophoneInput
-from realtime_asr.cli.args import _positive_int, _positive_seconds, _seconds
+from realtime_asr.audio.files import audio_file_chunks
+from realtime_asr.cli.args import (
+    _positive_int,
+    _positive_seconds,
+    _seconds,
+    add_candidate_request_args,
+)
+from realtime_asr.cli.candidates import CandidateTicker
 from realtime_asr.cli.input import stdin_blocks
 from realtime_asr.client import RemoteClient
 
@@ -42,6 +51,15 @@ class RemoteOutput:
                 text = event["result"]["text"]
             self.stderr.write("[realtime] " + text + "\n")
             self.stderr.flush()
+        elif event.get("candidate") is not None:
+            value = event["candidate"]
+            self.stderr.write(f"[{event['kind']}:{value['status']}] {value['text']}\n")
+            if event.get("error"):
+                self.stderr.write(f"[{event['error']['code']}] {event['error']['message']}\n")
+            self.stderr.flush()
+        elif message["type"] == "status":
+            self.stderr.write(f"[{message['status']}] {message.get('reason', '')}\n")
+            self.stderr.flush()
         elif message["type"] == "error":
             self.stderr.write(f"[{message['code']}] {message['message']}\n")
             self.stderr.flush()
@@ -50,10 +68,14 @@ class RemoteOutput:
 class MessageConsumer:
     """输入管道空闲时仍独立输出结果，失败交回输入拥有者。"""
 
-    def __init__(self, session, output):
+    def __init__(self, session, output, *, correct_after_final=False):
         self.session, self.output = session, output
         self.stop = Event()
         self.error = None
+        self.correct_after_final = correct_after_final
+        self.correction_pending = False
+        self.terminal_seen = False
+        self.results_done = Event()
         self.thread = Thread(target=self._run, name="ASRRemoteCLIOutput", daemon=True)
 
     def _run(self):
@@ -64,7 +86,16 @@ class MessageConsumer:
                     continue
                 self.output.write(message)
                 event = message.get("event", {})
-                if event.get("kind") in ("failed", "realtime_failed"):
+                if event.get("kind") == "final" and self.correct_after_final:
+                    self.correction_pending = True
+                    self.session.request_correction(event["unit"])
+                if event.get("kind") in ("correction", "correction_failed"):
+                    self.correction_pending = False
+                if event.get("kind") == "completed":
+                    self.terminal_seen = True
+                if self.terminal_seen and not self.correction_pending:
+                    self.results_done.set()
+                if event.get("kind") in ("failed", "realtime_failed", "correction_failed"):
                     error = event["error"]
                     raise ASRError(error["code"], error["operation"], error["message"])
                 if message["type"] == "error":
@@ -73,6 +104,16 @@ class MessageConsumer:
                     return
         except Exception as exc:
             self.error = exc
+            self.results_done.set()
+
+    def wait_results(self, timeout):
+        """手动修正完成后才关闭连接，避免 completed 抢先结束消费者。"""
+        deadline = monotonic() + timeout
+        while not self.results_done.wait(0.05):
+            self.check()
+            if monotonic() >= deadline:
+                raise ASRError("DRAIN_TIMEOUT", "correct", "等待远程修正结果超时")
+        self.check()
 
     def check(self):
         if self.error is not None:
@@ -101,8 +142,10 @@ def parser():
     commands = command.add_subparsers(dest="input", required=True)
     file = commands.add_parser("file")
     file.add_argument("paths", nargs="+")
-    for name in ("stdin", "mic"):
-        source = commands.add_parser(name)
+    for name in ("file", "stdin", "mic"):
+        source = file if name == "file" else commands.add_parser(name)
+        source.add_argument("--candidates", action="store_true")
+        add_candidate_request_args(source)
         source.add_argument(
             "--mode", choices=("auto", "manual"), default="auto" if name == "mic" else "manual"
         )
@@ -112,19 +155,20 @@ def parser():
         source.add_argument("--dynamic-silence", action="store_true")
         source.add_argument("--punctuation-split", action="store_true")
         source.add_argument("--early-transcription-silence", type=_seconds, default=0)
-        source.add_argument(
-            "--sample-rate", type=_positive_int, default=None if name == "mic" else 16000
-        )
-        source.add_argument("--channels", type=_positive_int, default=1)
+        if name != "file":
+            source.add_argument(
+                "--sample-rate", type=_positive_int, default=None if name == "mic" else 16000
+            )
+            source.add_argument("--channels", type=_positive_int, default=1)
         if name == "stdin":
             source.add_argument("--sample-type", choices=("int16", "float32"), default="int16")
-        else:
+        elif name == "mic":
             source.add_argument("--input-device", type=int)
             source.add_argument("--duration", type=_positive_seconds)
     return command
 
 
-def streaming(client, args, output, stdin):
+def streaming(client, args, output, stdin, *, file_input=None):
     """先停止自有采集，再排空网络；失败取消不会伪造正常 EOF。"""
     microphone = session = consumer = None
     success = False
@@ -139,6 +183,8 @@ def streaming(client, args, output, stdin):
                 )
             )
             format = microphone.prepare()
+        elif file_input is not None:
+            format, file_blocks = file_input
         else:
             format = AudioFormat(args.sample_rate, args.channels, args.sample_type)
         text_options = {
@@ -150,6 +196,8 @@ def streaming(client, args, output, stdin):
                 "dynamic_silence",
                 "punctuation_split",
                 "early_transcription_silence",
+                "completion_mode",
+                "retain_for_correction",
             )
             if getattr(args, name)
         }
@@ -160,9 +208,25 @@ def streaming(client, args, output, stdin):
             realtime=args.realtime,
             **text_options,
         )
+        if args.candidates and not session.candidate_available:
+            raise ASRError("CANDIDATE_NOT_CONFIGURED", "candidate", "远端没有候选角色")
+        ticker = CandidateTicker(args, format, session.request_candidate)
+
+        def accept(audio):
+            session.feed_audio(audio)
+            if skipped := ticker.accept(audio):
+                output.write(
+                    {
+                        "protocol_version": 1,
+                        "type": "status",
+                        "status": "candidate_skipped",
+                        "reason": skipped,
+                    }
+                )
+
         if args.mode == "manual":
             session.start()
-        consumer = MessageConsumer(session, output)
+        consumer = MessageConsumer(session, output, correct_after_final=args.correct_after_final)
         consumer.thread.start()
         try:
             if microphone is not None:
@@ -171,10 +235,15 @@ def streaming(client, args, output, stdin):
                 while args.duration is None or monotonic() - started < args.duration:
                     consumer.check()
                     if audio := microphone.read_audio(timeout=0.05):
-                        session.feed_audio(audio)
+                        accept(audio)
+            elif file_input is not None:
+                dtype = "<i2" if format.sample_type == "int16" else "<f4"
+                for block in file_blocks:
+                    consumer.check()
+                    accept(block.astype(dtype, copy=False).tobytes())
             else:
                 for audio in stdin_blocks(getattr(stdin, "buffer", stdin), format, consumer.check):
-                    session.feed_audio(audio)
+                    accept(audio)
         except KeyboardInterrupt:
             code = 130
         if microphone is not None:
@@ -182,8 +251,10 @@ def streaming(client, args, output, stdin):
             if result.status != "ok":
                 raise ASRError("CLOSE_TIMEOUT", "microphone", "采集资源尚未释放")
             while audio := microphone.read_audio():
-                session.feed_audio(audio)
+                accept(audio)
         session.end_input() if args.mode == "auto" else session.finish()
+        if args.correct_after_final:
+            consumer.wait_results(args.timeout)
         session.close()
         consumer.close()
         success = True
@@ -204,7 +275,12 @@ def main(argv=None, *, stdin=None, stdout=None, stderr=None):
             stream.reconfigure(encoding="utf-8")
     command = parser()
     args = command.parse_args(argv)
-    if args.input != "file" and args.dual_realtime and not args.realtime:
+    args.completion_mode = args.completion_mode or "final"
+    if args.correct_after_final:
+        args.retain_for_correction = True
+        if args.mode != "manual":
+            command.error("结束后修正只支持手动输入")
+    if args.dual_realtime and not args.realtime:
         command.error("双实时要求 --realtime")
     output = RemoteOutput(args.output, stdout or sys.stdout, stderr or sys.stderr)
     try:
@@ -213,6 +289,18 @@ def main(argv=None, *, stdin=None, stdout=None, stderr=None):
         ) as client:
             if args.input == "file":
                 for path in args.paths:
+                    if (
+                        args.candidates
+                        or args.completion_mode == "candidate"
+                        or args.retain_for_correction
+                    ):
+                        with closing(audio_file_chunks(path)) as blocks:
+                            format, first = next(blocks)
+                            source = format, chain((first,), (audio for _, audio in blocks))
+                            code = streaming(client, args, output, stdin, file_input=source)
+                        if code:
+                            return code
+                        continue
                     output.write(
                         client.transcribe_file(
                             path, language=args.language, word_timestamps=args.word_timestamps

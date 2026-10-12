@@ -189,6 +189,10 @@ class AutomaticSession(Session):
         if self._buffer_samples(state) + upper + 1024 > self._segmentation.max_buffer_samples:
             raise ASRError("AUDIO_CAPACITY_EXCEEDED", "feed_audio", "自动输入缓冲不足，本块未接纳")
 
+    def resume(self, *, expected_audio_samples=None):
+        """自动输入的录音段由门控负责，不把继续误作重新开始分句。"""
+        raise ASRError("MODE_UNAVAILABLE", "resume", "同轮继续只适用于手动输入")
+
     def feed_audio(self, chunk):
         """本会话串行转换和检测；不持有全局锁，也不等待 ASR 模型。"""
         with self._input_lock:
@@ -291,6 +295,8 @@ class AutomaticSession(Session):
 
     def _dispatch_final(self, unit, task, pcm):
         """只由本会话决定精确复用，调度器不读取提前策略状态。"""
+        if self.config.completion_mode == "candidate":
+            return super()._dispatch_final(unit, task, pcm)
         early = unit.early_result
         if early is not None and early.matches_audio(pcm):
             unit.task = task
@@ -305,7 +311,7 @@ class AutomaticSession(Session):
         event = super()._event(unit, kind, **fields)
         return replace(
             event,
-            optimization=dict(unit.optimization) or None,
+            optimization={**(event.optimization or {}), **unit.optimization} or None,
             source="early-final"
             if kind == "final" and unit.optimization.get("early_reused")
             else event.source,
@@ -340,6 +346,7 @@ class AutomaticSession(Session):
             self.config.language,
             word_timestamps=purpose == "punctuation" or self.config.word_timestamps,
             priority="auxiliary",
+            role="final" if self._runtime.final_enabled else "candidate",
         )
         if not self._runtime.submit(request):
             self._count_optimization(unit, "capacity_skipped")
@@ -428,7 +435,11 @@ class AutomaticSession(Session):
             return
         context = unit.auxiliary
         if context is None or context.request.task.task_id != request.task.task_id:
-            return
+            return (
+                super().accept_completion(request, result, error, timing)
+                if request.role == "candidate"
+                else None
+            )
         unit.auxiliary = None
         if (
             self._closed
