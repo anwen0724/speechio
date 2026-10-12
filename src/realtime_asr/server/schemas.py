@@ -27,6 +27,7 @@ class Format(StrictModel):
 
 class HttpInput(Format):
     language: Annotated[str, Field(min_length=1)] | None = None
+    word_timestamps: bool = False
 
 
 class Versioned(StrictModel):
@@ -47,6 +48,11 @@ class Open(Versioned):
     silero_end_detection: bool = False
     trim_pre_roll: bool = False
     backdate_seconds: Annotated[float, Field(ge=0, allow_inf_nan=False)] = 0
+    stable_text: bool = False
+    word_timestamps: bool = False
+    early_transcription_silence: Annotated[float, Field(ge=0, allow_inf_nan=False)] = 0
+    dynamic_silence: bool = False
+    punctuation_split: bool = False
 
 
 class Unit(StrictModel):

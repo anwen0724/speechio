@@ -8,6 +8,20 @@ from realtime_asr.segmentation.vad import VoiceActivity
 
 
 class SegmentationTests(unittest.TestCase):
+    def test_timestamp_cut_keeps_unaligned_right_samples(self):
+        gate = SegmentationGate(SegmentationConfig(pre_roll_duration=0), max_segment_samples=480000)
+        left = gate.feed(
+            AudioFrame(b"\x01\x00" * 1024, 0, 1024), VoiceActivity(True, True, True, True, 1)
+        )[0]
+        self.assertTrue(hasattr(gate, "split_at"), "门控尚未提供有时间证据的左右切分")
+        right = gate.split_at(777)
+        gate.feed(
+            AudioFrame(b"\x02\x00" * 100, 1024, 1124), VoiceActivity(False, True, True, True, 2)
+        )
+        gate.seal(reason="input_finished")
+        self.assertEqual((left.boundary.end_sample, right.boundary.start_sample), (777, 777))
+        self.assertEqual(bytes(left.pcm + right.pcm), b"\x01\x00" * 1024 + b"\x02\x00" * 100)
+
     def feed(self, gate, count, *, speech, onset=False):
         segments = []
         for _ in range(count):

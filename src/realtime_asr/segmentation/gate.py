@@ -90,7 +90,14 @@ class SegmentationGate:
     def history_samples(self):
         return sum(frame.end_sample - frame.start_sample for frame, _ in self._history)
 
-    def feed(self, frame: AudioFrame, activity) -> list[RecordingSegment]:
+    @property
+    def silence_samples(self):
+        """当前静音的样本进度，不受文本策略更新影响。"""
+        return 0 if self._silence_start is None else self.position - self._silence_start
+
+    def feed(
+        self, frame: AudioFrame, activity, *, post_speech_silence=None
+    ) -> list[RecordingSegment]:
         """接纳一次正向检测，只返回本次新创建的段。"""
         self.position = frame.end_sample
         started = []
@@ -123,7 +130,9 @@ class SegmentationGate:
             self._continuing = True
             if frame_samples > remaining:
                 remainder = AudioFrame(frame.pcm[remaining * 2 :], self.position, frame.end_sample)
-                started.extend(self.feed(remainder, activity))
+                started.extend(
+                    self.feed(remainder, activity, post_speech_silence=post_speech_silence)
+                )
             return started
         self.active.pcm.extend(frame.pcm)
         self._recent.append((frame, activity))
@@ -138,7 +147,12 @@ class SegmentationGate:
             0 if self._silence_start is None else frame.end_sample - self._silence_start
         )
         required_silence = int(self.config.silence_confirmation * 16000) + int(
-            self.config.post_speech_silence * 16000
+            (
+                self.config.post_speech_silence
+                if post_speech_silence is None
+                else post_speech_silence
+            )
+            * 16000
         )
         if (
             not activity.speech
@@ -252,6 +266,39 @@ class SegmentationGate:
         self._silence_start = None
         self._recent.clear()
         return segment
+
+    def split_at(self, sample):
+        """按已核实时间固定左段；右侧直接续接，不重复前置历史。"""
+        left = self.active
+        if left is None or not left.start_sample < sample < self.position:
+            raise ASRError("INVALID_BOUNDARY", "split", "切点应在活动段内部")
+        offset = sample - left.start_sample
+        right = RecordingSegment(
+            sample, "punctuation_continuation", bytearray(left.pcm[offset * 2 :])
+        )
+        del left.pcm[offset * 2 :]
+        left.boundary = SegmentBoundary(
+            left.start_sample, sample, self.position, "punctuation", left.pre_roll_reason
+        )
+        self.active = right
+        self._last_end = self._next_start_sample = sample
+        self._history.clear()
+        recent = deque()
+        for frame, activity in self._recent:
+            if frame.end_sample > sample:
+                start = max(sample, frame.start_sample)
+                recent.append(
+                    (
+                        AudioFrame(
+                            frame.pcm[(start - frame.start_sample) * 2 :], start, frame.end_sample
+                        ),
+                        activity,
+                    )
+                )
+        self._recent = recent
+        if self._silence_start is not None:
+            self._silence_start = max(sample, self._silence_start)
+        return right
 
     def cancel_active(self):
         """取消当前录音及监听历史，不复用被取消的采样。"""

@@ -10,8 +10,27 @@ const eventSchema = z
     kind: z.enum(['realtime', 'final', 'completed', 'failed', 'realtime_failed', 'cancelled']),
     unit: unitSchema,
     sequence: z.number().int(),
-    result: z.object({ text: z.string() }).nullable(),
+    result: z.object({ text: z.string() }).passthrough().nullable(),
     error: z.object({ code: z.string(), message: z.string() }).nullable(),
+    stabilization: z
+      .object({
+        accepted: z.boolean(),
+        stable_text: z.string(),
+        unstable_text: z.string(),
+        display_text: z.string(),
+        stable_prefix_conflict: z.boolean(),
+      })
+      .passthrough()
+      .nullable()
+      .optional(),
+    finalization: z
+      .object({
+        agrees_with_stable_prefix: z.boolean(),
+        mismatch_reason: z.string().nullable(),
+      })
+      .passthrough()
+      .nullable()
+      .optional(),
   })
   .passthrough();
 const messageSchema = z
@@ -172,7 +191,7 @@ export class BrowserSession {
   ) {}
 
   /** 先取得实际设备格式，再以 open 鉴权；成功连接尚未开始递交音频。 */
-  async connect(token: string) {
+  async connect(token: string, stableText = false) {
     try {
       this.capture = await Capture.create(
         undefined,
@@ -202,6 +221,7 @@ export class BrowserSession {
             token: token || null,
             mode: this.mode,
             realtime: true,
+            ...(stableText ? { stable_text: true } : {}),
             format: { sample_rate: this.sampleRate, channels: 1, sample_type: 'float32' },
           }),
         );

@@ -8,7 +8,7 @@ from threading import Event, Thread
 from time import monotonic
 
 from realtime_asr import ASRError, AudioFormat, MicrophoneConfig, MicrophoneInput
-from realtime_asr.cli.args import _positive_int, _positive_seconds
+from realtime_asr.cli.args import _positive_int, _positive_seconds, _seconds
 from realtime_asr.cli.input import stdin_blocks
 from realtime_asr.client import RemoteClient
 
@@ -32,7 +32,9 @@ class RemoteOutput:
             self.stdout.write(event["result"]["text"] + "\n")
             self.stdout.flush()
         elif event.get("kind") == "realtime":
-            self.stderr.write("[realtime] " + event["result"]["text"] + "\n")
+            stable = event.get("stabilization")
+            text = stable["display_text"] if stable else event["result"]["text"]
+            self.stderr.write("[realtime] " + text + "\n")
             self.stderr.flush()
         elif message["type"] == "error":
             self.stderr.write(f"[{message['code']}] {message['message']}\n")
@@ -88,6 +90,7 @@ def parser():
     command.add_argument("--token-env", default="REALTIME_ASR_TOKEN")
     command.add_argument("--language")
     command.add_argument("--output", choices=("text", "jsonl"), default="text")
+    command.add_argument("--word-timestamps", action="store_true")
     command.add_argument("--timeout", type=_positive_seconds, default=30)
     commands = command.add_subparsers(dest="input", required=True)
     file = commands.add_parser("file")
@@ -98,6 +101,10 @@ def parser():
             "--mode", choices=("auto", "manual"), default="auto" if name == "mic" else "manual"
         )
         source.add_argument("--realtime", action=argparse.BooleanOptionalAction, default=False)
+        source.add_argument("--stable-text", action="store_true")
+        source.add_argument("--dynamic-silence", action="store_true")
+        source.add_argument("--punctuation-split", action="store_true")
+        source.add_argument("--early-transcription-silence", type=_seconds, default=0)
         source.add_argument(
             "--sample-rate", type=_positive_int, default=None if name == "mic" else 16000
         )
@@ -127,8 +134,23 @@ def streaming(client, args, output, stdin):
             format = microphone.prepare()
         else:
             format = AudioFormat(args.sample_rate, args.channels, args.sample_type)
+        text_options = {
+            name: getattr(args, name)
+            for name in (
+                "stable_text",
+                "word_timestamps",
+                "dynamic_silence",
+                "punctuation_split",
+                "early_transcription_silence",
+            )
+            if getattr(args, name)
+        }
         session = client.connect(
-            mode=args.mode, format=format, language=args.language, realtime=args.realtime
+            mode=args.mode,
+            format=format,
+            language=args.language,
+            realtime=args.realtime,
+            **text_options,
         )
         if args.mode == "manual":
             session.start()
@@ -180,7 +202,11 @@ def main(argv=None, *, stdin=None, stdout=None, stderr=None):
         ) as client:
             if args.input == "file":
                 for path in args.paths:
-                    output.write(client.transcribe_file(path, language=args.language))
+                    output.write(
+                        client.transcribe_file(
+                            path, language=args.language, word_timestamps=args.word_timestamps
+                        )
+                    )
                 return 0
             return streaming(client, args, output, stdin or sys.stdin)
     except KeyboardInterrupt:

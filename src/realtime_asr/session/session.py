@@ -2,6 +2,7 @@
 
 from collections import deque
 from dataclasses import dataclass, field, replace
+from hashlib import sha256
 from math import isfinite
 from uuid import uuid4
 
@@ -10,7 +11,15 @@ import numpy as np
 from realtime_asr.audio.conversion import AudioConverter, AudioFormat
 from realtime_asr.errors import ASRError
 from realtime_asr.results import RecognitionResult
+from realtime_asr.segmentation.acoustic import AcousticBoundary
 from realtime_asr.segmentation.gate import SegmentBoundary
+from realtime_asr.text.stabilizer import (
+    FinalizationResult,
+    StabilizationConfig,
+    StabilizationResult,
+    TextObservation,
+    TextStabilizer,
+)
 
 
 def _validate_timeout(timeout, *, allow_none=False):
@@ -35,11 +44,18 @@ class SessionConfig:
     max_audio_samples: int = 480000
     max_pending_units: int = 8
     realtime: bool = False
+    stabilization: StabilizationConfig | None = None
+    word_timestamps: bool = False
 
     def __post_init__(self):
         """创建时检查外部配置，不在每个输入块重复验证配置。"""
         if (
             not isinstance(self.realtime, bool)
+            or type(self.word_timestamps) is not bool
+            or (
+                self.stabilization is not None
+                and (not isinstance(self.stabilization, StabilizationConfig) or not self.realtime)
+            )
             or not isinstance(self.format, AudioFormat)
             or (
                 self.language is not None
@@ -102,6 +118,12 @@ class SessionEvent:
     stream_start_sample: int | None = None
     stream_end_sample: int | None = None
     submitted_at_monotonic: float | None = None
+    observation_sequence: int | None = None
+    trigger_reason: str | None = None
+    acoustic_boundary: AcousticBoundary | None = None
+    stabilization: StabilizationResult | None = None
+    finalization: FinalizationResult | None = None
+    optimization: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -112,6 +134,20 @@ class SessionChange:
     cancelled: tuple[SessionEvent, ...]
     discarded_events: int
     pending_tasks: int
+
+
+@dataclass(frozen=True)
+class EarlyFinalResult:
+    """提前结果保留固定范围和摘要，不在完成后额外持有音频副本。"""
+
+    audio_samples: int
+    audio_digest: bytes
+    result: RecognitionResult
+    timing: tuple[float, float, float]
+
+    def matches_audio(self, pcm):
+        """同一单元配置固定；字节与长度均相同才具有最终复用资格。"""
+        return self.audio_samples == len(pcm) // 2 and self.audio_digest == sha256(pcm).digest()
 
 
 @dataclass
@@ -129,6 +165,14 @@ class _AudioUnit:
     realtime_done: bool = True
     boundary: SegmentBoundary | None = None
     stream_start_sample: int | None = None
+    stabilizer: TextStabilizer | None = None
+    last_realtime_text: str = ""
+    optimization: dict = field(default_factory=dict)
+    auxiliary: object = None
+    endpoint_epoch: int = 0
+    early_result: EarlyFinalResult | None = None
+    pending_split: object = None
+    sentence_policy: object = None
 
 
 class Session:
@@ -188,6 +232,8 @@ class Session:
                 raise ASRError("RESULT_CAPACITY_EXCEEDED", "start", "未消费单元达到容量上限")
             ref = UnitRef(self.session_id, self._generation, self._next_unit)
             unit = _AudioUnit(ref, AudioConverter(format))
+            if self.config.stabilization is not None:
+                unit.stabilizer = TextStabilizer(ref, self.config.stabilization)
             if self.config.realtime:
                 self._runtime._realtime.add_unit(self, unit)
             self._next_unit += 1
@@ -292,6 +338,21 @@ class Session:
     def _record_realtime(self, unit, event):
         """每个单元只保留最新观察；终态正文不被实时输出覆盖。"""
         if self._units.get(unit.ref.unit_id) is unit and unit.events is None:
+            if event.kind == "realtime":
+                stable = None
+                if unit.stabilizer is not None:
+                    stable = unit.stabilizer.observe(
+                        TextObservation(
+                            unit.ref,
+                            event.observation_sequence,
+                            event.result.text,
+                            event.audio_samples,
+                            event.completed_at_monotonic,
+                        )
+                    )
+                if event.result.text.strip() and (stable is None or stable.accepted):
+                    unit.last_realtime_text = event.result.text
+                event = replace(event, stabilization=stable)
             if unit.stream_start_sample is not None:
                 event = replace(
                     event,
@@ -346,6 +407,15 @@ class Session:
             stream_end_sample=(
                 None if unit.stream_start_sample is None else unit.stream_start_sample + samples
             ),
+            finalization=(
+                unit.stabilizer.finalize(result.text)
+                if kind == "final" and unit.stabilizer is not None
+                else None
+            ),
+            optimization=dict(unit.optimization) or None,
+            source="early-final"
+            if kind == "final" and unit.optimization.get("early_reused")
+            else "final",
         )
 
     def reset(self) -> SessionChange:
@@ -393,6 +463,10 @@ class Session:
             return self._close_result
 
     def _terminal(self, unit, kind, *, result=None, error=None):
+        if unit.auxiliary is not None:
+            self._runtime._cancel_queued(unit.auxiliary.task.task_id)
+            unit.endpoint_epoch += 1
+        unit.early_result = unit.pending_split = None
         if kind == "cancelled" or (kind == "failed" and unit.task is None):
             unit.realtime_event = None
             if unit.realtime is not None:

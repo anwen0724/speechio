@@ -49,6 +49,12 @@ def parse_args(argv=None):
             "--realtime", action=argparse.BooleanOptionalAction, default=name == "mic"
         )
         command.add_argument("--output", choices=("text", "jsonl"), default="text")
+        command.add_argument("--stable-text", action="store_true")
+        command.add_argument("--word-timestamps", action="store_true")
+        command.add_argument("--acoustic-boundaries", action="store_true")
+        command.add_argument("--early-transcription-silence", type=_seconds, default=0)
+        command.add_argument("--dynamic-silence", action="store_true")
+        command.add_argument("--punctuation-split", action="store_true")
         command.add_argument("--max-audio-seconds", type=_positive_seconds, default=30)
         command.add_argument("--drain-timeout", type=_seconds, default=30)
         command.add_argument("--close-timeout", type=_seconds, default=5)
@@ -73,6 +79,19 @@ def parse_args(argv=None):
             command.add_argument("--sample-type", choices=("int16", "float32"), default="int16")
     args = parser.parse_args(argv)
     if args.command != "devices":
+        if args.mode != "auto" and (
+            args.early_transcription_silence or args.dynamic_silence or args.punctuation_split
+        ):
+            parser.error("结束优化要求 --mode auto")
+        if (
+            args.stable_text
+            or args.dynamic_silence
+            or args.acoustic_boundaries
+            or args.punctuation_split
+        ) and not args.realtime:
+            parser.error("文本或声学实时策略要求 --realtime")
+        if args.punctuation_split and not args.stable_text:
+            parser.error("句末切段要求 --stable-text")
         if args.mode == "auto" and not args.vad_model:
             parser.error("auto 模式要求 --vad-model")
         if args.max_audio_seconds > 600 or int(args.max_audio_seconds * 16000) == 0:

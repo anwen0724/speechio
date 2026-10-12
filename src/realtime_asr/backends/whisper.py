@@ -2,10 +2,11 @@
 
 import inspect
 from dataclasses import asdict
+from math import isfinite
 
 from realtime_asr.audio.conversion import as_audio
 from realtime_asr.errors import ASRError
-from realtime_asr.results import RecognitionResult
+from realtime_asr.results import RecognitionResult, WordTimestamp
 from realtime_asr.runtime.models.manifest import verify_manifest
 from realtime_asr.runtime.models.stages import preparation_step
 
@@ -100,6 +101,28 @@ class WhisperEngine:
             )
             # 分段是惰性迭代器，必须在本次调用内全部消费并转换。
             complete = list(segments)
+            words = None
+            timestamp_status = "not_requested"
+            if word_timestamps:
+                reported = [word for segment in complete for word in (segment.words or [])]
+                valid = reported and all(
+                    isfinite(word.start)
+                    and isfinite(word.end)
+                    and 0 <= word.start <= word.end
+                    and round(word.end * 16000) <= len(array)
+                    for word in reported
+                )
+                timestamp_status = "reported" if valid else "unavailable"
+                if valid:
+                    words = tuple(
+                        WordTimestamp(
+                            word.word,
+                            round(word.start * 16000),
+                            round(word.end * 16000),
+                            word.probability,
+                        )
+                        for word in reported
+                    )
             return RecognitionResult(
                 text=" ".join(item.text for item in complete).strip(),
                 requested_language=language,
@@ -110,6 +133,8 @@ class WhisperEngine:
                     {"text": item.text, "start_s": item.start, "end_s": item.end}
                     for item in complete
                 ],
+                words=words,
+                timestamp_status=timestamp_status,
             )
         except Exception as exc:
             raise ASRError("INFERENCE_FAILED", "transcribe", str(exc)) from exc

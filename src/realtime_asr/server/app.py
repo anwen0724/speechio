@@ -141,6 +141,7 @@ def create_app(config):
                     "sample_type": query.sample_type,
                 },
                 language=query.language,
+                word_timestamps=query.word_timestamps,
             )
             return await service.transcribe(request, options)
         except ValidationError as exc:

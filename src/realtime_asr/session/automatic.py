@@ -2,6 +2,7 @@
 
 from collections import deque
 from dataclasses import dataclass, field
+from hashlib import sha256
 from threading import RLock
 from time import monotonic
 
@@ -11,7 +12,8 @@ from realtime_asr.audio.conversion import AudioConverter, AudioFormat
 from realtime_asr.errors import ASRError
 from realtime_asr.segmentation.gate import SegmentationGate
 from realtime_asr.segmentation.vad import VoiceActivityDetector
-from realtime_asr.session.session import Session, _validate_timeout
+from realtime_asr.session.session import EarlyFinalResult, Session, _validate_timeout
+from realtime_asr.text.endpoint import EndpointConfig, SentenceBoundaryPolicy, SentenceHint
 
 
 @dataclass
@@ -25,13 +27,51 @@ class _AutomaticInput:
     state: str = "listening"
     cancelled_units: set = field(default_factory=set)
     cancel_current: bool = False
+    early_requested: bool = False
+
+
+@dataclass(frozen=True)
+class _SentenceCut:
+    """有词时间证据的待提交切点；当前单元另行提供归属。"""
+
+    hint: SentenceHint
+    sample: int
+    covered_samples: int
 
 
 class AutomaticSession(Session):
     """宿主只连续送音频；封口和后台任务使用普通会话的同一实现。"""
 
-    def __init__(self, runtime, config, vad, segmentation):
+    def __init__(self, runtime, config, vad, segmentation, endpoint=None):
         super().__init__(runtime, config)
+        self._endpoint = endpoint if endpoint is not None else EndpointConfig()
+        if not isinstance(self._endpoint, EndpointConfig):
+            raise ASRError("INVALID_CONFIGURATION", "configure", "需要 EndpointConfig")
+        shortest = (
+            min(
+                self._endpoint.sentence_pause,
+                self._endpoint.unknown_pause,
+                self._endpoint.continuation_pause,
+            )
+            if self._endpoint.dynamic_silence
+            else segmentation.post_speech_silence
+        )
+        if segmentation.backdate_duration > shortest or (
+            self._endpoint.early_transcription_silence > 0
+            and self._endpoint.early_transcription_silence >= shortest
+        ):
+            raise ASRError("INVALID_CONFIGURATION", "configure", "回溯或提前阈值超过结束等待")
+        if self._endpoint.dynamic_silence and not config.realtime:
+            raise ASRError("INVALID_CONFIGURATION", "configure", "动态等待需要实时观察")
+        if self._endpoint.punctuation_split and (
+            not config.realtime
+            or config.stabilization is None
+            or runtime._recognizer.config.backend != "whisper"
+        ):
+            raise ASRError(
+                "BACKEND_INCOMPATIBLE", "configure", "句末切段需要稳定观察和 Whisper 词时间"
+            )
+        self._optimization_totals = {}
         self._input_lock = RLock()
         self._vad_config = vad
         self._segmentation = segmentation
@@ -63,6 +103,16 @@ class AutomaticSession(Session):
     @property
     def vad_info(self):
         return dict(self._vad_info)
+
+    @property
+    def optimization_status(self):
+        """读取本代次诊断副本；关闭后仍可检查最后的释放前结论。"""
+        with self._runtime._condition:
+            return dict(self._optimization_totals)
+
+    def _count_optimization(self, unit, name):
+        unit.optimization[name] = unit.optimization.get(name, 0) + 1
+        self._optimization_totals[name] = self._optimization_totals.get(name, 0) + 1
 
     @property
     def pending_segments(self):
@@ -135,7 +185,22 @@ class AutomaticSession(Session):
                     state.gate.position = frames[-1].end_sample
                     self._apply_cancellations(state)
                     raise ASRError("INPUT_CANCELLED", "feed_audio", "当前输入在检测期间被取消")
-                state.segments.extend(state.gate.feed(frame, activity))
+                if (
+                    activity.speech
+                    and state.gate.silence_samples > 0
+                    and self._endpoint.early_transcription_silence > 0
+                ):
+                    state.early_requested = False
+                    unit = self._active
+                    if unit is not None:
+                        unit.endpoint_epoch += 1
+                        unit.early_result = None
+                        if unit.auxiliary is not None and unit.auxiliary.purpose == "early":
+                            self._runtime._cancel_queued(unit.auxiliary.task.task_id)
+                        self._count_optimization(unit, "speech_resumed")
+                text = self._active.last_realtime_text if self._active is not None else ""
+                pause = self._endpoint.pause_for(text, self._segmentation.post_speech_silence)
+                state.segments.extend(state.gate.feed(frame, activity, post_speech_silence=pause))
                 self._pump(state)
         if state.state not in ("failed", "finished"):
             state.state = "recording" if state.gate.active is not None else "listening"
@@ -143,6 +208,7 @@ class AutomaticSession(Session):
     def _pump(self, state):
         """按段推进，容量不足保留原段；固定任务不再占自动缓冲。"""
         self._apply_cancellations(state)
+        self._apply_sentence_split(state)
         while state.segments:
             segment = state.segments[0]
             try:
@@ -157,6 +223,8 @@ class AutomaticSession(Session):
                 self._append_standard(unit, pcm)
                 segment.delivered_samples = samples
                 if segment.boundary is None:
+                    if state.gate.active is segment:
+                        self._schedule_endpoint(state, unit)
                     return
                 unit.boundary = segment.boundary
                 Session.finish(self)
@@ -170,6 +238,112 @@ class AutomaticSession(Session):
                     return
                 raise
 
+    def _begin_unit(self, format):
+        """新录音段建立独立文本策略，不沿用上一段稳定或候选。"""
+        ref = super()._begin_unit(format)
+        self._input.early_requested = False
+        if self._endpoint.punctuation_split:
+            self._active.sentence_policy = SentenceBoundaryPolicy()
+        return ref
+
+    def _record_realtime(self, unit, event):
+        super()._record_realtime(unit, event)
+        if (
+            self._active is not unit
+            or unit.events is not None
+            or unit.sentence_policy is None
+            or event.kind != "realtime"
+        ):
+            return
+        stable = unit.realtime_event.stabilization
+        if not stable.accepted:
+            return
+        hint = unit.sentence_policy.observe(
+            stable.stable_text, event.audio_samples, observation_text=stable.raw_text
+        )
+        if hint is not None:
+            self._runtime._submit_auxiliary(self, unit, purpose="punctuation", hint=hint)
+
+    def _apply_sentence_split(self, state):
+        """在输入拥有者与协调锁内提交切分，保留快照之后新增的右侧音频。"""
+        unit = self._active
+        if unit is None or unit.pending_split is None:
+            return
+        request = unit.pending_split
+        hint, cut, covered = request.hint, request.sample, request.covered_samples
+        unit.pending_split = None
+        segment = state.gate.active
+        minimum = max(8000, int(self._segmentation.min_recording_duration * 16000))
+        if (
+            segment is None
+            or segment.unit != unit.ref
+            or unit.sentence_policy.current_hint != hint
+            or not minimum <= cut <= covered - 8000
+        ):
+            self._count_optimization(unit, "punctuation_rejected")
+            return
+        right = state.gate.split_at(segment.start_sample + cut)
+        # 已启动的旧实时观察可能覆盖右侧，先失效，再封口固定左段。
+        if unit.realtime is not None:
+            self._runtime._realtime.cancel_unit(unit)
+            unit.realtime_event = None
+        unit.pcm[:] = segment.pcm
+        segment.delivered_samples = cut
+        unit.early_result = None
+        unit.endpoint_epoch += 1
+        state.early_requested = False
+        state.segments.append(right)
+        self._count_optimization(unit, "punctuation_splits")
+
+    def _schedule_endpoint(self, state, unit):
+        """静音期间只登记一次辅助快照；不在输入线程等待模型。"""
+        threshold = self._endpoint.early_transcription_silence
+        confirmed = int(self._segmentation.silence_confirmation * 16000)
+        if (
+            threshold > 0
+            and not state.early_requested
+            and len(unit.pcm) // 2 >= int(self._segmentation.min_recording_duration * 16000)
+            and (state.gate.silence_samples >= confirmed + int(threshold * 16000))
+        ):
+            state.early_requested = True
+            self._runtime._submit_auxiliary(self, unit, purpose="early")
+
+    def _resolve_auxiliary(self, job, result, error, timing):
+        """只回交有效单元；在途失效任务的容量由运行时实际返回后释放。"""
+        unit = job.unit
+        if unit.auxiliary is job:
+            unit.auxiliary = None
+        if (
+            self._closed
+            or self._units.get(unit.ref.unit_id) is not unit
+            or unit.events is not None
+            or self._active is not unit
+            or (job.purpose == "early" and unit.endpoint_epoch != job.epoch)
+        ):
+            return
+        if error is not None:
+            self._count_optimization(unit, job.purpose + "_failed")
+            unit.optimization["last_error"] = error.code
+            return
+        self._count_optimization(unit, job.purpose + "_completed")
+        if job.purpose == "early":
+            unit.optimization["early_samples"] = job.task.audio_samples
+            unit.optimization["early_task_id"] = job.task.task_id
+            unit.early_result = EarlyFinalResult(
+                job.task.audio_samples, sha256(job.pcm).digest(), result, timing
+            )
+        else:
+            cut = SentenceBoundaryPolicy.locate(job.hint, result)
+            if cut is None:
+                self._count_optimization(unit, "punctuation_unavailable")
+                unit.optimization["punctuation_skip_reason"] = (
+                    "timestamps-unavailable"
+                    if result.timestamp_status != "reported"
+                    else "anchor-mismatch"
+                )
+            else:
+                unit.pending_split = _SentenceCut(job.hint, cut, job.task.audio_samples)
+
     def _apply_cancellations(self, state):
         """只在输入拥有者内改动分句状态，控制线程只登记失效目标。"""
         if state.cancel_current:
@@ -179,6 +353,7 @@ class AutomaticSession(Session):
                 segment for segment in state.segments if segment.boundary is not None
             )
             state.cancel_current = False
+            state.early_requested = False
             state.state = "listening"
         if state.cancelled_units:
             state.segments = deque(
@@ -246,6 +421,7 @@ class AutomaticSession(Session):
         return (
             self._runtime._tasks,
             len(realtime.states) if realtime else 0,
+            tuple(unit.ref for unit in self._units.values() if unit.pending_split is not None),
             self._next_event() is not None,
             id(self._input),
             self._closed,
@@ -301,4 +477,5 @@ class AutomaticSession(Session):
             change = Session.reset(self)
             self._input = fresh
             self._vad_info = fresh.detector.info
+            self._optimization_totals = {}
             return change

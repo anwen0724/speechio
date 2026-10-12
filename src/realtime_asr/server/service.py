@@ -12,10 +12,12 @@ from starlette.requests import ClientDisconnect
 from realtime_asr import (
     ASRError,
     ASRRuntime,
+    EndpointConfig,
     RealtimeConfig,
     RuntimeLimits,
     SegmentationConfig,
     SessionConfig,
+    StabilizationConfig,
     VadConfig,
 )
 
@@ -26,7 +28,10 @@ class Service:
     def __init__(self, config):
         self.config = config
         realtime = (
-            RealtimeConfig(mode="snapshot" if config.recognizer.backend == "whisper" else "native")
+            RealtimeConfig(
+                mode="snapshot" if config.recognizer.backend == "whisper" else "native",
+                acoustic_boundaries=config.acoustic_boundaries,
+            )
             if config.realtime
             else None
         )
@@ -66,12 +71,20 @@ class Service:
             raise ASRError("REALTIME_NOT_CONFIGURED", "admit", "服务未配置基本实时")
         if options.mode == "auto" and config.vad_model is None:
             raise ASRError("MODE_UNAVAILABLE", "admit", "服务未配置自动模式")
+        if options.mode != "auto" and (
+            options.early_transcription_silence
+            or options.dynamic_silence
+            or options.punctuation_split
+        ):
+            raise ASRError("INVALID_CONFIGURATION", "admit", "结束优化需要自动模式")
         session_config = SessionConfig(
             format=options.format.to_audio_format(),
             language=options.language,
             realtime=options.realtime,
             max_audio_samples=int(seconds * 16000),
             max_pending_units=pending,
+            stabilization=StabilizationConfig() if options.stable_text else None,
+            word_timestamps=options.word_timestamps,
         )
 
         def create():
@@ -88,6 +101,11 @@ class Service:
                     trim_pre_roll=options.trim_pre_roll,
                     backdate_duration=options.backdate_seconds,
                     max_buffer_samples=max(1920000, session_config.max_audio_samples + 17024),
+                ),
+                endpoint=EndpointConfig(
+                    early_transcription_silence=options.early_transcription_silence,
+                    dynamic_silence=options.dynamic_silence,
+                    punctuation_split=options.punctuation_split,
                 ),
             )
 
@@ -205,6 +223,13 @@ class Service:
             "manual": True,
             "automatic": config.vad_model is not None,
             "realtime": config.realtime,
+            "stable_text": config.realtime,
+            "word_timestamps": config.recognizer.backend == "whisper",
+            "acoustic_boundaries": config.realtime and config.acoustic_boundaries,
+            "endpoint_optimization": config.vad_model is not None,
+            "punctuation_split": config.vad_model is not None
+            and config.realtime
+            and config.recognizer.backend == "whisper",
             "sample_types": ["int16", "float32"],
             "sample_rate_range": [1, 192000],
             "channels_range": [1, 8],

@@ -1,12 +1,12 @@
 # realtime-asr
 
-独立实时 ASR 项目。当前提供同步整段识别 SDK、连续会话 SDK、基本实时识别、自动分句、麦克风采集、本地命令行及 HTTP／WebSocket 共享服务。Python 远程客户端和最小浏览器入口调用同一服务协议。真实评估入口独立放在 `evals/`。
+独立实时 ASR 项目。当前提供同步整段识别 SDK、连续会话 SDK、实时识别与稳定文本、自动分句和结束优化、麦克风采集、本地命令行及 HTTP／WebSocket 共享服务。Python 远程客户端和最小浏览器入口调用同一服务协议。真实评估入口独立放在 `evals/`。
 
-同步 SDK 分块入口在全部输入结束后返回完整结果。连续会话可在上一单元推理期间接收下一单元，通过实时与最终事件消费结果。基本实时支持 Whisper 完整快照和 Nemotron 原生增量。自动会话通过双 VAD 确认录音段，提供前置保护与统一回溯。接入层复用这些接口；实时稳定与合并、候选、完整浏览器工作台和唤醒仍待后续阶段。产品范围见 [PRD](docs/PRD.md)，系统设计见 [Architecture](docs/ARCHITECTURE.md)，实际验收见 [STATUS](docs/STATUS.md)。
+同步 SDK 分块入口在全部输入结束后返回完整结果。连续会话可在上一单元推理期间接收下一单元，通过实时与最终事件消费结果。基本实时支持 Whisper 完整快照和 Nemotron 原生增量。自动会话通过双 VAD 确认录音段，提供前置保护与统一回溯。可选策略提供声学触发、提前推理、动态等待及有词时间证据的句末切段。接入层复用这些接口；双实时合并、候选、完整浏览器工作台和唤醒仍待后续阶段。产品范围见 [PRD](docs/PRD.md)，系统设计见 [Architecture](docs/ARCHITECTURE.md)，实际验收见 [STATUS](docs/STATUS.md)。
 
 ## 代码结构
 
-正式实现位于 `src/realtime_asr/`，按音频、会话、分句、识别后端和运行时组织。公共错误与结果各保留一个小文件；核心模块不依赖 evals、测试或示例。
+正式实现位于 `src/realtime_asr/`，按音频、会话、分句、文本、识别后端和运行时组织。公共错误与结果各保留一个小文件；核心模块不依赖 evals、测试或示例。
 
 ```text
 src/realtime_asr/
@@ -39,7 +39,11 @@ src/realtime_asr/
 │   └── automatic.py         # 持续源输入与待递交自动段
 ├── segmentation/
 │   ├── gate.py              # 前置保护、静音确认、裁剪与切点
+│   ├── acoustic.py          # 有界能量包络与声学触发信号
 │   └── vad.py               # WebRTC、Silero 与独立检测状态
+├── text/
+│   ├── stabilizer.py        # 原文投影、稳定证据与最终差异
+│   └── endpoint.py          # 动态等待与句末锚点策略
 ├── backends/
 │   ├── whisper.py           # Whisper 整段与快照适配
 │   ├── nemotron.py          # Nemotron 识别器适配
@@ -58,6 +62,7 @@ evals/p3/                    # 实时联合运行与资源测量
 evals/p4/                    # 自动分句与边界真实验收
 evals/p5/                    # 麦克风、CLI 与项目外安装验证
 evals/p6/                    # 真实网络、模型、浏览器、TLS 与安装验证
+evals/p7/                    # 文本、声学、端点 A/B、真实词时间与句末切段
 evals/module_organization.py # 目录迁移前后的真实回放
 
 examples/                    # 只通过公开 SDK 使用产品
@@ -67,6 +72,7 @@ tests/
 ├── cli/                     # 命令行公开行为与外部输入输出
 ├── session/                 # 单元、控制、归属与自动输入
 ├── segmentation/            # 检测、分句与边界保护
+├── text/                    # 稳定观察与句末语言规则
 ├── backends/                # 模型适配与原生流
 ├── runtime/                 # 模型资源与执行调度
 ├── server/                  # 协议、归属、并发、容量与清理
@@ -77,6 +83,8 @@ tests/
 `audio` 提供标准音频与位置；`segmentation` 提供检测记录和切点；`session` 决定段归属、封口、取消和事件有效性。`runtime` 管理模型与推理调度，`backends` 处理模型专有调用和原生流。分句模块不提交 ASR 任务，后端不读取会话缓冲。
 
 `runtime/models` 与 `runtime/native` 是资源支持模块，可以被运行时和后端使用；这些模块不反向依赖会话、后端或执行器。会话与运行时保留现有提交、回交和协调锁关系。
+
+`text` 只处理观察与文本策略，不持有模型或可变音频。辅助任务复用 `runtime/asr.py` 的最终模型、任务容量和工作线程；会话执行归属检查与左右切分。
 
 评估代码调用正式实现，再补充语料、测量和评分。`evals/p0/engines.py` 的 `EnginePool` 只用于评估，不作为产品运行时。整理前的内部模块路径已迁移，不保留旧 `core` 包；`from realtime_asr import ...` 的公开导出与签名保持。映射和执行证据见[目录整理 Plan](docs/plans/functional-module-organization.md)。
 
@@ -375,6 +383,43 @@ uv run --no-sync python -m evals.p4
 
 真实评估代码位于 `evals/p4/`，记录保存到 `artifacts/p4/`。标准 PCM 示例只需 `whisper,vad`，不需要 `audio`；更换源格式时沿用 P1 的音频转换依赖与约束。模型文件需要另行准备，不包含在 wheel 中。
 
+## 稳定文本与结束优化
+
+这些策略默认关闭。`SessionConfig.stabilization` 为实时观察增加完整稳定前缀、待定尾部和本次稳定增量；最终事件提供一致性诊断，不改写最终正文。慢消费者应使用完整 `stable_text` 恢复显示，不能只拼接可能被最新槽替换的 `stable_delta`。
+
+以下是自动会话配置示例。`runtime` 应已准备 Whisper 最终模型和快照实时角色；音频输入与独立事件消费循环沿用上一节。
+
+```python
+from realtime_asr import EndpointConfig, SessionConfig, StabilizationConfig, VadConfig
+
+def open_optimized_session(runtime):
+    return runtime.create_auto_session(
+        config=SessionConfig(
+            realtime=True,
+            stabilization=StabilizationConfig(),
+            word_timestamps=True,
+        ),
+        vad=VadConfig(model_path=".runtime/models/vad/silero-v6.onnx"),
+        endpoint=EndpointConfig(
+            early_transcription_silence=0.2,
+            dynamic_silence=True,
+            punctuation_split=True,
+        ),
+    )
+```
+
+`event.stabilization` 提供 `stable_text`、`unstable_text`、`stable_delta`、`display_text` 及接受／冲突诊断。`event.finalization` 提供最终前缀是否一致及差异原因。`AutomaticSession.optimization_status` 是本输入代次的诊断副本，不能通过修改返回值改变任务。
+
+`RealtimeConfig(acoustic_boundaries=True)` 在 Whisper 快照中启用声学触发和两次补识别。Nemotron 原生流继续按新增样本解码，不使用声学快照策略。Whisper 单次 SDK 调用也可传入 `word_timestamps=True`；结果中的 `words` 使用标准样本范围。Nemotron 当前明确返回 `timestamp_status="unavailable"`，不能开启依赖词时间的句末切段。
+
+动态等待按最近接受的实时正文选择句末、未知和续说等待，继续经过原来的门控。句末策略只支持句末标点，使用真实词时间固定左侧并保留右侧。提前结果只有在封口音频与快照完全相同时才复用；后续静音也会使版本不同。提前推理会增加成本，启用前应检查对应设备上的测量。
+
+```powershell
+uv run --no-sync realtime-asr mic --model .runtime/models/whisper-tiny --vad-model .runtime/models/vad/silero-v6.onnx --stable-text --word-timestamps --dynamic-silence --punctuation-split --duration 10 --output jsonl
+```
+
+HTTP 支持 `word_timestamps=true`。远程 SDK 的 `transcribe_file(..., word_timestamps=True)` 读取完整词结果；`connect(mode="auto", realtime=True, stable_text=True, dynamic_silence=True, punctuation_split=True)` 选择会话策略。`early_transcription_silence` 是另一个可选 open 字段。服务需要已配置 VAD，声学策略由 `serve --acoustic-boundaries` 在启动时选择。最小浏览器提供“稳定文本”开关及稳定／待定展示。
+
 ## 模型准备
 
 模型文件位于 `.runtime/models/`，与虚拟环境分开。准备操作保存来源、不可变修订、逐文件大小和 SHA-256。已有清单只能校验复用，不能用新清单覆盖文件篡改。
@@ -452,5 +497,7 @@ uv build
 类和方法的中文注释说明职责与业务规则。模型外部边界替身用于失败及调度检查，不能作为真实模型的文本或性能证据。
 
 P6 的真实网络验证使用 `uv run --no-sync python -m evals.p6`，要求已准备本地 CPU／CUDA Whisper、Nemotron、VAD、公开录音、本机 Chrome 和 OpenSSL。验证器自己启动和关闭回环服务，记录 HTTP、两种 WebSocket、远程 CLI、浏览器和证书验证。独立 wheel 的基础／client／server 环境检查由 `evals/p6/installed_check.py` 执行，`--environments` 指定三个独立环境的父目录，`--outside` 指定项目目录之外的工作目录。公开音源及自动化浏览器不替代人工口述、其他平台或正式语料质量验收。
+
+P7 的真实验证使用 `uv run --no-sync python -m evals.p7`，要求同机已准备三条模型路径、VAD、公开 WAV 与 Chrome。`evals/p7/report.py` 可从既有 `matrix.json` 核对最终模型输入与左右连续性，生成等待和模型调用对照，不重新推理。报告区分源 EOF 等待、封口任务到交付，以及未测的正式质量和峰值内存／显存。`evals/p7/installed_check.py --outside <项目外目录>` 将本次 wheel 重新安装到已准备的独立 base／client／server 依赖环境，再执行项目外检查；环境父目录可用 `--environments` 指定。
 
 Spec、实施 Plan 与状态入口分别为 [P0 Spec](docs/specs/runtime-and-corpus-baseline.md)、[P0 Plan](docs/plans/p0-runtime-and-corpus-baseline.md) 和 [STATUS](docs/STATUS.md)。

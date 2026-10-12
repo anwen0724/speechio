@@ -110,6 +110,16 @@ class Connection:
                 mode=self.options.mode,
                 format=self.options.format.model_dump(),
                 expected_audio_sequence=0,
+                text_options={
+                    name: getattr(self.options, name)
+                    for name in (
+                        "stable_text",
+                        "word_timestamps",
+                        "early_transcription_silence",
+                        "dynamic_silence",
+                        "punctuation_split",
+                    )
+                },
             )
         )
         sender = asyncio.create_task(self._send(), name="ASRWSSend")

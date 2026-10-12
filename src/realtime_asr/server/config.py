@@ -30,6 +30,7 @@ class ServerConfig:
     trusted_proxy_ips: str | None = None
     allowed_origins: tuple[str, ...] = ()
     realtime: bool = True
+    acoustic_boundaries: bool = False
     vad_model: str | None = None
     max_sessions: int = 16
     max_tasks: int = 32
@@ -87,6 +88,11 @@ class ServerConfig:
                 and (not isinstance(self.token, str) or not self.token.strip())
             )
             or type(self.realtime) is not bool
+            or type(self.acoustic_boundaries) is not bool
+            or (
+                self.acoustic_boundaries
+                and (not self.realtime or self.recognizer.backend != "whisper")
+            )
             or type(self.proxy_tls) is not bool
         ):
             raise ASRError("INVALID_CONFIGURATION", "configure_server", "服务配置无效")

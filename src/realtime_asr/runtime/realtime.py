@@ -11,6 +11,7 @@ import numpy as np
 from realtime_asr.errors import ASRError
 from realtime_asr.results import CloseError
 from realtime_asr.runtime.recognizer import Recognizer, RecognizerConfig
+from realtime_asr.segmentation.acoustic import AcousticBoundary, AcousticBoundaryDetector
 from realtime_asr.session.session import EventError, SessionEvent
 
 
@@ -25,8 +26,39 @@ class RealtimeConfig:
     min_snapshot_samples: int = 800
     max_units: int = 32
     max_audio_samples: int = 9600000
+    acoustic_boundaries: bool = False
+    boundary_sensitivity: float = 0.6
+    boundary_followup_delays: tuple[float, ...] = (0.05, 0.2)
+    boundary_fallback_interval: float = 0.2
 
     def __post_init__(self):
+        if type(self.acoustic_boundaries) is not bool or (
+            self.acoustic_boundaries and self.mode != "snapshot"
+        ):
+            raise ASRError("BACKEND_INCOMPATIBLE", "configure", "声学触发需要快照实时角色")
+        if (
+            not isinstance(self.boundary_sensitivity, (int, float))
+            or not 0 <= self.boundary_sensitivity <= 1
+        ):
+            raise ASRError("INVALID_CONFIGURATION", "configure", "声学灵敏度无效")
+        if (
+            not isinstance(self.boundary_followup_delays, tuple)
+            or len(self.boundary_followup_delays) > 8
+        ):
+            raise ASRError("INVALID_CONFIGURATION", "configure", "声学补识别最多八个时间")
+        for value in (*self.boundary_followup_delays, self.boundary_fallback_interval):
+            if (
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or not isfinite(value)
+                or value < 0
+            ):
+                raise ASRError("INVALID_CONFIGURATION", "configure", "声学时间应为有限非负秒数")
+        if self.boundary_fallback_interval == 0:
+            raise ASRError("INVALID_CONFIGURATION", "configure", "声学回退间隔应大于零")
+        object.__setattr__(
+            self, "boundary_followup_delays", tuple(sorted(set(self.boundary_followup_delays)))
+        )
         if self.mode not in ("snapshot", "native") or (
             self.model is not None and not isinstance(self.model, RecognizerConfig)
         ):
@@ -60,6 +92,12 @@ class _RealtimeUnit:
     stream: object = None
     ended: bool = False
     accepted_samples: int = 0
+    observation_sequence: int = 0
+    detector: AcousticBoundaryDetector | None = None
+    boundary: AcousticBoundary | None = None
+    boundary_pending: bool = False
+    followups: list[float] = field(default_factory=list)
+    trigger_reason: str = "periodic"
 
 
 class RealtimeExecutor:
@@ -96,6 +134,8 @@ class RealtimeExecutor:
         ):
             raise ASRError("REALTIME_CAPACITY_EXCEEDED", "start", "实时单元预留容量不足")
         state = _RealtimeUnit(session, unit, monotonic())
+        if self.config.acoustic_boundaries:
+            state.detector = AcousticBoundaryDetector(self.config.boundary_sensitivity)
         self.states[unit.ref] = state
         unit.realtime = state
         unit.realtime_done = self.config.mode != "native"
@@ -104,6 +144,15 @@ class RealtimeExecutor:
         """快照只唤醒调度；原生路径保存相邻增量，不覆盖未送音频。"""
         if self.config.mode == "native" and not unit.realtime.invalid:
             unit.realtime.pending.extend(pcm)
+        if unit.realtime.detector is not None and not unit.realtime.invalid:
+            events = unit.realtime.detector.feed(pcm)
+            if events:
+                unit.realtime.boundary = events[-1]
+                unit.realtime.boundary_pending = True
+                now = monotonic()
+                unit.realtime.followups = [
+                    now + delay for delay in self.config.boundary_followup_delays
+                ]
         self.runtime._condition.notify_all()
 
     def finish_unit(self, unit):
@@ -118,6 +167,7 @@ class RealtimeExecutor:
         """失效待处理输入，执行中的调用及流由后台退出后清理。"""
         unit.realtime.invalid = True
         unit.realtime.pending.clear()
+        unit.realtime.followups.clear()
         self.runtime._condition.notify_all()
 
     def stop(self):
@@ -143,20 +193,35 @@ class RealtimeExecutor:
         for ref, state in tuple(self.states.items()):
             native = self.config.mode == "native"
             samples = len(state.pending) // 2 if native else len(state.unit.pcm) // 2
+            acoustic = state.detector is not None
+            followup_due = acoustic and bool(state.followups) and state.followups[0] <= now
             if (native and not samples) or (
                 not native
-                and (samples < self.config.min_snapshot_samples or samples <= state.last_samples)
+                and (
+                    samples < self.config.min_snapshot_samples
+                    or (
+                        samples <= state.last_samples
+                        and not state.followups
+                        and not state.boundary_pending
+                    )
+                )
             ):
                 continue
             due = state.created_at + self.config.initial_delay
             if state.last_started is not None:
-                due = max(due, state.last_started + self.config.interval)
+                if not acoustic:
+                    due = max(due, state.last_started + self.config.interval)
+                if acoustic and not state.boundary_pending and not followup_due:
+                    fallback = state.last_started + self.config.boundary_fallback_interval
+                    if state.followups:
+                        fallback = min(fallback, state.followups[0])
+                    due = max(due, fallback)
             if due > now:
                 delay = due - now
                 wait = delay if wait is None else min(wait, delay)
                 continue
             if self.shared and (
-                self.runtime._running is not None or self.runtime._has_final_ready()
+                self.runtime._running is not None or self.runtime._has_work_ready()
             ):
                 continue
             del self.states[ref]
@@ -164,6 +229,16 @@ class RealtimeExecutor:
             pcm = bytes(state.pending if native else state.unit.pcm)
             if native:
                 state.pending.clear()
+            state.trigger_reason = "native" if native else "periodic"
+            if acoustic:
+                if state.boundary_pending:
+                    state.trigger_reason = "acoustic-boundary"
+                    state.boundary_pending = False
+                elif followup_due:
+                    state.trigger_reason = "boundary-followup"
+                    state.followups = [deadline for deadline in state.followups if deadline > now]
+                else:
+                    state.trigger_reason = "boundary-fallback"
             return state, pcm, wait
         return None, None, wait
 
@@ -218,6 +293,7 @@ class RealtimeExecutor:
                 state.last_samples = len(pcm) // 2
                 # 输入可以在解码期间继续到达；动作必须与本次领取的增量一致。
                 finishing, cleaning = state.ended, state.invalid
+                trigger, boundary = state.trigger_reason, state.boundary
             result, error = None, None
             with self.model_lock:
                 started = monotonic()
@@ -233,6 +309,7 @@ class RealtimeExecutor:
                     error = EventError(exc.code, exc.operation, exc.message)
                     self._close_stream(state)
             samples = state.accepted_samples if self.config.mode == "native" else len(pcm) // 2
+            state.observation_sequence += 1
             event = SessionEvent(
                 kind="realtime_failed" if error else "realtime",
                 sequence=0,
@@ -246,6 +323,9 @@ class RealtimeExecutor:
                 started_at_monotonic=started,
                 completed_at_monotonic=monotonic(),
                 stream_finished=self.config.mode == "native" and finishing and error is None,
+                observation_sequence=state.observation_sequence,
+                trigger_reason=trigger,
+                acoustic_boundary=boundary if self.config.acoustic_boundaries else None,
             )
             with condition:
                 if not state.invalid:

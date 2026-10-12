@@ -25,6 +25,7 @@ def parser():
     command.add_argument("--allowed-origin", action="append", default=[])
     command.add_argument("--vad-model")
     command.add_argument("--realtime", action=argparse.BooleanOptionalAction, default=True)
+    command.add_argument("--acoustic-boundaries", action="store_true")
     for name in (
         "max-sessions",
         "max-tasks",

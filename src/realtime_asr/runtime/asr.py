@@ -1,4 +1,4 @@
-"""共享模型与后台最终任务；协调锁不覆盖模型调用。"""
+"""共享最终模型与有界任务；协调锁不覆盖模型调用。"""
 
 from collections import deque
 from dataclasses import dataclass
@@ -57,6 +57,10 @@ class _Job:
     pcm: bytes
     unit: object
     submitted_at: float
+    purpose: str = "final"
+    hint: object = None
+    epoch: int = 0
+    word_timestamps: bool = False
 
 
 class ASRRuntime:
@@ -165,7 +169,7 @@ class ASRRuntime:
             self._sessions[session.session_id] = session
             return session
 
-    def create_auto_session(self, *, vad, segmentation=None, config=None):
+    def create_auto_session(self, *, vad, segmentation=None, config=None, endpoint=None):
         """显式准备检测器；加载不持有共享协调锁，失败不注册会话。"""
         from realtime_asr.segmentation.gate import SegmentationConfig
         from realtime_asr.segmentation.vad import VadConfig
@@ -183,7 +187,7 @@ class ASRRuntime:
             self._require_ready()
             if config.realtime and self._realtime is None:
                 raise ASRError("REALTIME_NOT_CONFIGURED", "create_session", "运行时未配置实时角色")
-        session = AutomaticSession(self, config, vad, segmentation)
+        session = AutomaticSession(self, config, vad, segmentation, endpoint)
         with self._condition:
             self._require_ready()
             if len(self._sessions) >= self._limits.max_sessions:
@@ -194,25 +198,75 @@ class ASRRuntime:
     def _submit(self, session, unit, pcm):
         self._require_ready()
         samples = len(pcm) // 2
+        early = unit.early_result
+        if early is not None and early.matches_audio(pcm):
+            task = FinalTask(unit.ref, uuid4().hex, samples, samples, unit.boundary)
+            unit.task = task
+            session._count_optimization(unit, "early_reused")
+            session._resolve(task, early.result, timing=early.timing)
+            return task
+        if early is not None:
+            unit.optimization["early_reuse_rejected"] = "audio-version-changed"
         if (
             self._tasks >= self._limits.max_tasks
             or self._task_samples + samples > self._limits.max_task_audio_samples
         ):
             raise ASRError("TASK_CAPACITY_EXCEEDED", "finish", "最终任务容量不足，保留封口音频")
         task = FinalTask(unit.ref, uuid4().hex, samples, samples, unit.boundary)
-        self._queue.append(_Job(session, task, pcm, unit, monotonic()))
+        self._queue.append(
+            _Job(
+                session,
+                task,
+                pcm,
+                unit,
+                monotonic(),
+                word_timestamps=session.config.word_timestamps,
+            )
+        )
         self._tasks += 1
         self._task_samples += task.audio_samples
         self._condition.notify_all()
         return task
 
+    def _submit_auxiliary(self, session, unit, *, purpose, hint=None):
+        """辅助快照共用物理预算，容量不足只跳过优化，不拒绝输入。"""
+        samples = len(unit.pcm) // 2
+        if unit.auxiliary is not None:
+            session._count_optimization(unit, "busy_skipped")
+            return False
+        if not samples:
+            return False
+        if (
+            self._tasks >= self._limits.max_tasks
+            or self._task_samples + samples > self._limits.max_task_audio_samples
+        ):
+            session._count_optimization(unit, "capacity_skipped")
+            return False
+        task = FinalTask(unit.ref, uuid4().hex, samples, samples)
+        job = _Job(
+            session,
+            task,
+            bytes(unit.pcm),
+            unit,
+            monotonic(),
+            purpose=purpose,
+            hint=hint,
+            epoch=unit.endpoint_epoch,
+            word_timestamps=purpose == "punctuation" or session.config.word_timestamps,
+        )
+        unit.auxiliary = job
+        self._queue.append(job)
+        self._tasks += 1
+        self._task_samples += samples
+        session._count_optimization(unit, purpose + "_submitted")
+        self._condition.notify_all()
+        return True
+
     def _run(self):
         """锁外串行推理；锁内回交归属及释放物理容量。"""
         while True:
             with self._condition:
-                self._condition.wait_for(
-                    lambda: self._has_final_ready() or self._state == "closing"
-                )
+                self._condition.wait_for(lambda: self._has_work_ready() or self._state == "closing")
                 if not self._queue:
                     break
                 job = self._next_job()
@@ -222,18 +276,20 @@ class ASRRuntime:
                 with self._model_lock:
                     started_at = monotonic()
                     result = self._recognizer.transcribe(
-                        job.pcm, format=AudioFormat(), language=job.session.config.language
+                        job.pcm,
+                        format=AudioFormat(),
+                        language=job.session.config.language,
+                        word_timestamps=job.word_timestamps,
                     )
             except ASRError as exc:
                 error = exc
             completed_at = monotonic()
             with self._condition:
-                job.session._resolve(
-                    job.task,
-                    result,
-                    error,
-                    timing=(job.submitted_at, started_at, completed_at),
-                )
+                timing = (job.submitted_at, started_at, completed_at)
+                if job.purpose == "final":
+                    job.session._resolve(job.task, result, error, timing=timing)
+                else:
+                    job.session._resolve_auxiliary(job, result, error, timing)
                 self._tasks -= 1
                 self._task_samples -= job.task.audio_samples
                 self._running = None
@@ -257,15 +313,19 @@ class ASRRuntime:
                 self._tasks -= 1
                 self._task_samples -= job.task.audio_samples
                 self._condition.notify_all()
-                return
+                if job.purpose != "final" and job.unit.auxiliary is job:
+                    job.unit.auxiliary = None
+                return True
+        return False
 
-    def _has_final_ready(self):
+    def _has_work_ready(self):
         """本单元原生排空之前，最终任务不能领取模型执行资源。"""
-        return any(job.unit.realtime_done for job in self._queue)
+        return any(job.purpose != "final" or job.unit.realtime_done for job in self._queue)
 
     def _next_job(self):
         """在有界队列中轮转会话，保持每个会话的任务相对顺序。"""
-        job = next(job for job in self._queue if job.unit.realtime_done)
+        ready = [job for job in self._queue if job.purpose != "final" or job.unit.realtime_done]
+        job = next((job for job in ready if job.purpose == "final"), ready[0])
         self._queue.remove(job)
         others, same_session = deque(), deque()
         for queued in self._queue:

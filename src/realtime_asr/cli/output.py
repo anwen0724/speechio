@@ -54,7 +54,10 @@ class Output:
             if event.kind == "final":
                 self._write_stdout(event.result.text + "\n")
             elif event.kind == "realtime":
-                self.stderr.write(f"[{event.source}:{event.unit.unit_id}] {event.result.text}\n")
+                text = (
+                    event.stabilization.display_text if event.stabilization else event.result.text
+                )
+                self.stderr.write(f"[{event.source}:{event.unit.unit_id}] {text}\n")
                 self.stderr.flush()
             elif event.error is not None:
                 self.stderr.write(f"[{event.error.code}] {event.error.message}\n")

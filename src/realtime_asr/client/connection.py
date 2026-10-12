@@ -52,9 +52,11 @@ class RemoteClient:
             trust_env=False,
         )
 
-    def transcribe(self, audio, *, format=AudioFormat(), language=None):
+    def transcribe(self, audio, *, format=AudioFormat(), language=None, word_timestamps=False):
         """递交完整 raw 音频，错误响应保留服务的稳定分类。"""
         params = asdict(format)
+        if word_timestamps:
+            params["word_timestamps"] = True
         if language is not None:
             params["language"] = language
         response = self.http.post(
@@ -70,7 +72,7 @@ class RemoteClient:
             raise remote_error(value)
         return value
 
-    def transcribe_file(self, path, *, language=None):
+    def transcribe_file(self, path, *, language=None, word_timestamps=False):
         """文件解码沿用 audio 功能；服务端进行唯一一次格式转换。"""
         with closing(audio_file_chunks(path)) as chunks:
             format, first = next(chunks)
@@ -78,7 +80,9 @@ class RemoteClient:
             audio = first.astype(dtype, copy=False).tobytes() + b"".join(
                 chunk.astype(dtype, copy=False).tobytes() for _, chunk in chunks
             )
-        return self.transcribe(audio, format=format, language=language)
+        return self.transcribe(
+            audio, format=format, language=language, word_timestamps=word_timestamps
+        )
 
     def connect(self, *, mode="manual", format=AudioFormat(), realtime=True, **options):
         """鉴权并等待 open 成功，再交出自有远程会话；失败关闭已取得的 Socket。"""

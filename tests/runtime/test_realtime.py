@@ -25,6 +25,45 @@ class RealtimeTests(unittest.TestCase):
     def setUp(self):
         test_recognizer.RecognizerTests.setUp(self)
 
+    def test_acoustic_followup_observes_same_audio_without_stabilizing_duplicate_evidence(self):
+        from realtime_asr import StabilizationConfig
+
+        voice = np.sin(2 * np.pi * 180 * np.arange(3200) / 16000)
+        audio = (
+            np.concatenate((np.zeros(1600), voice * 0.2, voice[:320] * 0.005, voice * 0.2)) * 32767
+        ).astype(np.int16)
+        result = SimpleNamespace(text="测试文本", start=0, end=0.5)
+        info = SimpleNamespace(language="zh", language_probability=1)
+        with patch(
+            "faster_whisper.BatchedInferencePipeline.transcribe",
+            side_effect=lambda *a, **kw: (iter([result]), info),
+        ):
+            with ASRRuntime(
+                RecognizerConfig(model_path=self.path),
+                realtime=RealtimeConfig(
+                    initial_delay=0,
+                    interval=60,
+                    acoustic_boundaries=True,
+                    boundary_followup_delays=(0.01, 0.05),
+                    boundary_fallback_interval=60,
+                ),
+            ) as runtime:
+                session = runtime.create_session(
+                    SessionConfig(
+                        realtime=True, stabilization=StabilizationConfig(initial_prefix_span=0)
+                    )
+                )
+                session.start()
+                session.feed_audio(audio)
+                first = session.get_event(timeout=5)
+                followup = session.get_event(timeout=5)
+                self.assertEqual(first.trigger_reason, "acoustic-boundary")
+                self.assertEqual(followup.trigger_reason, "boundary-followup")
+                self.assertEqual(first.audio_version, followup.audio_version)
+                self.assertEqual(followup.stabilization.stable_text, "")
+                self.assertGreater(followup.observation_sequence, first.observation_sequence)
+                session.cancel()
+
     def nemotron_fixture(self, native):
         """临时模型使用合成文件身份，替换外部 Sherpa 工厂，运行真实流适配器。"""
         folder = self.path / "nemotron"

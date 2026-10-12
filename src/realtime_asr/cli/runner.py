@@ -12,12 +12,14 @@ from realtime_asr import (
     ASRError,
     ASRRuntime,
     AudioFormat,
+    EndpointConfig,
     MicrophoneConfig,
     MicrophoneInput,
     RealtimeConfig,
     RecognizerConfig,
     SegmentationConfig,
     SessionConfig,
+    StabilizationConfig,
     VadConfig,
     list_input_devices,
 )
@@ -94,7 +96,12 @@ def _session(runtime, args, format):
     """输入格式交给会话，不在 CLI 复制音频转换或切分逻辑。"""
     samples = int(args.max_audio_seconds * 16000)
     config = SessionConfig(
-        format=format, language=args.language, max_audio_samples=samples, realtime=args.realtime
+        format=format,
+        language=args.language,
+        max_audio_samples=samples,
+        realtime=args.realtime,
+        stabilization=StabilizationConfig() if args.stable_text else None,
+        word_timestamps=args.word_timestamps,
     )
     if args.mode == "auto":
         return runtime.create_auto_session(
@@ -108,6 +115,11 @@ def _session(runtime, args, format):
                 trim_pre_roll=args.trim_pre_roll,
                 backdate_duration=args.backdate_seconds,
                 max_buffer_samples=max(1920000, samples + 17024),
+            ),
+            endpoint=EndpointConfig(
+                early_transcription_silence=args.early_transcription_silence,
+                dynamic_silence=args.dynamic_silence,
+                punctuation_split=args.punctuation_split,
             ),
         )
     session = runtime.create_session(config)
@@ -242,7 +254,10 @@ def _execute(args, stdin, output):
             cuda_directory=args.cuda_directory,
         )
         realtime = (
-            RealtimeConfig(mode="snapshot" if args.backend == "whisper" else "native")
+            RealtimeConfig(
+                mode="snapshot" if args.backend == "whisper" else "native",
+                acoustic_boundaries=args.acoustic_boundaries,
+            )
             if (args.realtime)
             else None
         )

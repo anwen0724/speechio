@@ -11,6 +11,7 @@ type FinalText = {
   generation: number;
   unit: number;
   completed: boolean;
+  mismatch: boolean;
 };
 const labels: Record<Status, string> = {
   disconnected: '未连接',
@@ -26,10 +27,19 @@ const labels: Record<Status, string> = {
 export function Transcription() {
   const [token, setToken] = useState('');
   const [mode, setMode] = useState<Mode>('auto');
+  const [stableText, setStableText] = useState(false);
   const [status, setStatus] = useState<Status>('disconnected');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [preview, setPreview] = useState<{ key: string; text: string } | undefined>(undefined);
+  const [preview, setPreview] = useState<
+    | {
+        key: string;
+        text: string;
+        stable?: string;
+        unstable?: string;
+      }
+    | undefined
+  >(undefined);
   const [finals, setFinals] = useState<FinalText[]>([]);
   const session = useRef<BrowserSession | undefined>(undefined);
   const mounted = useRef(true);
@@ -61,7 +71,15 @@ export function Transcription() {
     const event = message.event;
     if (!event) return;
     const key = `${event.unit.session_id}:${event.unit.generation}:${event.unit.unit_id}`;
-    if (event.kind === 'realtime' && event.result) setPreview({ key, text: event.result.text });
+    if (event.kind === 'realtime' && event.result) {
+      const stable = event.stabilization;
+      setPreview({
+        key,
+        text: stable?.display_text ?? event.result.text,
+        stable: stable?.stable_text,
+        unstable: stable?.unstable_text,
+      });
+    }
     if (event.kind === 'final' && event.result) {
       const text = event.result.text;
       setFinals((current) => [
@@ -72,6 +90,7 @@ export function Transcription() {
           generation: event.unit.generation,
           unit: event.unit.unit_id,
           completed: false,
+          mismatch: event.finalization?.agrees_with_stable_prefix === false,
         },
       ]);
       setPreview((current) => (current?.key === key ? undefined : current));
@@ -99,7 +118,7 @@ export function Transcription() {
     );
     session.current = owner;
     try {
-      await owner.connect(token);
+      await owner.connect(token, stableText);
       if (mounted.current && session.current === owner) setStatus('ready');
     } catch (error) {
       fail(owner, asError(error));
@@ -166,6 +185,15 @@ export function Transcription() {
             placeholder="回环服务可留空"
           />
         </label>
+        <label className="stable-option">
+          <input
+            type="checkbox"
+            checked={stableText}
+            disabled={connected || busy}
+            onChange={(event) => setStableText(event.target.checked)}
+          />
+          稳定文本
+        </label>
         <p className="hint">连接时申请麦克风权限。凭据仅保留在当前页面内存。</p>
         <div className="actions">
           <button
@@ -228,10 +256,21 @@ export function Transcription() {
       <section className="preview-panel" aria-label="实时观察">
         <div className="panel-heading">
           <h2>实时观察</h2>
-          <span className="tag">可变预览</span>
+          <span className="tag">{stableText ? '稳定与待定' : '可变预览'}</span>
         </div>
         <p className={preview ? 'preview' : 'empty'}>
-          {preview?.text || '开始说话后，这里显示实时识别。'}
+          {preview?.stable !== undefined ? (
+            <>
+              <strong className="stable-text" aria-label="稳定前缀">
+                {preview.stable}
+              </strong>
+              <span className="unstable-text" aria-label="待定尾部">
+                {preview.unstable}
+              </span>
+            </>
+          ) : (
+            preview?.text || '开始说话后，这里显示实时识别。'
+          )}
         </p>
       </section>
       <section className="final-panel" aria-label="最终结果">
@@ -257,6 +296,9 @@ export function Transcription() {
                 代次 {item.generation} · 单元 {item.unit} · {item.completed ? '已完成' : '等待完成'}
               </span>
               <p>{item.text || '（无识别正文）'}</p>
+              {item.mismatch && (
+                <p className="hint">最终正文与实时稳定前缀不同，以上保留最终识别结果。</p>
+              )}
             </li>
           ))}
         </ol>

@@ -167,19 +167,21 @@ class Recognizer:
             code = "DEPENDENCY_MISSING" if isinstance(exc, (ImportError, OSError)) else "MODEL_LOAD"
             raise ASRError(code, "load_model", str(exc)) from exc
 
-    def transcribe(self, audio, *, format: AudioFormat, language=None):
+    def transcribe(self, audio, *, format: AudioFormat, language=None, word_timestamps=False):
         """识别一段完整字节或数组。"""
         with self._operation():
-            self._validate_language(language)
-            return self._transcribe_chunks((audio,), format, language)
+            self._validate_options(language, word_timestamps)
+            return self._transcribe_chunks((audio,), format, language, word_timestamps)
 
-    def transcribe_chunks(self, chunks, *, format: AudioFormat, language=None):
+    def transcribe_chunks(
+        self, chunks, *, format: AudioFormat, language=None, word_timestamps=False
+    ):
         """有限块序列结束后返回一个完整结果。"""
         with self._operation():
-            self._validate_language(language)
-            return self._transcribe_chunks(chunks, format, language)
+            self._validate_options(language, word_timestamps)
+            return self._transcribe_chunks(chunks, format, language, word_timestamps)
 
-    def _transcribe_chunks(self, chunks, format, language):
+    def _transcribe_chunks(self, chunks, format, language, word_timestamps):
         """输入迭代失败与转换失败分别保留；全部转换完成后才准备模型。"""
         converter = AudioConverter(format)
         output = bytearray()
@@ -199,20 +201,23 @@ class Recognizer:
                     output.extend(frame.pcm)
             for frame in converter.finish():
                 output.extend(frame.pcm)
-            return self._infer(bytes(output), language)
+            return self._infer(bytes(output), language, word_timestamps=word_timestamps)
         finally:
             converter.close()
 
-    def transcribe_file(self, path, *, language=None):
+    def transcribe_file(self, path, *, language=None, word_timestamps=False):
         """从本地文件头解码，不接受外部格式覆盖。"""
         with self._operation():
-            self._validate_language(language)
-            return self._infer(read_audio_file(path), language)
+            self._validate_options(language, word_timestamps)
+            return self._infer(read_audio_file(path), language, word_timestamps=word_timestamps)
 
     @staticmethod
-    def _validate_language(language):
+    def _validate_options(language, word_timestamps):
+        """调用边界先检查元数据，错误选项不能消费源或加载模型。"""
         if language is not None and (not isinstance(language, str) or not language.strip()):
             raise ASRError("INVALID_CONFIGURATION", "transcribe", "语言应为非空代码或 None")
+        if type(word_timestamps) is not bool:
+            raise ASRError("INVALID_CONFIGURATION", "transcribe", "词时间戳开关应为布尔值")
 
     def _snapshot(self, pcm, language):
         """识别固定的标准音频快照，使用实时角色参数。"""
@@ -226,7 +231,7 @@ class Recognizer:
             backend_language = {None: "auto", "zh": "zh-CN", "en": "en-US"}.get(language, language)
             return self._engine.create_streaming_session(language=backend_language)
 
-    def _infer(self, pcm, language, *, role="final"):
+    def _infer(self, pcm, language, *, role="final", word_timestamps=False):
         """完整标准 PCM 只进入一次普通识别，不对输入块分别转写。"""
         if not pcm:
             raise ASRError("INVALID_AUDIO", "transcribe", "完整输入没有标准采样")
@@ -240,6 +245,7 @@ class Recognizer:
             parameters = {"language": backend_language}
             if self.config.backend == "whisper":
                 parameters["role"] = role
+                parameters["word_timestamps"] = word_timestamps
             result = self._engine.transcribe(array, **parameters)
         except ASRError:
             raise
@@ -254,6 +260,11 @@ class Recognizer:
             language_source=language_source,
             segments=deepcopy(result.segments),
             backend_metadata=deepcopy(result.backend_metadata),
+            timestamp_status=(
+                "unavailable"
+                if word_timestamps and self.config.backend != "whisper"
+                else result.timestamp_status
+            ),
         )
 
     def _release_resources(self):

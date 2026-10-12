@@ -8,7 +8,7 @@ from realtime_asr.audio.microphone import (
     list_input_devices,
 )
 from realtime_asr.errors import ASRError
-from realtime_asr.results import CloseResult, RecognitionResult
+from realtime_asr.results import CloseResult, RecognitionResult, WordTimestamp
 from realtime_asr.runtime.asr import (
     ASRRuntime,
     RuntimeCapacity,
@@ -17,6 +17,7 @@ from realtime_asr.runtime.asr import (
 )
 from realtime_asr.runtime.realtime import RealtimeConfig
 from realtime_asr.runtime.recognizer import Recognizer, RecognizerConfig
+from realtime_asr.segmentation.acoustic import AcousticBoundaryDetector
 from realtime_asr.segmentation.gate import SegmentationConfig, SegmentBoundary
 from realtime_asr.segmentation.vad import VadConfig
 from realtime_asr.session.automatic import AutomaticSession
@@ -29,8 +30,16 @@ from realtime_asr.session.session import (
     SessionEvent,
     UnitRef,
 )
+from realtime_asr.text.endpoint import EndpointConfig
+from realtime_asr.text.stabilizer import StabilizationConfig, TextObservation, TextStabilizer
 
 __all__ = [
+    "EndpointConfig",
+    "AcousticBoundaryDetector",
+    "WordTimestamp",
+    "StabilizationConfig",
+    "TextObservation",
+    "TextStabilizer",
     "InputDevice",
     "MicrophoneConfig",
     "MicrophoneInput",
