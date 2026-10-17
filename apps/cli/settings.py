@@ -17,6 +17,7 @@ from apps.cli.options import (
     wake_role,
 )
 from realtime_asr import ASRError
+from realtime_asr.bundled import default_vad_model
 
 SCALARS = {
     "str": str,
@@ -230,7 +231,7 @@ def check_paths(args, target):
         from realtime_asr import EndpointConfig, SegmentationConfig, VadConfig
 
         VadConfig(
-            model_path=args.vad_model,
+            model_path=args.vad_model or default_vad_model(),
             webrtc_mode=args.webrtc_mode,
             silero_sensitivity=args.silero_sensitivity,
             silero_end_detection=args.silero_end_detection,
@@ -260,9 +261,9 @@ def check_paths(args, target):
         value = getattr(args, name, None)
         if value and not Path(value).is_dir():
             raise ASRError("INVALID_CONFIGURATION", "check_config", f"目录不存在：{name}={value}")
-    if args.mode == "auto" and args.vad_model:
+    if args.mode == "auto":
         modules.update(("webrtcvad", "onnxruntime"))
-        if not Path(args.vad_model).is_file():
+        if args.vad_model and not Path(args.vad_model).is_file():
             raise ASRError("INVALID_CONFIGURATION", "check_config", "VAD 文件不存在")
     if args.wake:
         modules.add("pvporcupine" if args.wake_backend == "porcupine" else "openwakeword")

@@ -40,6 +40,10 @@ namespaces = false
 [tool.setuptools]
 include-package-data = false
 
+[tool.setuptools.package-data]
+# 内置 Silero v6 检测模型及其许可说明，随 wheel 分发。
+realtime_asr = ["assets/*"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"

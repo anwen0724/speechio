@@ -11,6 +11,7 @@ from realtime_asr import (
     SessionConfig,
     VadConfig,
 )
+from realtime_asr.bundled import default_vad_model
 from realtime_asr.runtime.asr import ASRRuntime
 
 
@@ -18,7 +19,7 @@ def main():
     parser = argparse.ArgumentParser(description="连续 PCM 文件自动分句")
     parser.add_argument("audio")
     parser.add_argument("--model", required=True)
-    parser.add_argument("--vad-model", required=True)
+    parser.add_argument("--vad-model", default=None)
     parser.add_argument("--backend", choices=("whisper", "nemotron"), default="whisper")
     parser.add_argument("--language", default=None)
     parser.add_argument("--realtime", action="store_true")
@@ -29,7 +30,7 @@ def main():
         realtime = RealtimeConfig(mode=model.capabilities.realtime_mode)
     with ASRRuntime(model, realtime=realtime) as runtime:
         session = runtime.create_auto_session(
-            vad=VadConfig(model_path=args.vad_model),
+            vad=VadConfig(model_path=args.vad_model or default_vad_model()),
             config=SessionConfig(language=args.language, realtime=args.realtime),
         )
 

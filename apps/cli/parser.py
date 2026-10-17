@@ -3,6 +3,7 @@
 import argparse
 import sys
 from math import isfinite
+from pathlib import Path
 
 from apps.cli.options import COMMANDS, OPTIONS
 from realtime_asr import ASRError
@@ -122,8 +123,8 @@ def _validate(parser, args):
         parser.error("文本或声学实时策略要求 --realtime")
     if args.punctuation_split and not args.stable_text:
         parser.error("句末切段要求 --stable-text")
-    if args.mode == "auto" and not args.vad_model:
-        parser.error("auto 模式要求 --vad-model")
+    if args.mode == "auto" and args.vad_model and not Path(args.vad_model).is_file():
+        parser.error(f"--vad-model 文件不存在：{args.vad_model}")
     if args.max_audio_seconds > 600 or int(args.max_audio_seconds * 16000) == 0:
         parser.error("--max-audio-seconds 应大于零且不超过 600 秒")
     if args.command == "mic" and args.input_device is not None and args.input_device < 0:

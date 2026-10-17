@@ -323,9 +323,9 @@ OPTIONS = (
         "vad",
         key="model",
         help="VAD 模型文件",
-        comment="自动分句使用",
+        comment="省略时使用内置 Silero v6",
         sample='".runtime/models/vad/silero-v6.onnx"',
-        active_sample=True,
+        active_sample=False,
     ),
     Option(
         "webrtc-mode",

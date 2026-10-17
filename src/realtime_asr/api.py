@@ -5,6 +5,7 @@ from pathlib import Path
 
 from realtime_asr.audio.conversion import AudioFormat
 from realtime_asr.audio.microphone import MicrophoneConfig, MicrophoneInput
+from realtime_asr.bundled import default_vad_model
 from realtime_asr.errors import ASRError
 from realtime_asr.runtime.asr import ASRRuntime
 from realtime_asr.runtime.realtime import RealtimeConfig
@@ -63,13 +64,16 @@ class StreamTranscriber:
         drain_timeout=10.0,
         **options,
     ):
-        if vad_model is None:
-            raise ASRError("INVALID_CONFIGURATION", "configure", "实时转写需要 vad_model")
         if on_partial is not None and not callable(on_partial):
             raise ASRError("INVALID_CONFIGURATION", "configure", "on_partial 应为可调用对象")
         self._model = model
         self._options = options
-        self._vad_model = Path(vad_model)
+        # 默认使用随包分发的 Silero v6；显式路径优先，启动前就检查文件。
+        self._vad_model = Path(vad_model) if vad_model is not None else default_vad_model()
+        if not self._vad_model.is_file():
+            raise ASRError(
+                "INVALID_CONFIGURATION", "configure", f"检测模型不存在：{self._vad_model}"
+            )
         self._language = language
         self._on_partial = on_partial
         self._input_device = input_device
@@ -209,8 +213,8 @@ class StreamTranscriber:
         return None
 
 
-def transcribe_stream(*, model="tiny", vad_model, language=None, on_partial=None, **options):
-    """持续转写麦克风；每次产出一段的最终结果。"""
+def transcribe_stream(*, model="tiny", vad_model=None, language=None, on_partial=None, **options):
+    """持续转写麦克风；每次产出一段的最终结果，默认使用内置检测模型。"""
     with StreamTranscriber(
         model=model,
         vad_model=vad_model,

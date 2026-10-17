@@ -1,6 +1,8 @@
 """两个入门入口的输入分派与实时结果交付，不启动真实模型或设备。"""
 
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -14,6 +16,7 @@ from realtime_asr import (
     transcribe_audio,
     transcribe_stream,
 )
+from realtime_asr.bundled import default_vad_model
 
 
 class RecordingTranscriber:
@@ -125,9 +128,34 @@ class EntryTests(unittest.TestCase):
         self.assertNotIn("ASRRuntime", realtime_asr.__all__)
         self.assertFalse(hasattr(realtime_asr, "ASRRuntime"))
 
-    def test_stream_requires_vad_model(self):
+    def test_stream_uses_bundled_vad_model_by_default(self):
+        session = FakeSession([event("final", "hello")])
+        runtime = FakeRuntime(session)
+        with (
+            patch("realtime_asr.api.ASRRuntime", lambda *args, **kwargs: runtime),
+            patch("realtime_asr.api.MicrophoneInput", FakeMicrophone),
+        ):
+            for _ in transcribe_stream(model="tiny"):
+                break
+        self.assertEqual(runtime.options["vad"].model_path, default_vad_model())
+
+    def test_stream_uses_explicit_vad_model(self):
+        with tempfile.TemporaryDirectory() as directory:
+            custom = Path(directory) / "custom.onnx"
+            custom.write_bytes(b"model")
+            session = FakeSession([event("final", "hello")])
+            runtime = FakeRuntime(session)
+            with (
+                patch("realtime_asr.api.ASRRuntime", lambda *args, **kwargs: runtime),
+                patch("realtime_asr.api.MicrophoneInput", FakeMicrophone),
+            ):
+                for _ in transcribe_stream(model="tiny", vad_model=custom):
+                    break
+        self.assertEqual(runtime.options["vad"].model_path, custom)
+
+    def test_stream_rejects_missing_custom_vad_model(self):
         with self.assertRaises(ASRError) as caught:
-            StreamTranscriber(model="tiny")
+            StreamTranscriber(model="tiny", vad_model="missing.onnx")
         self.assertEqual(caught.exception.code, "INVALID_CONFIGURATION")
 
     def test_stream_delivers_final_and_partial(self):
@@ -143,9 +171,7 @@ class EntryTests(unittest.TestCase):
             patch("realtime_asr.api.ASRRuntime", lambda *args, **kwargs: runtime),
             patch("realtime_asr.api.MicrophoneInput", FakeMicrophone),
         ):
-            for transcript in transcribe_stream(
-                model="tiny", vad_model="silero.onnx", on_partial=partials.append
-            ):
+            for transcript in transcribe_stream(model="tiny", on_partial=partials.append):
                 self.assertEqual(transcript.text, "hello")
                 break
         self.assertEqual(partials, ["hel"])
@@ -160,7 +186,7 @@ class EntryTests(unittest.TestCase):
             patch("realtime_asr.api.MicrophoneInput", FakeMicrophone),
         ):
             with self.assertRaises(ASRError) as caught:
-                for _ in transcribe_stream(model="tiny", vad_model="silero.onnx"):
+                for _ in transcribe_stream(model="tiny"):
                     pass
         self.assertEqual(caught.exception.code, "VAD_FAILED")
         self.assertTrue(session.closed)

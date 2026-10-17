@@ -28,6 +28,7 @@ from realtime_asr import (
     list_input_devices,
 )
 from realtime_asr.audio.files import audio_file_chunks
+from realtime_asr.bundled import default_vad_model
 from realtime_asr.runtime.asr import ASRRuntime
 
 
@@ -120,7 +121,7 @@ def _session(runtime, args, format):
             wake=wake_role(args),
             config=config,
             vad=VadConfig(
-                model_path=args.vad_model,
+                model_path=args.vad_model or default_vad_model(),
                 webrtc_mode=args.webrtc_mode,
                 silero_sensitivity=args.silero_sensitivity,
                 silero_end_detection=args.silero_end_detection,

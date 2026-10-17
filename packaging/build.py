@@ -24,7 +24,7 @@ def main():
     expected = {
         path.relative_to(project / "src").as_posix(): path.read_bytes()
         for path in (project / "src/realtime_asr").rglob("*")
-        if path.is_file() and path.suffix in (".py", ".toml")
+        if path.is_file() and "__pycache__" not in path.parts
     }
     wheels = list((project / "dist").glob("realtime_asr-*.whl"))
     wheel = max(wheels, key=lambda path: path.stat().st_mtime)

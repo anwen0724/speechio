@@ -32,6 +32,9 @@ python -m apps.cli mic
 ```text
 src/realtime_asr/              # 库：只包含核心能力
 ├── __init__.py                # 稳定的公开 SDK 导出
+├── api.py                     # transcribe_audio 与 transcribe_stream
+├── bundled.py                 # 内置 Silero v6 检测模型路径
+├── assets/                    # 检测模型与许可说明，随 wheel 分发
 ├── errors.py                  # 公共错误与错误记录
 ├── results.py                 # 识别与关闭结果
 ├── model_manifests.py         # 固定权重发布包的不可变描述
@@ -205,7 +208,7 @@ uv run --no-sync python -m apps.cli --help
 uv run --no-sync python -m apps.cli devices
 
 # 默认自动分句和基本实时；Ctrl+C 停止，也可指定 --duration。
-uv run --no-sync python -m apps.cli mic --model .runtime/models/whisper-tiny --vad-model .runtime/models/vad/silero-v6.onnx --duration 10
+uv run --no-sync python -m apps.cli mic --model .runtime/models/whisper-tiny --duration 10
 
 # 手动模式将本次采集作为一个完整单元；不要求 VAD。
 uv run --no-sync python -m apps.cli mic --model .runtime/models/whisper-tiny --mode manual --duration 5 --output jsonl
@@ -216,7 +219,7 @@ uv run --no-sync python -m apps.cli file first.wav second.wav --model .runtime/m
 
 `--input-device` 是 devices 显示的 PortAudio 索引，`--device cpu|cuda` 是模型计算设备。默认采用系统输入设备，自动格式优先 16 kHz，再探测设备支持格式；显式索引或采样率无效时失败，不静默换设备。默认采集块为 1024 个源帧，缓冲预算为 5 秒；溢出和容量满明确报错。
 
-file 和 stdin 默认 manual 且不启用实时。显式 `--mode auto --vad-model <path>` 使用自动分句，`--realtime` 开启实时观察。mic 默认 auto 和 realtime，`--no-realtime` 关闭实时。默认单段容量 30 秒，`--max-audio-seconds` 可设为大于零且不超过 600 秒。
+file 和 stdin 默认 manual 且不启用实时。显式 `--mode auto` 使用自动分句，默认用内置 Silero v6，也可用 `--vad-model <path>` 换模型；`--realtime` 开启实时观察。mic 默认 auto 和 realtime，`--no-realtime` 关闭实时。默认单段容量 30 秒，`--max-audio-seconds` 可设为大于零且不超过 600 秒。
 
 stdin 接收原始小端 PCM16，默认 16 kHz 单声道；float32、其他采样率或声道应显式声明，不接收 WAV 文件头。PowerShell 的文本管道可能转换二进制，向子进程写原字节时使用二进制流。以下示例只演示把已经持有的 PCM16 交给 CLI：
 
@@ -268,13 +271,11 @@ from realtime_asr import transcribe_audio, transcribe_stream
 text = transcribe_audio("samples/speech.wav", model="tiny", language="zh").text
 
 # 持续读取麦克风，每段产出一个 Transcript
-for transcript in transcribe_stream(
-    model="tiny", vad_model="samples/silero-v6.onnx", language="zh"
-):
+for transcript in transcribe_stream(model="tiny", language="zh"):
     print(transcript.text)
 ```
 
-`transcribe_stream` 需要本地 VAD 模型路径。需要复用模型或控制会话时，再用下面的类写法。
+`transcribe_stream` 默认使用库内置的 Silero v6 检测模型；要换模型时传 `vad_model=`。检测运行库来自 `vad` 附加依赖。需要复用模型或控制会话时，再用下面的类写法。
 
 `model` 可以是模型名，也可以是已经准备好的目录；名字由所选引擎解释：
 
@@ -409,7 +410,7 @@ uv run --no-sync python -m evals.p3
 
 ## 自动分句
 
-安装 `vad` 可选依赖，显式提供本地 Silero v6 ONNX 图。自动会话直接接收持续输入，不逐段调用 `start()`。一个输入代次使用同一个转换器，结束录音段不会重置重采样状态。
+安装 `vad` 可选依赖。自动会话默认使用内置 Silero v6；要换检测模型时显式传 `VadConfig(model_path=...)`。自动会话直接接收持续输入，不逐段调用 `start()`。一个输入代次使用同一个转换器，结束录音段不会重置重采样状态。
 
 ```python
 from realtime_asr import ModelConfig, SessionConfig, VadConfig
@@ -479,7 +480,7 @@ def open_optimized_session(runtime):
 动态等待按最近接受的实时正文选择句末、未知和续说等待，继续经过原来的门控。句末策略只支持句末标点，使用真实词时间固定左侧并保留右侧。提前结果只有在封口音频与快照完全相同时才复用；后续静音也会使版本不同。提前推理会增加成本，启用前应检查对应设备上的测量。
 
 ```powershell
-uv run --no-sync python -m apps.cli mic --model .runtime/models/whisper-tiny --vad-model .runtime/models/vad/silero-v6.onnx --stable-text --word-timestamps --dynamic-silence --punctuation-split --duration 10 --output jsonl
+uv run --no-sync python -m apps.cli mic --model .runtime/models/whisper-tiny --stable-text --word-timestamps --dynamic-silence --punctuation-split --duration 10 --output jsonl
 ```
 
 `word_timestamps=True` 时完整结果包含词时间。会话策略通过 `SessionConfig` 和自动会话参数选择；声学策略由 `RealtimeConfig(acoustic_boundaries=True)` 开启。CLI 的 `--stable-text`、`--dynamic-silence`、`--punctuation-split`、`--acoustic-boundaries` 使用同一套配置。
