@@ -4,6 +4,7 @@ import hashlib
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from realtime_asr.install_sherpa_models import (
     MODEL_MANIFESTS,
@@ -29,6 +30,26 @@ class InstallSherpaModelsTests(unittest.TestCase):
             manifests_for_selection("large")
         self.assertIn("560ms", str(caught.exception))
         self.assertIn("all", str(caught.exception))
+
+    def test_default_install_covers_all_variants(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with patch("realtime_asr.install_sherpa_models.prepare_nemotron") as prepare:
+                prepare.side_effect = lambda destination, **kwargs: destination.mkdir(
+                    parents=True, exist_ok=True
+                )
+                installed = install_models(folder)
+        self.assertEqual(set(installed), {"560ms", "1120ms", "80ms"})
+        self.assertEqual(prepare.call_count, 3)
+
+    def test_explicit_selection_installs_only_that_variant(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with patch("realtime_asr.install_sherpa_models.prepare_nemotron") as prepare:
+                prepare.side_effect = lambda destination, **kwargs: destination.mkdir(
+                    parents=True, exist_ok=True
+                )
+                installed = install_models(folder, "1120ms")
+        self.assertEqual(set(installed), {"1120ms"})
+        self.assertEqual(prepare.call_count, 1)
 
     def test_offline_install_requires_existing_model_and_creates_nothing(self):
         with tempfile.TemporaryDirectory() as folder:

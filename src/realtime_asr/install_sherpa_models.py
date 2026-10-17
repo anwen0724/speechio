@@ -44,7 +44,7 @@ def verify_archive(path, manifest):
         raise ModelInstallError(f"压缩包 SHA-256 不符：{path}")
 
 
-def install_models(root, model="560ms", *, offline=False):
+def install_models(root, model="all", *, offline=False):
     """安装所选模型并返回名称到目录的映射；已有有效模型直接复用。"""
     root = Path(root).expanduser()
     if root.is_symlink():
@@ -74,7 +74,7 @@ def main(argv=None):
         prog="asr-install-sherpa-models", description="安装固定 Nemotron 权重"
     )
     parser.add_argument("--root", type=Path, required=True, help="模型根目录")
-    parser.add_argument("--model", choices=(*MODEL_MANIFESTS, "all"), default="560ms")
+    parser.add_argument("--model", choices=(*MODEL_MANIFESTS, "all"), default="all")
     parser.add_argument("--offline", action="store_true", help="只校验已有模型，不联网")
     args = parser.parse_args(argv)
     try:

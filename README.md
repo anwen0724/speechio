@@ -553,10 +553,10 @@ Whisper 模型按名字由 faster-whisper 下载到缓存，不需要准备步�
 Nemotron 固定权重使用安装器写入显式目录：
 
 ```powershell
-uv run --no-sync asr-install-sherpa-models --root D:/models/sherpa-onnx --model 560ms
+uv run --no-sync asr-install-sherpa-models --root D:/models/sherpa-onnx
 ```
 
-安装器校验压缩包大小和 SHA-256，压缩包先落 `.partial` 支持续传，在临时目录展开成功后原子改名；`--offline` 只校验已有模型。引擎启动不下载、不替换权重。
+默认安装 `all`（560ms、1120ms、80ms 三个变体）；只装其中一个时加 `--model 560ms`。安装器校验压缩包大小和 SHA-256，压缩包先落 `.partial` 支持续传，在临时目录展开成功后原子改名；`--offline` 只校验已有模型。引擎启动不下载、不替换权重。
 
 评估矩阵仍用 `python -m evals.p0 prepare-models` 准备到 `.runtime`；那是评估入口，不是 SDK 的使用步骤。
 
