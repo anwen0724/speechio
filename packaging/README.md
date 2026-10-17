@@ -7,7 +7,7 @@
 在项目目录执行：
 
 ```powershell
-uv sync --extra server --extra nemotron --extra vad --extra wake-openwakeword --extra wake-porcupine
+uv sync --extra nemotron --extra vad --extra wake-openwakeword --extra wake-porcupine
 .venv/Scripts/python packaging/build.py --install-web-deps
 ```
 
@@ -17,7 +17,7 @@ wheel 位于 dist。项目外可以新建虚拟环境并安装需要的 extras�
 
 ```powershell
 uv venv --python 3.12 C:/asr-env
-uv pip install --python C:/asr-env/Scripts/python.exe "C:/path/realtime_asr-0.1.0-py3-none-any.whl[server,vad]"
+uv pip install --python C:/asr-env/Scripts/python.exe "C:/path/realtime_asr-0.1.0-py3-none-any.whl[vad]"
 ```
 
 默认安装已包含 Whisper 本地识别、音频转换和 SoundFile／SoXR。远程客户端另装 client，本地设备输入另装 microphone，Nemotron 另装 nemotron。按用途安装，不复制其他项目的 site-packages。Linux／Python 3.12 的 OpenWakeWord ONNX 安装使用 `--excludes packaging/wake-onnx-excludes.txt`，排除该路线不使用的 TFLite 依赖；项目源码 uv 配置已有针对 0.6.0 的同等约束。

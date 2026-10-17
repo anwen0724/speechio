@@ -198,7 +198,7 @@ asr remote --url http://127.0.0.1:8000 --output jsonl stdin --realtime --dual-re
 
 ## 环境与安装
 
-网络服务安装 `server`，远程接入安装 `client`。`server` 组不包含识别后端、VAD、SoundFile 或 PyAudio；`client` 组不包含模型或设备库。文件客户端另需 `audio`，客户端麦克风另需 `microphone`。这些依赖组可以按使用范围组合。
+`server` 和 `client` 不属于库，不随 wheel 安装，也没有对应的 extras。它们是仓库内的应用层参考实现：服务端由使用者按公开 API 自行编写，这里的实现只用于开发和验证，依赖放在开发组。
 
 使用 uv 和 64 位 CPython 3.12。开发解释器由 `.python-version` 固定为已安装的 3.12.14，Python 依赖由 `uv.lock` 锁定。以下命令在项目根目录执行：
 
@@ -270,14 +270,14 @@ with MicrophoneInput(MicrophoneConfig()) as microphone:
 
 ## 网络服务与远程接入
 
-服务只访问显式指定的本地模型。先同步依赖，再运行正式入口；没有 VAD 时只开放手动输入。
+服务只访问显式指定的本地模型。下面从仓库运行参考服务端；`server`／`client` 依赖在开发组，`uv sync` 会装好，不需要额外 extras。
 
 ```powershell
-uv sync --locked --extra vad --extra server --extra client --extra microphone
+uv sync --locked --extra vad --extra microphone
 uv run --no-sync asr serve --model .runtime/models/whisper-tiny --vad-model .runtime/models/vad/silero-v6.onnx
 ```
 
-`asr serve` 和 `python -m realtime_asr.server` 使用同一启动器。默认监听 `127.0.0.1:8000`，一个 worker 共享一个 ASRRuntime。存活接口是 `/api/v1/live`；模型准备中 `/api/v1/ready` 返回 503，准备成功后返回 200。容量满与模型未就绪分别报告。
+`asr serve` 和 `python -m realtime_asr.server` 使用同一启动器，只在仓库内可用；wheel 不包含 server 和 client。默认监听 `127.0.0.1:8000`，一个 worker 共享一个 ASRRuntime。存活接口是 `/api/v1/live`；模型准备中 `/api/v1/ready` 返回 503，准备成功后返回 200。容量满与模型未就绪分别报告。
 
 HTTP 的 `POST /api/v1/transcribe` 接收 `application/octet-stream` 原始小端音频。用 sample_rate、channels、sample_type 和可选 language 声明输入，默认 16 kHz、单声道、int16；不提交 WAV 文件头或服务器路径。WebSocket 使用 `/api/v1/ws`，第一条 open 取得新会话；音频包和控制都绑定这个会话及代次。完整字段与错误见 [P6 Spec](docs/specs/network-service.md)。
 
