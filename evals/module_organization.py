@@ -27,7 +27,6 @@ def replay(project):
     gpu = RecognizerConfig(
         model=cpu.model,
         device="cuda",
-        cudnn_folder=project / ".runtime/cudnn/9.16.0.29",
     )
     native = RecognizerConfig(model=project / ".runtime/models/nemotron", engine="nemotron")
     reports = []

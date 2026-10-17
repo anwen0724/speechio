@@ -19,8 +19,6 @@ class EngineResources:
                 if owner.engine is selected:
                     return owner, lock
         owner = Recognizer(model, engine=engine)
-        for previous, _ in self._owners:
-            owner.ensure_compatible(previous)
         owned = owner, Lock()
         self._owners.append(owned)
         return owned

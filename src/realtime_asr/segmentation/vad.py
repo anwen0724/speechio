@@ -19,6 +19,7 @@ class VadConfig:
     webrtc_mode: int = 3
     silero_sensitivity: float = 0.4
     silero_end_detection: bool = False
+    intra_op_threads: int = 2
     warmup: bool = True
 
     def __post_init__(self):
@@ -29,6 +30,8 @@ class VadConfig:
             or not isfinite(self.silero_sensitivity)
             or not 0 <= self.silero_sensitivity <= 1
             or type(self.silero_end_detection) is not bool
+            or type(self.intra_op_threads) is not int
+            or self.intra_op_threads <= 0
             or type(self.warmup) is not bool
         ):
             raise ASRError("INVALID_CONFIGURATION", "configure", "VAD 配置无效")
@@ -97,7 +100,7 @@ class VoiceActivityDetector:
         try:
             digest = hashlib.sha256(path.read_bytes()).hexdigest()
             options = ort.SessionOptions()
-            options.intra_op_num_threads = 2
+            options.intra_op_num_threads = config.intra_op_threads
             options.inter_op_num_threads = 1
             self._model = ort.InferenceSession(
                 str(path), sess_options=options, providers=["CPUExecutionProvider"]

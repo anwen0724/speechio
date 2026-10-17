@@ -9,7 +9,6 @@ from evals.p0.diagnostics.native_libraries import loaded_libraries
 from evals.p0.diagnostics.resources import ResourceSampler
 from evals.p0.execution import execute_trial
 from realtime_asr.errors import ASRError, error_record
-from realtime_asr.runtime.native.gpu import CUDNN_VERSION, GPUContext
 
 
 class EnginePool:
@@ -22,7 +21,6 @@ class EnginePool:
         self.environment = environment
         self.engines = {}
         self.failures = {}
-        self.gpu_context = None
 
     def _create(self, backend):
         """只在显式加载阶段导入后端；设备由声明决定。"""
@@ -36,9 +34,6 @@ class EnginePool:
             )
         from realtime_asr.engines.whisper import WhisperEngine
 
-        if backend == "whisper-gpu":
-            self.gpu_context = GPUContext(self.root / "cudnn" / CUDNN_VERSION)
-            self.gpu_context.__enter__()
         return WhisperEngine(
             RecognizerConfig(
                 model=self.root / "models/whisper-tiny",
@@ -89,9 +84,6 @@ class EnginePool:
             self.failures[backend] = (status, error_record(exc, "load_model"))
             for step in getattr(exc, "preparation_steps", []):
                 self.storage.writer.write("preparation_step", backend=backend, **step)
-            if backend == "whisper-gpu" and self.gpu_context is not None:
-                self.gpu_context.__exit__(None, None, None)
-                self.gpu_context = None
             return None
         self.engines[backend] = engine
         self._save_resources(resources, backend, "load", self.storage.configuration(task, engine))

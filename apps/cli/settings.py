@@ -9,7 +9,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from apps.cli.options import (
-    LOCAL,
     OPTIONS,
     SECTION_COMMENTS,
     TARGETS,
@@ -107,7 +106,6 @@ def configure(argv, target):
             if target not in option.commands or option.dest in invocation.explicit:
                 continue
             _extend(configured, invocation, option, value, path)
-    _drop_unused_gpu_paths(configured, invocation, data, original, target)
     invocation.argv = [*original, *configured]
     return invocation
 
@@ -165,25 +163,6 @@ def _model_value(base, value):
     return value
 
 
-def _drop_unused_gpu_paths(configured, invocation, data, original, target):
-    """CPU 模式忽略配置中的 GPU 路径；命令行显式参数仍由原有检查处理。"""
-    device = data.get("model", {}).get("device", "cpu")
-    for index, token in enumerate(original):
-        if token == "--device" and index + 1 < len(original):
-            device = original[index + 1]
-        elif token.startswith("--device="):
-            device = token.partition("=")[2]
-    if target not in LOCAL or device == "cuda":
-        return
-    for dest in ("cudnn_folder", "cuda_directory"):
-        if dest not in invocation.sources:
-            continue
-        flag = "--" + dest.replace("_", "-")
-        index = configured.index(flag)
-        del configured[index : index + 2]
-        del invocation.sources[dest]
-
-
 def template():
     """按选项声明生成配置模板；示例值只作提示。"""
     lines = [
@@ -236,8 +215,6 @@ def check_paths(args, target):
         engine=args.engine,
         device=args.device,
         device_index=args.device_index,
-        cudnn_folder=args.cudnn_folder,
-        cuda_directory=args.cuda_directory,
     )
     resolve_config(model)
     realtime, ultrafast = realtime_roles(args, model)
@@ -279,8 +256,6 @@ def check_paths(args, target):
         "realtime_model",
         "ultrafast_model",
         "candidate_model",
-        "cudnn_folder",
-        "cuda_directory",
     ):
         value = getattr(args, name, None)
         if value and not Path(value).is_dir():

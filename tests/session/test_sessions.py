@@ -1,7 +1,5 @@
 """通过连续会话公开接口验证归属，只在外部模型边界控制时序。"""
 
-import hashlib
-import json
 import threading
 import unittest
 from types import SimpleNamespace
@@ -505,54 +503,3 @@ class SessionTests(unittest.TestCase):
                 self.assertEqual(session.get_event(timeout=5).kind, "final")
                 session.get_event(timeout=5)
                 np.testing.assert_array_equal(received[0], np.array([8191, -8191]) / 32768)
-
-    def test_cleanup_failure_is_reported_from_the_background_owner(self):
-        cudnn = self.path / "cudnn"
-        (cudnn / "bin").mkdir(parents=True)
-        (cudnn / "bin/cudnn64_9.dll").write_bytes(b"native-test")
-        (cudnn / "native-manifest.json").write_text(
-            json.dumps(
-                {
-                    "files": [
-                        {
-                            "path": "bin/cudnn64_9.dll",
-                            "size_bytes": 11,
-                            "sha256": hashlib.sha256(b"native-test").hexdigest(),
-                        }
-                    ]
-                }
-            ),
-            encoding="utf-8",
-        )
-        closed = []
-
-        class Directory:
-            def __init__(self, name):
-                self.name = name
-
-            def close(self):
-                closed.append(self.name)
-                if self.name == "cuda":
-                    raise OSError("目录句柄释放失败")
-
-        runtime = ASRRuntime(
-            RecognizerConfig(
-                model=self.path,
-                device="cuda",
-                cudnn_folder=cudnn,
-                cuda_directory=self.path / "cuda",
-            )
-        )
-        with (
-            patch("os.add_dll_directory", side_effect=[Directory("cuda"), Directory("cudnn")]),
-            patch("ctypes.WinDLL", return_value=object()),
-        ):
-            with self.assertRaises(ASRError) as caught:
-                with runtime:
-                    pass
-        self.assertEqual(caught.exception.code, "CLEANUP_FAILED")
-        self.assertEqual(closed, ["cuda", "cudnn"])
-        self.assertEqual(runtime.state, "closed")
-        self.assertEqual(runtime.close_result.status, "failed")
-        self.assertEqual(runtime.close_result.errors[0].code, "CLEANUP_FAILED")
-        self.assertIs(runtime.close(), runtime.close_result)

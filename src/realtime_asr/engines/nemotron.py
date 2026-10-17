@@ -8,7 +8,6 @@ from realtime_asr.engines.stream import NativeStream
 from realtime_asr.errors import ASRError
 from realtime_asr.runtime.models.manifest import verify_manifest
 from realtime_asr.runtime.models.stages import preparation_step
-from realtime_asr.runtime.native.libraries import load_project_onnx_runtime
 
 
 class NemotronEngine:
@@ -23,6 +22,21 @@ class NemotronEngine:
                 "INVALID_CONFIGURATION", "configure_engine", "engine_options.num_threads 应为正整数"
             )
         self.num_threads = num_threads
+        # 运行后端由调用方显式选择；库不检查系统显卡与驱动。
+        provider = options.get("provider", "cpu")
+        if not isinstance(provider, str) or not provider:
+            raise ASRError(
+                "INVALID_CONFIGURATION",
+                "configure_engine",
+                "engine_options.provider 应为非空字符串",
+            )
+        device_index = options.get("device", 0)
+        if type(device_index) is not int or device_index < 0:
+            raise ASRError(
+                "INVALID_CONFIGURATION", "configure_engine", "engine_options.device 应为非负整数"
+            )
+        self.provider = provider
+        self.device_index = device_index
         model_path = Path(config.model)
         if not model_path.is_dir():
             raise ASRError(
@@ -39,8 +53,7 @@ class NemotronEngine:
             self._load_recognizer()
 
     def _load_recognizer(self):
-        """在明确的加载区间内选择原生库、展开参数并创建识别器。"""
-        self._native_runtime, self.runtime_path = load_project_onnx_runtime()
+        """在明确的加载区间内展开参数并创建识别器。"""
         try:
             from sherpa_onnx import OnlineRecognizer
         except ImportError as exc:
@@ -63,7 +76,8 @@ class NemotronEngine:
                 "sample_rate": 16000,
                 "feature_dim": 128,
                 "enable_endpoint_detection": False,
-                "provider": "cpu",
+                "provider": self.provider,
+                "device": self.device_index,
                 "model_type": "",
             }
         )
@@ -78,7 +92,6 @@ class NemotronEngine:
             **self.parameters,
             "normalize_audio": False,
             "use_prompt": True,
-            "native_runtime_path": self.runtime_path,
         }
 
     def create_streaming_session(self, language=None, use_prompt=True):
@@ -106,4 +119,3 @@ class NemotronEngine:
     def close(self):
         """释放自有识别器引用；不承诺宿主进程资源立即回到原值。"""
         self._recognizer = None
-        self._native_runtime = None

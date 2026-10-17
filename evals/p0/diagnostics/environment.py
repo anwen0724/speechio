@@ -28,8 +28,6 @@ def gpu_devices():
                     "name": name.strip(),
                     "memory_total_bytes": int(memory.strip()) * 1024 * 1024,
                     "driver_version": driver.strip(),
-                    "runtime_cuda_version": None,
-                    "runtime_cudnn_version": None,
                 }
             )
         return devices, None
@@ -67,12 +65,7 @@ def inspect_environment():
         except OSError:
             pass
     gpus, gpu_reason = gpu_devices()
-    unknown = [
-        {
-            "name": "runtime_cuda_version/runtime_cudnn_version",
-            "reason": "尚未进行实际 GPU 推理与 DLL 追踪",
-        }
-    ]
+    unknown = []
     if not cpu:
         unknown.append({"name": "cpu_name", "reason": "系统接口未提供"})
     if gpu_reason:

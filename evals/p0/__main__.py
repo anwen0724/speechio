@@ -16,7 +16,6 @@ def parser():
     prepare = commands.add_parser("prepare-models")
     prepare.add_argument("--allow-download", action="store_true")
     prepare.add_argument("--local-whisper-snapshot", type=Path)
-    commands.add_parser("prepare-gpu")
     corpus = commands.add_parser("prepare-corpus")
     corpus.add_argument("--folder", type=Path, default=Path("data/corpus/p0"))
     validate = commands.add_parser("validate-corpus")
@@ -62,10 +61,6 @@ def main():
                         allow_download=arguments.allow_download,
                     ),
                 ]
-            case "prepare-gpu":
-                from realtime_asr.runtime.native.gpu import prepare_cudnn
-
-                result = {"folder": str(prepare_cudnn(arguments.runtime_root))}
             case "prepare-corpus":
                 from evals.p0.corpus.public import prepare_public_corpus
 

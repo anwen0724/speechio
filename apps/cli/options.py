@@ -66,7 +66,6 @@ class Option:
 
 SECTION_COMMENTS = {
     "model": "模型与计算设备",
-    "gpu": "GPU 运行库；仅选择 CUDA 时使用",
     "recognition": "识别语言与模式",
     "microphone": "麦克风采集",
     "input": "标准输入格式",
@@ -112,22 +111,6 @@ OPTIONS = (
         comment="需要本机 GPU 时改为 cuda",
     ),
     Option("device-index", "int", "model", default=0, help="CUDA 设备索引"),
-    Option(
-        "cudnn-folder",
-        "path",
-        "gpu",
-        help="cuDNN 目录",
-        comment="仅 CUDA 时使用",
-        sample='".runtime/cudnn/9.16.0.29"',
-    ),
-    Option(
-        "cuda-directory",
-        "path",
-        "gpu",
-        help="CUDA bin 目录",
-        comment="仅 CUDA 时使用",
-        sample='"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.8/bin"',
-    ),
     Option(
         "language",
         "str",
@@ -663,8 +646,6 @@ def _local_role_model(args, role, primary):
         engine=engine or primary.engine,
         device=selected_device,
         device_index=primary.device_index if selected_device == "cuda" else 0,
-        cudnn_folder=primary.cudnn_folder if selected_device == "cuda" else None,
-        cuda_directory=primary.cuda_directory if selected_device == "cuda" else None,
     )
 
 

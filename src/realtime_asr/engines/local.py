@@ -10,7 +10,6 @@ from realtime_asr.engines.base import BaseTranscriptionEngine, EngineCapabilitie
 from realtime_asr.engines.factory import available_engines, create_engine, normalize_engine
 from realtime_asr.errors import ASRError
 from realtime_asr.results import CloseError, CloseResult
-from realtime_asr.runtime.native.gpu import CUDA_DIRECTORY, GPUContext
 
 LOGGER = logging.getLogger(__name__)
 
@@ -22,13 +21,11 @@ class RecognizerConfig:
     model: str | PathLike
     engine: str = "whisper"
     device: str = "cpu"
-    compute_type: str | None = None
+    compute_type: str = "default"
     device_index: int = 0
     download_root: str | PathLike | None = None
     local_files_only: bool = False
     engine_options: Mapping[str, object] | None = None
-    cudnn_folder: str | PathLike | None = None
-    cuda_directory: str | PathLike | None = None
 
     @property
     def capabilities(self):
@@ -64,19 +61,11 @@ def resolve_config(config):
         or not valid_index
         or config.device_index < 0
         or (config.device == "cpu" and config.device_index != 0)
-        or (engine == "nemotron" and config.device != "cpu")
+        or not isinstance(config.compute_type, str)
+        or not config.compute_type
         or type(config.local_files_only) is not bool
     ):
         raise ASRError("INVALID_CONFIGURATION", "configure", "引擎或设备组合无效")
-    compute_type = "float16" if config.device == "cuda" else "int8"
-    if config.compute_type not in (None, compute_type):
-        raise ASRError("INVALID_CONFIGURATION", "configure", "本阶段计算类型与设备不匹配")
-    if config.device == "cpu" and (
-        config.cudnn_folder is not None or config.cuda_directory is not None
-    ):
-        raise ASRError("INVALID_CONFIGURATION", "configure", "CPU 不使用 GPU 路径")
-    if config.device == "cuda" and config.cudnn_folder is None:
-        raise ASRError("INVALID_CONFIGURATION", "configure", "CUDA 需要显式 cuDNN 目录")
     if not isinstance(config.model, (str, PathLike)):
         raise ASRError("INVALID_CONFIGURATION", "configure", "模型应为名字或目录")
     if config.engine_options is not None and not isinstance(config.engine_options, Mapping):
@@ -85,10 +74,6 @@ def resolve_config(config):
         model = str(config.model)
         if Path(model).is_dir():
             model = Path(model).resolve()
-        cudnn_folder = cuda_directory = None
-        if config.device == "cuda":
-            cudnn_folder = Path(config.cudnn_folder).resolve()
-            cuda_directory = Path(config.cuda_directory or CUDA_DIRECTORY).resolve()
         download_root = (
             Path(config.download_root).resolve() if config.download_root is not None else None
         )
@@ -99,23 +84,9 @@ def resolve_config(config):
             model=model,
             download_root=download_root,
             engine_options=engine_options,
-            compute_type=compute_type,
-            cudnn_folder=cudnn_folder,
-            cuda_directory=cuda_directory,
         )
     except (TypeError, ValueError, OSError) as exc:
         raise ASRError("INVALID_CONFIGURATION", "configure", "模型或运行库路径无效") from exc
-
-
-def validate_local_pair(first, second):
-    """只有本地 GPU 组装才检查进程运行库，共用实例由运行时管理。"""
-    if not isinstance(first, LocalEngine) or not isinstance(second, LocalEngine):
-        return
-    left, right = first.config, second.config
-    if left.device == right.device == "cuda" and (
-        left.cuda_directory != right.cuda_directory or left.cudnn_folder != right.cudnn_folder
-    ):
-        raise ASRError("INVALID_CONFIGURATION", "configure", "CUDA 角色需要相同运行库目录")
 
 
 class LocalEngine(BaseTranscriptionEngine):
@@ -124,7 +95,6 @@ class LocalEngine(BaseTranscriptionEngine):
     def __init__(self, config):
         self.config = resolve_config(config)
         self._model = None
-        self._gpu = None
 
     @property
     def capabilities(self):
@@ -134,9 +104,6 @@ class LocalEngine(BaseTranscriptionEngine):
         if self._model is not None:
             return
         try:
-            if self.config.device == "cuda":
-                self._gpu = GPUContext(self.config.cudnn_folder, self.config.cuda_directory)
-                self._gpu.__enter__()
             self._model = create_engine(self.config)
         except BaseException as exc:
             cleanup = self.close()
@@ -171,16 +138,10 @@ class LocalEngine(BaseTranscriptionEngine):
         """全部资源均尝试关闭；错误独立保留，引用始终清除。"""
         errors = []
         model, self._model = self._model, None
-        gpu, self._gpu = self._gpu, None
         if model is not None:
             try:
                 model.close()
             except Exception as exc:
                 LOGGER.error("模型资源关闭失败：%s", exc)
-                errors.append(CloseError("CLEANUP_FAILED", "close", str(exc)))
-        if gpu is not None:
-            try:
-                gpu.__exit__(None, None, None)
-            except Exception as exc:
                 errors.append(CloseError("CLEANUP_FAILED", "close", str(exc)))
         return CloseResult(status="failed" if errors else "ok", errors=tuple(errors))

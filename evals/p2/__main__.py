@@ -22,9 +22,8 @@ def check_backend(name, project, baseline):
     )
     config = RecognizerConfig(
         model=model_path,
-        backend=backend,
+        engine=backend,
         device="cuda" if gpu else "cpu",
-        cudnn_folder=project / ".runtime/cudnn/9.16.0.29" if gpu else None,
     )
     model = json.loads((model_path / "model-manifest.json").read_text(encoding="utf-8"))
     report = {

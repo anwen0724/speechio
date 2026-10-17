@@ -64,10 +64,6 @@ def rebuild_report(folder):
                         group["unavailable_reasons"].append(reason)
     if not run_id or not samples or not trials or corpus is None:
         raise ASRError("RECORD_INCOMPLETE", "rebuild_report", "语料快照、样本或试次记录缺失")
-    if any(item.get("backend") == "whisper-gpu" for item in native_runtime):
-        for field in environment.get("unknown_fields", []):
-            if field["name"] == "runtime_cuda_version/runtime_cudnn_version":
-                field["reason"] = "已完成 GPU 推理及路径追踪；动态库的实际绑定版本仍未证实。"
     storage = SimpleNamespace(
         trials=trials,
         samples=samples,

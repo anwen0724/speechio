@@ -16,9 +16,7 @@ from realtime_asr import AudioFormat, Recognizer, RecognizerConfig, list_input_d
 def run(project, folder):
     """三条模型路径分别覆盖文件、序列、stdin 与自动模式。"""
     cpu = RecognizerConfig(model=project / ".runtime/models/whisper-tiny")
-    gpu = RecognizerConfig(
-        model=cpu.model, device="cuda", cudnn_folder=project / ".runtime/cudnn/9.16.0.29"
-    )
+    gpu = RecognizerConfig(model=cpu.model, device="cuda")
     native = RecognizerConfig(model=project / ".runtime/models/nemotron", engine="nemotron")
     chinese = project / "data/corpus/p0/C01-1.wav"
     stereo = folder / "C01-stereo-48k.wav"
@@ -37,8 +35,6 @@ def run(project, folder):
             "--output",
             "jsonl",
         ]
-        if config.cudnn_folder is not None:
-            options += ["--cudnn-folder", str(config.cudnn_folder)]
         with Recognizer(config) as recognizer:
             for sample_id, language in (("C01-1", "zh-CN"), ("C07-1", "en")):
                 path = project / f"data/corpus/p0/{sample_id}.wav"

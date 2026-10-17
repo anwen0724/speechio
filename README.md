@@ -64,7 +64,7 @@ src/realtime_asr/              # 库：只包含核心能力
     ├── realtime.py            # 角色执行组、周期、容量与原生排空
     ├── tasks.py               # 固定音频、选项及任务归属
     ├── models/                # 显式准备、身份校验及准备阶段记录
-    └── native/                # GPU 资源与原生运行库加载
+    └── __init__.py
 
 apps/cli/                      # 本地命令行工具，不随库发布
 ├── options.py                 # 选项与命令声明，argparse、配置和模板的唯一来源
@@ -300,7 +300,7 @@ with Recognizer(
 
 同一 `Recognizer` 可顺序复用模型；并发准备、识别或关闭返回 `RUNTIME_BUSY`。错误通过 `ASRError.code`、`operation` 和 `message` 判断。关闭返回 `CloseResult`，重复关闭保留首次结论；`reference_drop` 不承诺显存回到加载前数值。
 
-Whisper CUDA 配置应显式提供 `device="cuda"` 和 `cudnn_folder`；`cuda_directory` 省略时使用下文说明的本机 CUDA 12.8 目录。CPU 配置不提供 GPU 路径。
+Whisper 的 CUDA 推理由 CTranslate2 在当前进程查找 CUDA 和 cuDNN。使用 `device="cuda"` 前，应先按显卡驱动安装匹配的 CUDA 12 和 cuDNN 9，并让它们的库目录出现在系统搜索路径中；库不下载、不校验、不固定这些运行库的版本。`compute_type` 默认 `"default"`，由 faster-whisper 按设备选择，也可显式传 `"float16"`、`"int8_float16"` 等值。CPU 配置不涉及这些。
 
 完整接口与输入规则见 [P1 Spec](docs/specs/external-audio-and-sdk.md)。独立调用示例见 [examples/transcribe.py](examples/transcribe.py)。
 
@@ -477,15 +477,15 @@ uv run --no-sync asr-install-sherpa-models --root D:/models/sherpa-onnx
 
 评估矩阵仍用 `python -m evals.p0 prepare-models` 准备到 `.runtime`；那是评估入口，不是 SDK 的使用步骤。
 
-## GPU 准备
+## GPU 环境
 
-CPU 路径不需要执行此步骤。Windows GPU 验证显式使用系统 CUDA 12.8 的 `bin` 目录，以及项目 `.runtime/cudnn/9.16.0.29/bin`：
+CPU 路径不需要额外步骤。GPU 推理所需的驱动、CUDA 和 cuDNN 由使用者安装，库不负责准备或校验：
 
-```powershell
-uv run --locked --extra nemotron python -m evals.p0 prepare-gpu
-```
+1. 安装 NVIDIA 驱动。
+2. 安装与驱动匹配的 CUDA 12 和 cuDNN 9，把 `bin` 目录加入系统搜索路径。
+3. 用 `device="cuda"`（或 CLI 的 `--device cuda`）运行。
 
-准备入口获取 NVIDIA cuDNN 包，校验发布哈希并保存原生文件清单。项目进程持有所选 DLL 和目录句柄，不修改系统 PATH，也不使用其他项目虚拟环境内的 cuDNN。实际已加载 DLL 路径进入验证记录；同名库同时加载时，不仅凭路径推定实际绑定版本。详细归属见 [GPU 运行库](docs/ARCHITECTURE.md#gpu-运行库的位置与复用边界)。
+Nemotron 的 sherpa-onnx 后端同样由使用者选择：默认 `provider="cpu"`，需要 CUDA 时传 `engine_options={"provider": "cuda", "device": 0}`，并自行安装支持 CUDA 的 sherpa-onnx 运行库。库不检查显卡或驱动，失败时直接给出底层运行库的真实错误。
 
 ## 公开语料与听音核实
 
@@ -571,7 +571,6 @@ Porcupine 的正向实际检测仍需 AccessKey，人工口述、首词裁剪质
 uv run --no-sync python -m apps.cli models list
 uv run --no-sync python -m apps.cli models prepare --kind whisper --path .runtime/models/whisper-tiny --download
 uv run --no-sync python -m apps.cli models verify --path .runtime/models/whisper-tiny
-uv run --no-sync python -m apps.cli gpu-runtime verify --path .runtime/cudnn/9.16.0.29
 ```
 
 模型工具支持 Whisper tiny、固定 Silero v6 和 OpenWakeWord Alexa ONNX 资源；Nemotron 固定权重统一使用 `asr-install-sherpa-models`。Porcupine 自定义文件和 AccessKey 由使用者提供。下载必须明确 --download；损坏或冲突文件不会被重写为成功缓存。

@@ -260,10 +260,10 @@ def main(argv=None, *, stdin=None, stdout=None, stderr=None):
         from apps.cli.settings import main as configuration
 
         return configuration(argv[1:], path=selected, stdout=stdout, stderr=stderr)
-    if argv and argv[0] in ("models", "gpu-runtime"):
+    if argv and argv[0] == "models":
         from apps.cli.resources import main as resources
 
-        return resources(argv[1:], gpu=argv[0] == "gpu-runtime", stdout=stdout)
+        return resources(argv[1:], stdout=stdout)
     args = parse_args(forward_config(argv, selected))
     stdin = sys.stdin if stdin is None else stdin
     output = Output(
@@ -302,8 +302,6 @@ def _execute(args, stdin, output):
             engine=args.engine,
             device=args.device,
             device_index=args.device_index,
-            cudnn_folder=args.cudnn_folder,
-            cuda_directory=args.cuda_directory,
         )
         realtime, ultrafast = realtime_roles(args, config)
         candidate = candidate_role(args, config)

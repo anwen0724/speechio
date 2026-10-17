@@ -1,6 +1,5 @@
 """SDK 使用真实转换与适配器，只替换外部模型加载和推理边界。"""
 
-import hashlib
 import json
 import tempfile
 import threading
@@ -134,58 +133,6 @@ class RecognizerTests(unittest.TestCase):
         self.assertEqual(recognizer.state, "closed")
         self.assertEqual(recognizer.close_result.status, "ok")
 
-    def test_gpu_close_attempts_all_owned_directories_and_preserves_body_error(self):
-        cudnn = self.path / "cudnn"
-        (cudnn / "bin").mkdir(parents=True)
-        dll = cudnn / "bin/cudnn64_9.dll"
-        dll.write_bytes(b"native-test")
-        (cudnn / "native-manifest.json").write_text(
-            json.dumps(
-                {
-                    "files": [
-                        {
-                            "path": "bin/cudnn64_9.dll",
-                            "size_bytes": 11,
-                            "sha256": hashlib.sha256(b"native-test").hexdigest(),
-                        }
-                    ]
-                }
-            ),
-            encoding="utf-8",
-        )
-        closed = []
-
-        class Directory:
-            def __init__(self, name):
-                self.name = name
-
-            def close(self):
-                closed.append(self.name)
-                if self.name == "cuda":
-                    raise OSError("目录句柄释放失败")
-
-        config = RecognizerConfig(
-            model=self.path,
-            device="cuda",
-            cudnn_folder=cudnn,
-            cuda_directory=self.path / "cuda",
-        )
-        recognizer = Recognizer(config)
-        original = ValueError("正文错误")
-        with (
-            patch("os.add_dll_directory", side_effect=[Directory("cuda"), Directory("cudnn")]),
-            patch("ctypes.WinDLL", return_value=object()),
-        ):
-            with self.assertRaises(ValueError) as caught:
-                with recognizer:
-                    raise original
-        self.assertIs(caught.exception, original)
-        self.assertEqual(closed, ["cuda", "cudnn"])
-        self.assertEqual(recognizer.state, "closed")
-        self.assertEqual(recognizer.close_result.status, "failed")
-        self.assertEqual(recognizer.close_result.errors[0].code, "CLEANUP_FAILED")
-        self.assertIs(recognizer.close(), recognizer.close_result)
-
     def test_unknown_model_backend_is_rejected_before_preparation(self):
         path = self.path / "model-manifest.json"
         manifest = json.loads(path.read_text(encoding="utf-8"))
@@ -245,3 +192,18 @@ class RecognizerTests(unittest.TestCase):
         with self.assertRaises(ASRError) as caught:
             recognizer.transcribe_chunks(never_read(), format=None)
         self.assertEqual(caught.exception.code, "INVALID_AUDIO_FORMAT")
+
+
+class LocalConfigTests(unittest.TestCase):
+    def test_compute_type_and_device_follow_the_caller(self):
+        from realtime_asr.engines.local import resolve_config
+
+        self.assertEqual(resolve_config(RecognizerConfig(model="tiny")).compute_type, "default")
+        resolved = resolve_config(
+            RecognizerConfig(model="tiny", device="cuda", compute_type="int8_float16")
+        )
+        self.assertEqual(resolved.compute_type, "int8_float16")
+        resolved = resolve_config(
+            RecognizerConfig(model="models/nemotron", engine="nemotron", device="cuda")
+        )
+        self.assertEqual(resolved.device, "cuda")

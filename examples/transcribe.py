@@ -15,12 +15,9 @@ def main():
     parser.add_argument("--model", required=True, type=Path)
     parser.add_argument("--backend", choices=("whisper", "nemotron"), default="whisper")
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
-    parser.add_argument("--cudnn", type=Path)
     parser.add_argument("--language")
     args = parser.parse_args()
-    config = RecognizerConfig(
-        model=args.model, engine=args.backend, device=args.device, cudnn_folder=args.cudnn
-    )
+    config = RecognizerConfig(model=args.model, engine=args.backend, device=args.device)
     with Recognizer(config) as recognizer:
         result = recognizer.transcribe_file(args.audio, language=args.language)
     print(

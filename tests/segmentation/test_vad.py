@@ -58,6 +58,11 @@ class VadTests(unittest.TestCase):
                     detector.detect(bytes(1024), 0, recording=True)
         self.assertEqual(caught.exception.code, "VAD_FAILED")
 
+    def test_intra_op_threads_must_be_positive(self):
+        with self.assertRaises(ASRError) as caught:
+            VadConfig(model_path=Path("model.onnx"), intra_op_threads=0)
+        self.assertEqual(caught.exception.code, "INVALID_CONFIGURATION")
+
 
 if __name__ == "__main__":
     unittest.main()

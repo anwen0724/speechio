@@ -15,7 +15,6 @@ import soundfile as sf
 import soxr
 
 from realtime_asr import ASRError, AudioConverter, AudioFormat, Recognizer, RecognizerConfig
-from realtime_asr.runtime.native.gpu import CUDNN_VERSION
 
 
 def saved_baselines(path):
@@ -43,9 +42,8 @@ def check_backend(name, root, corpus, manifest, baselines, output):
     gpu = name == "whisper-gpu"
     config = RecognizerConfig(
         model=root / "models" / ("nemotron" if backend == "nemotron" else "whisper-tiny"),
-        backend=backend,
+        engine=backend,
         device="cuda" if gpu else "cpu",
-        cudnn_folder=root / "cudnn" / CUDNN_VERSION if gpu else None,
     )
     recognizer = Recognizer(config)
     record = {

@@ -17,7 +17,6 @@ def build_parser(*, diagnostic=False):
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("config", help="创建、检查和显示本机配置")
     commands.add_parser("models", help="显式准备与校验模型，不启动识别")
-    commands.add_parser("gpu-runtime", help="显式准备与校验 GPU 原生库")
     for command in COMMANDS:
         sub = commands.add_parser(command.name, help=command.help)
         if command.name == "file":

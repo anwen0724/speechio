@@ -11,7 +11,7 @@ import numpy as np
 from realtime_asr.audio.conversion import AudioConverter, AudioFormat
 from realtime_asr.audio.files import read_audio_file
 from realtime_asr.engines.base import validate_engine
-from realtime_asr.engines.local import LocalEngine, RecognizerConfig, validate_local_pair
+from realtime_asr.engines.local import LocalEngine, RecognizerConfig
 from realtime_asr.errors import ASRError
 from realtime_asr.results import CloseError, CloseResult, RecognitionResult
 
@@ -67,10 +67,6 @@ class Recognizer:
     def engine(self):
         """供角色组装识别同一实例；调用仍应经由本拥有者。"""
         return self._engine
-
-    def ensure_compatible(self, other):
-        """本地运行库兼容检查归适配边界，不让调度器读取 GPU 路径。"""
-        validate_local_pair(self.engine, other.engine)
 
     def prepare(self) -> None:
         """显式离线准备所选模型；输入调用也可延迟至转换完成后准备。"""
