@@ -10,7 +10,7 @@ from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
 
 from realtime_asr import ASRError, AudioFormat
-from realtime_asr.audio.files import audio_file_chunks
+from realtime_asr.core.audio.files import audio_file_chunks
 from realtime_asr.protocol import encode_audio_packet
 
 

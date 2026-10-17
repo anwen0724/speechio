@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from realtime_asr.errors import ASRError
+from realtime_asr.core.errors import ASRError
 
 
 class CandidateTicker:

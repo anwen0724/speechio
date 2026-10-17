@@ -11,7 +11,7 @@ from realtime_asr import (
     RecognizerConfig,
     SessionConfig,
 )
-from realtime_asr.audio.files import audio_file_chunks
+from realtime_asr.core.audio.files import audio_file_chunks
 
 
 def show(event):

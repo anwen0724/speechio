@@ -4,7 +4,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from realtime_asr.errors import ASRError
+from realtime_asr.core.errors import ASRError
 from tests.support import whisper_engine
 
 

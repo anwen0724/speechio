@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from realtime_asr.cli.runner import main
-from realtime_asr.runtime.models.manifest import create_manifest
+from realtime_asr.core.runtime.models.manifest import create_manifest
 
 
 class ResourceCommandTests(unittest.TestCase):

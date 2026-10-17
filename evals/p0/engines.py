@@ -8,8 +8,8 @@ from uuid import uuid4
 from evals.p0.diagnostics.native_libraries import loaded_libraries
 from evals.p0.diagnostics.resources import ResourceSampler
 from evals.p0.execution import execute_trial
-from realtime_asr.errors import ASRError, error_record
-from realtime_asr.runtime.native.gpu import CUDNN_VERSION, GPUContext
+from realtime_asr.core.errors import ASRError, error_record
+from realtime_asr.core.runtime.native.gpu import CUDNN_VERSION, GPUContext
 
 
 class EnginePool:
@@ -29,12 +29,12 @@ class EnginePool:
         from realtime_asr import RecognizerConfig
 
         if backend == "nemotron":
-            from realtime_asr.engines.nemotron import NemotronEngine
+            from realtime_asr.core.engines.nemotron import NemotronEngine
 
             return NemotronEngine(
                 RecognizerConfig(model=self.root / "models/nemotron", engine="nemotron")
             )
-        from realtime_asr.engines.whisper import WhisperEngine
+        from realtime_asr.core.engines.whisper import WhisperEngine
 
         if backend == "whisper-gpu":
             self.gpu_context = GPUContext(self.root / "cudnn" / CUDNN_VERSION)

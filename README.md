@@ -27,21 +27,48 @@ asr mic
 
 ## 代码结构
 
-正式实现位于 `src/realtime_asr/`，按音频、会话、分句、文本、识别后端和运行时组织。公共错误与结果各保留一个小文件；核心模块不依赖 evals、测试或示例。
+正式实现位于 `src/realtime_asr/`。核心库在 `src/realtime_asr/core/`，按音频、会话、分句、文本、识别引擎和运行时组织，不依赖 `cli`、`server`、`client`；接入层在外层。公共错误与结果各保留一个小文件；核心模块不依赖 evals、测试或示例。
 
 ```text
 src/realtime_asr/
 ├── __init__.py              # 稳定的公开 SDK 导出
 ├── __main__.py              # python -m realtime_asr
-├── errors.py                # 公共错误与错误记录
-├── results.py               # 识别与关闭结果
 ├── protocol.py              # 共享二进制音频包编码，不依赖网络框架
-├── model_manifests.py       # 固定权重发布包的不可变描述
-├── install_sherpa_models.py # 把固定 Nemotron 权重安装到显式目录
-├── audio/
-│   ├── conversion.py        # 格式、连续转换、凑帧与标准样本位置
-│   ├── files.py             # 标准 WAV 与通用文件有限块解码
-│   └── microphone.py        # 输入设备、实际源格式与独立采集
+├── core/                    # 核心库：不依赖 cli、server、client
+│   ├── __init__.py
+│   ├── errors.py            # 公共错误与错误记录
+│   ├── results.py           # 识别与关闭结果
+│   ├── model_manifests.py   # 固定权重发布包的不可变描述
+│   ├── install_sherpa_models.py # 把固定 Nemotron 权重安装到显式目录
+│   ├── audio/
+│   │   ├── conversion.py    # 格式、连续转换、凑帧与标准样本位置
+│   │   ├── files.py         # 标准 WAV 与通用文件有限块解码
+│   │   └── microphone.py    # 输入设备、实际源格式与独立采集
+│   ├── session/
+│   │   ├── session.py       # 单元归属、控制、任务与有序事件
+│   │   └── automatic.py     # 持续源输入与待递交自动段
+│   ├── segmentation/
+│   │   ├── gate.py          # 前置保护、静音确认、裁剪与切点
+│   │   ├── acoustic.py      # 有界能量包络与声学触发信号
+│   │   └── vad.py           # WebRTC、Silero 与独立检测状态
+│   ├── text/
+│   │   ├── stabilizer.py    # 原文投影、稳定证据与最终差异
+│   │   ├── endpoint.py      # 动态等待与句末锚点策略
+│   │   └── realtime_merge.py # 双路观察、锚点、内容代次与有限尾部
+│   ├── engines/
+│   │   ├── base.py          # 通用整段、流式与能力契约
+│   │   ├── factory.py       # 引擎名到适配器的注册表
+│   │   ├── local.py         # 本地配置、GPU 与模型组装
+│   │   ├── whisper.py       # Whisper 整段与快照适配
+│   │   ├── nemotron.py      # Nemotron 识别器适配
+│   │   └── stream.py        # 原生流输入、解码、结束与关闭
+│   └── runtime/
+│       ├── recognizer.py    # 同步 SDK 与模型生命周期
+│       ├── asr.py           # ASRRuntime、最终调度及容量
+│       ├── realtime.py      # 角色执行组、周期、容量与原生排空
+│       ├── tasks.py         # 固定音频、选项及任务归属
+│       ├── models/          # 显式准备、身份校验及准备阶段记录
+│       └── native/          # GPU 资源与原生运行库加载
 ├── cli/
 │   ├── config.py            # TOML、路径、覆盖、来源与配置管理
 │   ├── config.example.toml  # 安装包内的中文配置模板
@@ -56,34 +83,9 @@ src/realtime_asr/
 │   ├── service.py           # 共享运行时与自有会话
 │   ├── connection.py        # 连接控制、有界发送与排空
 │   └── __main__.py          # 正式服务启动器
-├── client/
-│   ├── connection.py        # RemoteClient / RemoteSession
-│   └── __main__.py          # remote 文件、stdin 与客户端麦克风
-├── session/
-│   ├── session.py           # 单元归属、控制、任务与有序事件
-│   └── automatic.py         # 持续源输入与待递交自动段
-├── segmentation/
-│   ├── gate.py              # 前置保护、静音确认、裁剪与切点
-│   ├── acoustic.py          # 有界能量包络与声学触发信号
-│   └── vad.py               # WebRTC、Silero 与独立检测状态
-├── text/
-│   ├── stabilizer.py        # 原文投影、稳定证据与最终差异
-│   ├── endpoint.py          # 动态等待与句末锚点策略
-│   └── realtime_merge.py    # 双路观察、锚点、内容代次与有限尾部
-├── engines/
-│   ├── base.py              # 通用整段、流式与能力契约
-│   ├── factory.py           # 引擎名到适配器的注册表
-│   ├── local.py             # 本地配置、GPU 与模型组装
-│   ├── whisper.py           # Whisper 整段与快照适配
-│   ├── nemotron.py          # Nemotron 识别器适配
-│   └── stream.py            # 原生流输入、解码、结束与关闭
-└── runtime/
-    ├── recognizer.py        # 同步 SDK 与模型生命周期
-    ├── asr.py               # ASRRuntime、最终调度及容量
-    ├── realtime.py          # 角色执行组、周期、容量与原生排空
-    ├── tasks.py             # 固定音频、选项及任务归属
-    ├── models/              # 显式准备、身份校验及准备阶段记录
-    └── native/              # GPU 资源与原生运行库加载
+└── client/
+    ├── connection.py        # RemoteClient / RemoteSession
+    └── __main__.py          # remote 文件、stdin 与客户端麦克风
 
 evals/p0/                    # 语料、评分与基线验证
 evals/p1/                    # 同步 SDK 真实验收
@@ -104,20 +106,20 @@ tests/
 ├── session/                 # 单元、控制、归属与自动输入
 ├── segmentation/            # 检测、分句与边界保护
 ├── text/                    # 稳定观察、句末语言规则及双路合并
-├── backends/                # 模型适配与原生流
-├── runtime/                 # 模型资源与执行调度
+├── engines/                # 模型适配与原生流
+├── runtime/                # 模型资源与执行调度
 ├── server/                  # 协议、归属、并发、容量与清理
 ├── web/                     # 外部网络可控的浏览器行为测试
 └── evals/                   # 评估工具行为
 ```
 
-`audio` 提供标准音频与位置；`segmentation` 提供检测记录和切点；`session` 决定段归属、封口、取消和事件有效性。`runtime` 管理模型与推理调度，`backends` 处理模型专有调用和原生流。分句模块不提交 ASR 任务，后端不读取会话缓冲。
+`audio` 提供标准音频与位置；`segmentation` 提供检测记录和切点；`session` 决定段归属、封口、取消和事件有效性。`runtime` 管理模型与推理调度，`engines` 处理模型专有调用和原生流。分句模块不提交 ASR 任务，引擎不读取会话缓冲。
 
-`runtime/models` 与 `runtime/native` 是资源支持模块，可以被运行时和后端使用；这些模块不反向依赖会话、后端或执行器。会话在显式协调条件内提交固定任务，并通过完成方法接收结果。队列不持有可变音频单元；实时执行器持有流和排空状态。
+`core/runtime/models` 与 `core/runtime/native` 是资源支持模块，可以被运行时和引擎使用；这些模块不反向依赖会话、引擎或执行器。会话在显式协调条件内提交固定任务，并通过完成方法接收结果。队列不持有可变音频单元；实时执行器持有流和排空状态。
 
-`text` 只处理观察与文本策略，不持有模型或可变音频。辅助任务复用 `runtime/asr.py` 的最终模型、任务容量和工作线程；会话执行归属检查与左右切分。
+`text` 只处理观察与文本策略，不持有模型或可变音频。辅助任务复用 `core/runtime/asr.py` 的最终模型、任务容量和工作线程；会话执行归属检查与左右切分。
 
-评估代码调用正式实现，再补充语料、测量和评分。`evals/p0/engines.py` 的 `EnginePool` 只用于评估，不作为产品运行时。整理前的内部模块路径已迁移，不保留旧 `core` 包；`from realtime_asr import ...` 的公开导出与签名保持。映射和执行证据见[目录整理 Plan](docs/plans/functional-module-organization.md)。
+评估代码调用正式实现，再补充语料、测量和评分。`evals/p0/engines.py` 的 `EnginePool` 只用于评估，不作为产品运行时。内部模块统一位于 `core/`，`cli`、`server`、`client` 是接入层；`from realtime_asr import ...` 的公开导出与签名保持。
 
 ## 自定义引擎
 
@@ -140,7 +142,7 @@ tests/
 准备函数只在明确调用时下载；推理保持离线。已准备目录只校验，不把另一块长重标为目标变体。基础包之外需要 `nemotron` 依赖。
 
 ```python
-from realtime_asr.runtime.models.prepare import prepare_nemotron
+from realtime_asr.core.runtime.models.prepare import prepare_nemotron
 
 prepare_nemotron("models/nemotron-1120ms", variant="1120ms", allow_download=True)
 prepare_nemotron("models/nemotron-80ms", variant="80ms", allow_download=True)

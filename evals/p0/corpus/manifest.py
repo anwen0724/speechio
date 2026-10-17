@@ -7,9 +7,9 @@ from pathlib import Path
 import numpy as np
 
 from evals.p0.evaluation.scoring import normalize
-from realtime_asr.audio.files import read_wav
-from realtime_asr.errors import ASRError
-from realtime_asr.runtime.models.manifest import sha256_file
+from realtime_asr.core.audio.files import read_wav
+from realtime_asr.core.errors import ASRError
+from realtime_asr.core.runtime.models.manifest import sha256_file
 
 
 def incomplete(message, operation="validate_corpus"):

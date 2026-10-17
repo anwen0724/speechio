@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from evals.p0.report import build_report
-from realtime_asr.errors import ASRError
+from realtime_asr.core.errors import ASRError
 
 
 def rebuild_report(folder):

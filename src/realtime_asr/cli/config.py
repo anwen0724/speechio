@@ -391,7 +391,7 @@ def check_paths(args, target):
             raise ASRError("INVALID_CONFIGURATION", "check_config", "remote.url 需要 HTTP(S) 地址")
         modules.update(("httpx", "websocket"))
     else:
-        from realtime_asr.engines.local import RecognizerConfig, resolve_config
+        from realtime_asr.core.engines.local import RecognizerConfig, resolve_config
 
         model = RecognizerConfig(
             model=args.model,

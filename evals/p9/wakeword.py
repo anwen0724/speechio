@@ -20,7 +20,7 @@ from realtime_asr import (
     WakeConfig,
 )
 from realtime_asr.client import RemoteClient
-from realtime_asr.segmentation.wakeword import LocalWakeDetector
+from realtime_asr.core.segmentation.wakeword import LocalWakeDetector
 from realtime_asr.server import ServerConfig
 
 OUTPUT = Path("artifacts/p9")

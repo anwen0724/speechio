@@ -3,7 +3,7 @@
 import unittest
 
 from realtime_asr import RecognitionResult, WordTimestamp
-from realtime_asr.text.endpoint import SentenceBoundaryPolicy
+from realtime_asr.core.text.endpoint import SentenceBoundaryPolicy
 
 
 class SentencePolicyTests(unittest.TestCase):

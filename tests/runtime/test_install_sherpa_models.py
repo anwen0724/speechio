@@ -6,15 +6,15 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from realtime_asr.install_sherpa_models import (
+from realtime_asr.core.install_sherpa_models import (
     MODEL_MANIFESTS,
     ModelInstallError,
     install_models,
     manifests_for_selection,
     verify_archive,
 )
-from realtime_asr.model_manifests import ModelManifest
-from realtime_asr.runtime.models.pinned import NEMOTRON_MODELS
+from realtime_asr.core.model_manifests import ModelManifest
+from realtime_asr.core.runtime.models.pinned import NEMOTRON_MODELS
 
 
 class InstallSherpaModelsTests(unittest.TestCase):
@@ -33,7 +33,7 @@ class InstallSherpaModelsTests(unittest.TestCase):
 
     def test_default_install_covers_all_variants(self):
         with tempfile.TemporaryDirectory() as folder:
-            with patch("realtime_asr.install_sherpa_models.prepare_nemotron") as prepare:
+            with patch("realtime_asr.core.install_sherpa_models.prepare_nemotron") as prepare:
                 prepare.side_effect = lambda destination, **kwargs: destination.mkdir(
                     parents=True, exist_ok=True
                 )
@@ -43,7 +43,7 @@ class InstallSherpaModelsTests(unittest.TestCase):
 
     def test_explicit_selection_installs_only_that_variant(self):
         with tempfile.TemporaryDirectory() as folder:
-            with patch("realtime_asr.install_sherpa_models.prepare_nemotron") as prepare:
+            with patch("realtime_asr.core.install_sherpa_models.prepare_nemotron") as prepare:
                 prepare.side_effect = lambda destination, **kwargs: destination.mkdir(
                     parents=True, exist_ok=True
                 )

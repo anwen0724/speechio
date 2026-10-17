@@ -6,11 +6,11 @@ import os
 import sys
 from pathlib import Path
 
-from realtime_asr.errors import ASRError
-from realtime_asr.runtime.models.manifest import WHISPER_FILES, verify_manifest
-from realtime_asr.runtime.models.pinned import DETECTION_MODELS, WHISPER_MODEL, nemotron_model
-from realtime_asr.runtime.models.prepare import prepare_model
-from realtime_asr.runtime.native.gpu import CUDNN_VERSION, prepare_cudnn, verify_runtime
+from realtime_asr.core.errors import ASRError
+from realtime_asr.core.runtime.models.manifest import WHISPER_FILES, verify_manifest
+from realtime_asr.core.runtime.models.pinned import DETECTION_MODELS, WHISPER_MODEL, nemotron_model
+from realtime_asr.core.runtime.models.prepare import prepare_model
+from realtime_asr.core.runtime.native.gpu import CUDNN_VERSION, prepare_cudnn, verify_runtime
 
 KINDS = {
     "whisper": "whisper",

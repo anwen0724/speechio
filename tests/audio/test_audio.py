@@ -7,9 +7,9 @@ from pathlib import Path
 
 import numpy as np
 
-from realtime_asr.audio.conversion import as_audio
-from realtime_asr.audio.files import read_wav
-from realtime_asr.errors import ASRError
+from realtime_asr.core.audio.conversion import as_audio
+from realtime_asr.core.audio.files import read_wav
+from realtime_asr.core.errors import ASRError
 
 
 class AudioTests(unittest.TestCase):

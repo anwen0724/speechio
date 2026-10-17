@@ -8,7 +8,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from realtime_asr import ASRRuntime, RecognizerConfig, SessionConfig
-from realtime_asr.audio.files import audio_file_chunks
+from realtime_asr.core.audio.files import audio_file_chunks
 
 
 def main():

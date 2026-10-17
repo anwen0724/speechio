@@ -27,8 +27,8 @@ from realtime_asr import (
     VadConfig,
 )
 from realtime_asr.client import RemoteClient
-from realtime_asr.engines.local import LocalEngine
-from realtime_asr.runtime.models.prepare import prepare_nemotron
+from realtime_asr.core.engines.local import LocalEngine
+from realtime_asr.core.runtime.models.prepare import prepare_nemotron
 from realtime_asr.server import ServerConfig
 
 OUTPUT = Path("artifacts/p8-1")

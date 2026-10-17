@@ -15,7 +15,7 @@ from evals.p0.corpus.augment import (
     tail_variant,
     write_pcm16,
 )
-from realtime_asr.runtime.models.manifest import sha256_file
+from realtime_asr.core.runtime.models.manifest import sha256_file
 
 
 def download_rows(folder, config, indexes):

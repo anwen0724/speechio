@@ -10,7 +10,6 @@ from threading import Event, Thread
 from time import monotonic
 
 from realtime_asr import ASRError, AudioFormat, MicrophoneConfig, MicrophoneInput
-from realtime_asr.audio.files import audio_file_chunks
 from realtime_asr.cli.args import (
     _positive_int,
     _positive_seconds,
@@ -20,6 +19,7 @@ from realtime_asr.cli.args import (
 from realtime_asr.cli.candidates import CandidateTicker
 from realtime_asr.cli.input import stdin_blocks
 from realtime_asr.client import RemoteClient
+from realtime_asr.core.audio.files import audio_file_chunks
 
 
 class RemoteOutput:

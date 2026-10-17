@@ -23,7 +23,7 @@ from realtime_asr import (
     StabilizationConfig,
     VadConfig,
 )
-from realtime_asr.segmentation.wakeword import WakeGate
+from realtime_asr.core.segmentation.wakeword import WakeGate
 
 
 class Service:

@@ -6,7 +6,7 @@ from threading import Event, Thread
 import numpy as np
 
 import realtime_asr as sdk
-from realtime_asr.segmentation.vad import VoiceActivity
+from realtime_asr.core.segmentation.vad import VoiceActivity
 from tests.runtime.test_engine_injection import RecordingEngine
 
 

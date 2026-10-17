@@ -5,7 +5,7 @@ from contextlib import closing
 from pathlib import Path
 
 from realtime_asr import ASRRuntime, CandidateConfig, RecognizerConfig, SessionConfig
-from realtime_asr.audio.files import audio_file_chunks
+from realtime_asr.core.audio.files import audio_file_chunks
 
 
 def wait_for(session, kind):

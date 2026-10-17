@@ -23,11 +23,11 @@ from realtime_asr import (
     VadConfig,
     list_input_devices,
 )
-from realtime_asr.audio.files import audio_file_chunks
 from realtime_asr.cli.args import candidate_role, parse_args, realtime_roles, wake_role
 from realtime_asr.cli.candidates import CandidateTicker
 from realtime_asr.cli.input import stdin_blocks
 from realtime_asr.cli.output import Output
+from realtime_asr.core.audio.files import audio_file_chunks
 
 
 class _EventConsumer:

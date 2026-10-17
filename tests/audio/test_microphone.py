@@ -5,7 +5,7 @@ from threading import Event, Thread
 from unittest.mock import patch
 
 from realtime_asr import ASRError
-from realtime_asr.audio.microphone import MicrophoneConfig, MicrophoneInput, list_input_devices
+from realtime_asr.core.audio.microphone import MicrophoneConfig, MicrophoneInput, list_input_devices
 
 
 class PortAudio:

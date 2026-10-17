@@ -5,7 +5,7 @@ from threading import Event
 from uuid import uuid4
 
 from evals.p0.trial import Trial
-from realtime_asr.errors import error_record
+from realtime_asr.core.errors import error_record
 
 
 class SnapshotSchedule:

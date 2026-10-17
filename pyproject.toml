@@ -17,7 +17,7 @@ dependencies = [
 
 [project.scripts]
 asr = "realtime_asr.cli.runner:main"
-asr-install-sherpa-models = "realtime_asr.install_sherpa_models:main"
+asr-install-sherpa-models = "realtime_asr.core.install_sherpa_models:main"
 
 [project.optional-dependencies]
 nemotron = ["sherpa-onnx==1.13.4", "onnxruntime>=1.31,<2", "requests>=2.32,<3"]
