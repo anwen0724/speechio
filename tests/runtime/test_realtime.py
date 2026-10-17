@@ -18,7 +18,7 @@ from realtime_asr import (
 )
 from realtime_asr.runtime.models.manifest import create_manifest
 from realtime_asr.runtime.models.pinned import NEMOTRON_FILES
-from tests.backends.test_stream import RuntimeRecognizer, RuntimeStream
+from tests.engines.test_stream import RuntimeRecognizer, RuntimeStream
 from tests.runtime import test_recognizer
 
 
@@ -40,7 +40,7 @@ class RealtimeTests(unittest.TestCase):
             side_effect=lambda *a, **kw: (iter([result]), info),
         ):
             with ASRRuntime(
-                RecognizerConfig(model_path=self.path),
+                RecognizerConfig(model=self.path),
                 realtime=RealtimeConfig(
                     initial_delay=0,
                     interval=60,
@@ -79,7 +79,7 @@ class RealtimeTests(unittest.TestCase):
         factory = patch("sherpa_onnx.OnlineRecognizer.from_transducer", return_value=native)
         factory.start()
         self.addCleanup(factory.stop)
-        return RecognizerConfig(model_path=folder, backend="nemotron")
+        return RecognizerConfig(model=folder, engine="nemotron")
 
     def test_native_only_new_samples_and_short_tail_then_separate_whole_final(self):
         streams = []
@@ -158,10 +158,8 @@ class RealtimeTests(unittest.TestCase):
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=native):
             with ASRRuntime(
-                RecognizerConfig(model_path=self.path),
-                realtime=RealtimeConfig(
-                    model=RecognizerConfig(model_path=self.path), initial_delay=0
-                ),
+                RecognizerConfig(model=self.path),
+                realtime=RealtimeConfig(model=RecognizerConfig(model=self.path), initial_delay=0),
             ) as runtime:
                 final_session = runtime.create_session()
                 final_session.start()
@@ -187,7 +185,7 @@ class RealtimeTests(unittest.TestCase):
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=native):
             runtime = ASRRuntime(
-                RecognizerConfig(model_path=self.path),
+                RecognizerConfig(model=self.path),
                 realtime=RealtimeConfig(initial_delay=0, max_units=1, max_audio_samples=2048),
             )
             runtime.prepare()
@@ -263,7 +261,7 @@ class RealtimeTests(unittest.TestCase):
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=native):
             with ASRRuntime(
-                RecognizerConfig(model_path=self.path), realtime=RealtimeConfig(initial_delay=0)
+                RecognizerConfig(model=self.path), realtime=RealtimeConfig(initial_delay=0)
             ) as runtime:
                 session = runtime.create_session(SessionConfig(realtime=True))
                 session.start()
@@ -285,8 +283,8 @@ class RealtimeTests(unittest.TestCase):
             side_effect=[model, RuntimeError("第二模型失败"), model, model],
         ):
             runtime = ASRRuntime(
-                RecognizerConfig(model_path=self.path),
-                realtime=RealtimeConfig(model=RecognizerConfig(model_path=self.path)),
+                RecognizerConfig(model=self.path),
+                realtime=RealtimeConfig(model=RecognizerConfig(model=self.path)),
             )
             self.addCleanup(runtime.close)
             with self.assertRaises(ASRError) as caught:
@@ -307,7 +305,7 @@ class RealtimeTests(unittest.TestCase):
             ),
         ):
             with ASRRuntime(
-                RecognizerConfig(model_path=self.path), realtime=RealtimeConfig()
+                RecognizerConfig(model=self.path), realtime=RealtimeConfig()
             ) as runtime:
                 session = runtime.create_session(SessionConfig(realtime=True))
                 session.start()
@@ -516,7 +514,7 @@ class RealtimeTests(unittest.TestCase):
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=native):
             with ASRRuntime(
-                RecognizerConfig(model_path=self.path), realtime=RealtimeConfig(initial_delay=0)
+                RecognizerConfig(model=self.path), realtime=RealtimeConfig(initial_delay=0)
             ) as runtime:
                 session = runtime.create_session(SessionConfig(realtime=True))
                 first = session.start()
@@ -555,7 +553,7 @@ class RealtimeTests(unittest.TestCase):
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=native):
             with ASRRuntime(
-                RecognizerConfig(model_path=self.path),
+                RecognizerConfig(model=self.path),
                 realtime=RealtimeConfig(initial_delay=0, interval=0.001),
             ) as runtime:
                 session = runtime.create_session(SessionConfig(realtime=True))
@@ -588,7 +586,7 @@ class RealtimeTests(unittest.TestCase):
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=native):
             with ASRRuntime(
-                RecognizerConfig(model_path=self.path),
+                RecognizerConfig(model=self.path),
                 realtime=RealtimeConfig(initial_delay=0, interval=10),
             ) as runtime:
                 session = runtime.create_session(SessionConfig(realtime=True, language="en"))

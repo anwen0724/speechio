@@ -391,11 +391,11 @@ def check_paths(args, target):
             raise ASRError("INVALID_CONFIGURATION", "check_config", "remote.url 需要 HTTP(S) 地址")
         modules.update(("httpx", "websocket"))
     else:
-        from realtime_asr.backends.local import RecognizerConfig, resolve_config
+        from realtime_asr.engines.local import RecognizerConfig, resolve_config
 
         model = RecognizerConfig(
-            model_path=args.model,
-            backend=args.backend,
+            model=args.model,
+            engine=args.backend,
             device=args.device,
             device_index=args.device_index,
             cudnn_folder=args.cudnn_folder,
@@ -412,7 +412,7 @@ def check_paths(args, target):
                 resolve_config(role.model)
                 selected_models.append(role.model)
         for selected in selected_models:
-            modules.add("faster_whisper" if selected.backend == "whisper" else "sherpa_onnx")
+            modules.add("faster_whisper" if selected.engine == "whisper" else "sherpa_onnx")
         if target in LOCAL and args.mode == "auto":
             from realtime_asr import EndpointConfig, SegmentationConfig, VadConfig
 

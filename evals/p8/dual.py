@@ -26,8 +26,8 @@ from realtime_asr import (
     StabilizationConfig,
     VadConfig,
 )
-from realtime_asr.backends.local import LocalEngine
 from realtime_asr.client import RemoteClient
+from realtime_asr.engines.local import LocalEngine
 from realtime_asr.runtime.models.prepare import prepare_nemotron
 from realtime_asr.server import ServerConfig
 
@@ -110,7 +110,7 @@ class MeasuredEngine(BaseTranscriptionEngine):
 
 def model_config(variant):
     return RecognizerConfig(
-        model_path=Path(f".runtime/models/nemotron-{variant}").resolve(), backend="nemotron"
+        model=Path(f".runtime/models/nemotron-{variant}").resolve(), engine="nemotron"
     )
 
 
@@ -396,11 +396,11 @@ def local_cli():
         "realtime_asr",
         "stdin",
         "--model",
-        str(model_config("1120ms").model_path),
+        str(model_config("1120ms").model),
         "--backend",
         "nemotron",
         "--ultrafast-model",
-        str(model_config("80ms").model_path),
+        str(model_config("80ms").model),
         "--realtime",
         "--dual-realtime",
         "--language",
@@ -480,7 +480,7 @@ def prepare_models():
         if target.parent != root:
             raise AssertionError("模型目标不在预定目录")
         manifest = prepare_nemotron(target, allow_download=True, variant=variant)
-        config = RecognizerConfig(model_path=target, backend="nemotron")
+        config = RecognizerConfig(model=target, engine="nemotron")
         with Recognizer(config) as recognizer:
             recordings = []
             for language, filename in (("zh", "C01-1.wav"), ("en", "C07-1.wav")):

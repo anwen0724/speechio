@@ -91,8 +91,8 @@ def build_config(options):
     args = vars(options).copy()
     args.pop("launch_config")
     recognizer = RecognizerConfig(
-        model_path=args.pop("model"),
-        backend=args.pop("backend"),
+        model=args.pop("model"),
+        engine=args.pop("backend"),
         device=args.pop("device"),
         device_index=args.pop("device_index"),
         cudnn_folder=args.pop("cudnn_folder"),

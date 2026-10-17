@@ -18,7 +18,7 @@ from realtime_asr.server import ServerConfig,create_app
 listener=socket.socket()
 listener.bind(("127.0.0.1",0))
 listener.listen(32)
-app=create_app(ServerConfig(recognizer=RecognizerConfig(model_path=sys.argv[1]),vad_model=sys.argv[2]))
+app=create_app(ServerConfig(recognizer=RecognizerConfig(model=sys.argv[1]),vad_model=sys.argv[2]))
 server=uvicorn.Server(uvicorn.Config(app,log_level="warning",access_log=False))
 thread=threading.Thread(target=server.run,kwargs={"sockets":[listener]})
 thread.start()

@@ -25,9 +25,7 @@ def main():
     parser.add_argument("model", type=Path)
     parser.add_argument("audio", type=Path)
     args = parser.parse_args()
-    with ASRRuntime(
-        RecognizerConfig(model_path=args.model), candidate=CandidateConfig()
-    ) as runtime:
+    with ASRRuntime(RecognizerConfig(model=args.model), candidate=CandidateConfig()) as runtime:
         with closing(audio_file_chunks(args.audio)) as blocks:
             format, first = next(blocks)
             session = runtime.create_session(

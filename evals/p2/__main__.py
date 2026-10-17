@@ -21,7 +21,7 @@ def check_backend(name, project, baseline):
         project / ".runtime/models" / ("nemotron" if backend == "nemotron" else "whisper-tiny")
     )
     config = RecognizerConfig(
-        model_path=model_path,
+        model=model_path,
         backend=backend,
         device="cuda" if gpu else "cpu",
         cudnn_folder=project / ".runtime/cudnn/9.16.0.29" if gpu else None,

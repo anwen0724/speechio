@@ -4,7 +4,7 @@ import inspect
 from pathlib import Path
 
 from realtime_asr.audio.conversion import as_audio
-from realtime_asr.backends.stream import NativeStream
+from realtime_asr.engines.stream import NativeStream
 from realtime_asr.errors import ASRError
 from realtime_asr.runtime.models.manifest import verify_manifest
 from realtime_asr.runtime.models.stages import preparation_step
@@ -14,8 +14,16 @@ from realtime_asr.runtime.native.libraries import load_project_onnx_runtime
 class NemotronEngine:
     """一个引擎拥有一个识别器；调用方按串行顺序访问不同流。"""
 
-    def __init__(self, model_path):
+    def __init__(self, config):
         self.preparation_steps = []
+        model_path = Path(config.model)
+        if not model_path.is_dir():
+            raise ASRError(
+                "MODEL_INCOMPLETE",
+                "verify_model",
+                f"未找到 Nemotron 模型目录：{config.model}；"
+                '先调用 install_models(<root>, "560ms") 准备模型',
+            )
         with preparation_step(self.preparation_steps, "verification"):
             self.manifest = verify_manifest(model_path)
             if self.manifest["backend"] != "nemotron":

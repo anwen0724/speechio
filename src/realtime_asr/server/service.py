@@ -267,7 +267,7 @@ class Service:
             "protocol_version": 1,
             "type": "capabilities",
             "ready": self.phase == "ready",
-            "backend": engine.backend,
+            "engine": engine.engine,
             "device": engine.device,
             "manual": True,
             "automatic": config.vad_model is not None,

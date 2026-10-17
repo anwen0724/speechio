@@ -19,7 +19,7 @@ def main():
     parser.add_argument("--language")
     args = parser.parse_args()
     config = RecognizerConfig(
-        model_path=args.model, backend=args.backend, device=args.device, cudnn_folder=args.cudnn
+        model=args.model, engine=args.backend, device=args.device, cudnn_folder=args.cudnn
     )
     with Recognizer(config) as recognizer:
         result = recognizer.transcribe_file(args.audio, language=args.language)

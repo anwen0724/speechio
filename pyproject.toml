@@ -7,16 +7,20 @@ name = "realtime-asr"
 version = "0.1.0"
 description = "Independent local ASR recognition core"
 requires-python = ">=3.12,<3.13"
-dependencies = ["numpy>=2,<3"]
+dependencies = [
+    "numpy>=2,<3",
+    "faster-whisper==1.2.1",
+    "huggingface-hub>=0.34,<1",
+    "soundfile>=0.13,<0.14",
+    "soxr>=1,<2",
+]
 
 [project.scripts]
 asr = "realtime_asr.cli.runner:main"
+asr-install-sherpa-models = "realtime_asr.install_sherpa_models:main"
 
 [project.optional-dependencies]
-models = ["huggingface-hub>=0.34,<1", "requests>=2.32,<3"]
-whisper = ["faster-whisper==1.2.1", "huggingface-hub>=0.34,<1"]
 nemotron = ["sherpa-onnx==1.13.4", "onnxruntime>=1.31,<2", "requests>=2.32,<3"]
-audio = ["soundfile>=0.13,<0.14", "soxr>=1,<2"]
 vad = ["webrtcvad-wheels==2.0.14", "onnxruntime>=1.31,<2"]
 wake-porcupine = ["pvporcupine==4.0.3"]
 wake-openwakeword = ["openwakeword==0.6.0", "onnxruntime>=1.31,<2"]

@@ -305,8 +305,8 @@ def _execute(args, stdin, output):
             )
             return 0
         config = RecognizerConfig(
-            model_path=args.model,
-            backend=args.backend,
+            model=args.model,
+            engine=args.backend,
             device=args.device,
             device_index=args.device_index,
             cudnn_folder=args.cudnn_folder,

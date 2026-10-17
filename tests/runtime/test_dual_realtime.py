@@ -19,7 +19,7 @@ class RoleEngine(RecordingEngine):
 
     @property
     def capabilities(self):
-        return sdk.EngineCapabilities(backend="external-role", streaming=True)
+        return sdk.EngineCapabilities(engine="external-role", streaming=True)
 
     def create_streaming_session(self, language=None):
         text = self.text

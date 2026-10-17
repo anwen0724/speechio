@@ -3,6 +3,7 @@
 import inspect
 from dataclasses import asdict
 from math import isfinite
+from pathlib import Path
 
 from realtime_asr.audio.conversion import as_audio
 from realtime_asr.errors import ASRError
@@ -12,30 +13,45 @@ from realtime_asr.runtime.models.stages import preparation_step
 
 
 class WhisperEngine:
-    """复用本地 tiny 模型，快照与最终调用使用独立参数组。"""
+    """复用上游解析的模型目录或模型名，快照与最终调用使用独立参数组。"""
 
-    def __init__(self, model_path, *, device="cpu", compute_type="int8", device_index=0):
+    def __init__(self, config):
         self.preparation_steps = []
+        model_path = Path(config.model)
         with preparation_step(self.preparation_steps, "verification"):
-            self.manifest = verify_manifest(model_path)
-            if self.manifest["backend"] != "whisper":
-                raise ASRError("BACKEND_INCOMPATIBLE", "verify_model", "模型不是 Whisper 后端")
+            if model_path.is_dir():
+                # 已准备的目录由本项目校验清单，不信任目录名。
+                self.manifest = verify_manifest(model_path)
+                if self.manifest["backend"] != "whisper":
+                    raise ASRError("BACKEND_INCOMPATIBLE", "verify_model", "模型不是 Whisper 后端")
+                source = self.manifest["model_path"]
+                local_files_only = True
+            else:
+                # 模型名由 faster-whisper 解析并缓存；下载位置和离线策略显式传入。
+                self.manifest = None
+                source = str(config.model)
+                local_files_only = config.local_files_only
         try:
             from faster_whisper import BatchedInferencePipeline, WhisperModel
             from faster_whisper.vad import VadOptions
         except ImportError as exc:
-            raise ASRError("DEPENDENCY_MISSING", "load_model", str(exc)) from exc
-        self.device = device
-        self.compute_type = compute_type
-        self.device_index = device_index
+            raise ASRError(
+                "DEPENDENCY_MISSING",
+                "load_model",
+                "缺少 faster-whisper；运行 pip install realtime-asr 后重试",
+            ) from exc
+        self.device = config.device
+        self.compute_type = config.compute_type
+        self.device_index = config.device_index
         try:
             with preparation_step(self.preparation_steps, "load"):
                 self._model = WhisperModel(
-                    self.manifest["model_path"],
-                    device=device,
-                    compute_type=compute_type,
-                    device_index=device_index,
-                    local_files_only=True,
+                    source,
+                    device=config.device,
+                    compute_type=config.compute_type,
+                    device_index=config.device_index,
+                    download_root=config.download_root,
+                    local_files_only=local_files_only,
                 )
                 self._pipeline = BatchedInferencePipeline(self._model)
         except Exception as exc:

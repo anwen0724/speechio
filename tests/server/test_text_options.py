@@ -26,7 +26,7 @@ class TextOptionsTests(unittest.TestCase):
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=model):
             with TestClient(
-                create_app(ServerConfig(recognizer=RecognizerConfig(model_path=self.path)))
+                create_app(ServerConfig(recognizer=RecognizerConfig(model=self.path)))
             ) as client:
                 wait_ready(client)
                 response = client.post(

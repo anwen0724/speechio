@@ -11,7 +11,7 @@ from realtime_asr.results import RecognitionResult
 class EngineCapabilities:
     """一个引擎的固定能力；身份字段只用于诊断，不参与功能推导。"""
 
-    backend: str
+    engine: str
     model: str | None = None
     device: str | None = None
     transcription: bool = True
@@ -21,8 +21,8 @@ class EngineCapabilities:
 
     def __post_init__(self):
         if (
-            not isinstance(self.backend, str)
-            or not self.backend.strip()
+            not isinstance(self.engine, str)
+            or not self.engine.strip()
             or any(
                 type(value) is not bool
                 for value in (

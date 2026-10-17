@@ -45,8 +45,8 @@ p.add_argument("--cuda")
 a = p.parse_args()
 root = Path(a.models)
 c = RecognizerConfig(
-    model_path=root / ("whisper-tiny" if a.backend == "whisper" else "nemotron"),
-    backend=a.backend,
+    model=root / ("whisper-tiny" if a.backend == "whisper" else "nemotron"),
+    engine=a.backend,
     device="cuda" if a.gpu else "cpu",
     cudnn_folder=a.cudnn,
     cuda_directory=a.cuda,
@@ -97,7 +97,7 @@ listener.bind(("127.0.0.1", 0))
 listener.listen(32)
 app = create_app(
     ServerConfig(
-        recognizer=RecognizerConfig(model_path=root / "whisper-tiny"),
+        recognizer=RecognizerConfig(model=root / "whisper-tiny"),
         vad_model=str(root / "vad/silero-v6.onnx"),
         candidate_config=CandidateConfig(),
         wake_config=WakeConfig(

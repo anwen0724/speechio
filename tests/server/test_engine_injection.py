@@ -14,7 +14,7 @@ from tests.runtime.test_engine_injection import RecordingEngine
 class TimestampEngine(RecordingEngine):
     @property
     def capabilities(self):
-        return EngineCapabilities(backend="company-api", device="remote", word_timestamps=True)
+        return EngineCapabilities(engine="company-api", device="remote", word_timestamps=True)
 
     def transcribe(self, audio, language=None, *, role="final", word_timestamps=False):
         super().transcribe(audio, language, role=role, word_timestamps=word_timestamps)
@@ -34,7 +34,7 @@ class ServiceEngineInjectionTests(unittest.TestCase):
             while client.get("/api/v1/ready").status_code != 200:
                 self.assertLess(monotonic(), deadline, "引擎准备应在测试时限内完成")
             capabilities = client.get("/api/v1/capabilities").json()
-            self.assertEqual(capabilities["backend"], "company-api")
+            self.assertEqual(capabilities["engine"], "company-api")
             self.assertEqual(capabilities["device"], "remote")
             self.assertTrue(capabilities["word_timestamps"])
             self.assertFalse(capabilities["realtime"])

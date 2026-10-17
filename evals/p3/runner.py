@@ -22,13 +22,13 @@ from realtime_asr import (
 
 def configurations(project):
     """显式本地路径；覆盖两条路径、共享实例与独立角色。"""
-    cpu = RecognizerConfig(model_path=project / ".runtime/models/whisper-tiny")
+    cpu = RecognizerConfig(model=project / ".runtime/models/whisper-tiny")
     gpu = RecognizerConfig(
-        model_path=cpu.model_path,
+        model=cpu.model,
         device="cuda",
         cudnn_folder=project / ".runtime/cudnn/9.16.0.29",
     )
-    native = RecognizerConfig(model_path=project / ".runtime/models/nemotron", backend="nemotron")
+    native = RecognizerConfig(model=project / ".runtime/models/nemotron", engine="nemotron")
     return {
         "shared-whisper-cpu": (cpu, RealtimeConfig(), "whisper"),
         "shared-whisper-cuda": (gpu, RealtimeConfig(), "whisper-gpu"),

@@ -23,13 +23,13 @@ from realtime_asr import (
 
 def replay(project):
     """覆盖实际三条路径、中英文及自动分句与实时联合运行。"""
-    cpu = RecognizerConfig(model_path=project / ".runtime/models/whisper-tiny")
+    cpu = RecognizerConfig(model=project / ".runtime/models/whisper-tiny")
     gpu = RecognizerConfig(
-        model_path=cpu.model_path,
+        model=cpu.model,
         device="cuda",
         cudnn_folder=project / ".runtime/cudnn/9.16.0.29",
     )
-    native = RecognizerConfig(model_path=project / ".runtime/models/nemotron", backend="nemotron")
+    native = RecognizerConfig(model=project / ".runtime/models/nemotron", engine="nemotron")
     reports = []
     for name, config, mode in (
         ("whisper-cpu", cpu, "snapshot"),

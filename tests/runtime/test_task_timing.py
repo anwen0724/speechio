@@ -18,7 +18,7 @@ class TaskTimingTests(unittest.TestCase):
             SimpleNamespace(language="en", language_probability=1),
         )
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", return_value=result):
-            with ASRRuntime(RecognizerConfig(model_path=self.path)) as runtime:
+            with ASRRuntime(RecognizerConfig(model=self.path)) as runtime:
                 session = runtime.create_session()
                 session.start()
                 session.feed_audio(b"\x01\x00" * 512)

@@ -44,7 +44,7 @@ def main():
     args = parser.parse_args()
     microphone = None
     with (
-        ASRRuntime(RecognizerConfig(model_path=args.model)) as runtime,
+        ASRRuntime(RecognizerConfig(model=args.model)) as runtime,
         terminal_keys() as read_key,
     ):
         session = runtime.create_session(SessionConfig(format=AudioFormat()))

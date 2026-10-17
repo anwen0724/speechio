@@ -28,7 +28,7 @@ def main():
     if any(importlib.util.find_spec(name) for name in ("soxr", "soundfile", "pyaudio")):
         raise AssertionError("无 audio 验收环境安装了音频依赖")
     runtime = asr.ASRRuntime(
-        asr.RecognizerConfig(model_path=args.model),
+        asr.RecognizerConfig(model=args.model),
         realtime=asr.RealtimeConfig(initial_delay=0, interval=10),
     )
     if {t.ident for t in threading.enumerate()} != before:

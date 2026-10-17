@@ -24,7 +24,7 @@ class DeliveryTests(unittest.TestCase):
         entered, release = Event(), Event()
         inner = create_app(
             ServerConfig(
-                recognizer=RecognizerConfig(model_path=self.path), realtime=False, send_timeout=0.05
+                recognizer=RecognizerConfig(model=self.path), realtime=False, send_timeout=0.05
             )
         )
 
@@ -64,7 +64,7 @@ class DeliveryTests(unittest.TestCase):
         entered, release = Event(), Event()
         inner = create_app(
             ServerConfig(
-                recognizer=RecognizerConfig(model_path=self.path),
+                recognizer=RecognizerConfig(model=self.path),
                 realtime=False,
                 max_pending_messages=4,
                 send_timeout=5,
@@ -112,7 +112,7 @@ class DeliveryTests(unittest.TestCase):
         entered, release = Event(), Event()
         inner = create_app(
             ServerConfig(
-                recognizer=RecognizerConfig(model_path=self.path),
+                recognizer=RecognizerConfig(model=self.path),
                 realtime=False,
                 max_pending_messages=4,
                 send_timeout=5,

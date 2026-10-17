@@ -3,7 +3,7 @@
 from dataclasses import dataclass, replace
 from math import isfinite
 
-from realtime_asr.backends.local import RecognizerConfig
+from realtime_asr.engines.local import RecognizerConfig
 from realtime_asr.errors import ASRError
 
 

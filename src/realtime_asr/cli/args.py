@@ -129,8 +129,8 @@ def _local_role_model(args, role, primary):
         return None
     selected_device = device or primary.device
     return RecognizerConfig(
-        model_path=path,
-        backend=backend or primary.backend,
+        model=path,
+        engine=backend or primary.engine,
         device=selected_device,
         device_index=primary.device_index if selected_device == "cuda" else 0,
         cudnn_folder=primary.cudnn_folder if selected_device == "cuda" else None,

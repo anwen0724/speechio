@@ -10,8 +10,8 @@ import numpy as np
 
 from realtime_asr.audio.conversion import AudioConverter, AudioFormat
 from realtime_asr.audio.files import read_audio_file
-from realtime_asr.backends.base import validate_engine
-from realtime_asr.backends.local import LocalEngine, RecognizerConfig, validate_local_pair
+from realtime_asr.engines.base import validate_engine
+from realtime_asr.engines.local import LocalEngine, RecognizerConfig, validate_local_pair
 from realtime_asr.errors import ASRError
 from realtime_asr.results import CloseError, CloseResult, RecognitionResult
 
@@ -23,8 +23,10 @@ class Recognizer:
     """通过小接口隐藏模型准备、输入转换和资源管理，不持有设备或服务。"""
 
     def __init__(self, config: RecognizerConfig | None = None, *, engine=None):
-        if (config is None) == (engine is None):
+        if config is not None and engine is not None:
             raise ASRError("INVALID_CONFIGURATION", "configure", "本地配置与引擎应且仅应提供一个")
+        if config is None and engine is None:
+            config = RecognizerConfig(model="tiny")
         self._engine = LocalEngine(config) if engine is None else engine
         self._config = self._engine.config if engine is None else None
         self._capabilities = validate_engine(self._engine)

@@ -21,7 +21,7 @@ OUTPUT = Path("artifacts/p8-candidates")
 
 
 def config():
-    return RecognizerConfig(model_path=Path(".runtime/models/whisper-tiny").resolve())
+    return RecognizerConfig(model=Path(".runtime/models/whisper-tiny").resolve())
 
 
 def sdk_case(pcm, language, model=None):
@@ -178,7 +178,7 @@ def main():
     report["cases"]["nemotron-zh"] = sdk_case(
         pcm,
         "zh",
-        RecognizerConfig(model_path=Path(".runtime/models/nemotron").resolve(), backend="nemotron"),
+        RecognizerConfig(model=Path(".runtime/models/nemotron").resolve(), engine="nemotron"),
     )
     report["network"] = network_case(pcm, Path("data/corpus/p0/C01-1.wav").resolve())
     (OUTPUT / "actual.json").write_text(

@@ -15,11 +15,11 @@ from realtime_asr import AudioFormat, Recognizer, RecognizerConfig, list_input_d
 
 def run(project, folder):
     """三条模型路径分别覆盖文件、序列、stdin 与自动模式。"""
-    cpu = RecognizerConfig(model_path=project / ".runtime/models/whisper-tiny")
+    cpu = RecognizerConfig(model=project / ".runtime/models/whisper-tiny")
     gpu = RecognizerConfig(
-        model_path=cpu.model_path, device="cuda", cudnn_folder=project / ".runtime/cudnn/9.16.0.29"
+        model=cpu.model, device="cuda", cudnn_folder=project / ".runtime/cudnn/9.16.0.29"
     )
-    native = RecognizerConfig(model_path=project / ".runtime/models/nemotron", backend="nemotron")
+    native = RecognizerConfig(model=project / ".runtime/models/nemotron", engine="nemotron")
     chinese = project / "data/corpus/p0/C01-1.wav"
     stereo = folder / "C01-stereo-48k.wav"
     voice = read_audio(chinese)
@@ -29,9 +29,9 @@ def run(project, folder):
     for name, config in (("whisper-cpu", cpu), ("whisper-cuda", gpu), ("nemotron", native)):
         options = [
             "--model",
-            str(config.model_path),
+            str(config.model),
             "--backend",
-            config.backend,
+            config.engine,
             "--device",
             config.device,
             "--output",
@@ -112,7 +112,7 @@ def run(project, folder):
         args = [
             "mic",
             "--model",
-            str(cpu.model_path),
+            str(cpu.model),
             "--input-device",
             str(device["index"]),
             "--mode",
@@ -132,7 +132,7 @@ def run(project, folder):
         [
             "mic",
             "--model",
-            str(native.model_path),
+            str(native.model),
             "--backend",
             "nemotron",
             "--mode",

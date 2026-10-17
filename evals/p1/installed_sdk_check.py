@@ -63,7 +63,7 @@ def main():
         )
     finally:
         converter.close()
-    recognizer = Recognizer(RecognizerConfig(model_path=args.model))
+    recognizer = Recognizer(RecognizerConfig(model=args.model))
     try:
         report["missing_soundfile"] = expect_error(
             "DEPENDENCY_MISSING", lambda: recognizer.transcribe_file("missing.wav")

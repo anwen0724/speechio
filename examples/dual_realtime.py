@@ -33,8 +33,8 @@ def main():
     parser.add_argument("--ultrafast-model", required=True)
     parser.add_argument("--language")
     args = parser.parse_args()
-    accurate = RecognizerConfig(model_path=args.accurate_model, backend="nemotron")
-    fast = RecognizerConfig(model_path=args.ultrafast_model, backend="nemotron")
+    accurate = RecognizerConfig(model=args.accurate_model, engine="nemotron")
+    fast = RecognizerConfig(model=args.ultrafast_model, engine="nemotron")
     with ASRRuntime(
         accurate,
         realtime=RealtimeConfig(mode="native"),

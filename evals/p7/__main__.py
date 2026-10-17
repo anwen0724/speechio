@@ -177,20 +177,18 @@ def model_configs():
     """三条已准备路径由一个位置声明，局部验证沿用相同环境。"""
     whisper = Path(".runtime/models/whisper-tiny").resolve()
     configs = (
-        ("whisper-cpu", RecognizerConfig(model_path=whisper)),
+        ("whisper-cpu", RecognizerConfig(model=whisper)),
         (
             "whisper-cuda",
             RecognizerConfig(
-                model_path=whisper,
+                model=whisper,
                 device="cuda",
                 cudnn_folder=Path(".runtime/cudnn/9.16.0.29").resolve(),
             ),
         ),
         (
             "nemotron",
-            RecognizerConfig(
-                model_path=Path(".runtime/models/nemotron").resolve(), backend="nemotron"
-            ),
+            RecognizerConfig(model=Path(".runtime/models/nemotron").resolve(), engine="nemotron"),
         ),
     )
     return configs
@@ -204,7 +202,7 @@ def matrix(folder):
     }
     rows = []
     for backend, config in model_configs():
-        native = config.backend == "nemotron"
+        native = config.engine == "nemotron"
         modes = (False,) if native else (False, True)
         baseline = {}
         for acoustic in modes:
@@ -315,7 +313,7 @@ def sentence_checks(folder):
     rows = json.loads(existing.read_text(encoding="utf-8")) if existing.exists() else []
     rows = [row for row in rows if row["name"] != "punctuation"]
     for backend, config in model_configs():
-        if config.backend != "whisper":
+        if config.engine != "whisper":
             continue
         measurement = ModelMeasurement()
         with (
@@ -352,7 +350,7 @@ def sentence_checks(folder):
 
 def network(folder):
     """真实 HTTP 词时间、远程 WS 稳定以及 Chrome 采集展示。"""
-    config = RecognizerConfig(model_path=Path(".runtime/models/whisper-tiny").resolve())
+    config = RecognizerConfig(model=Path(".runtime/models/whisper-tiny").resolve())
     pcm, _ = sf.read("data/corpus/p0/C01-1.wav", dtype="int16")
     with Recognizer(config) as recognizer:
         expected = recognizer.transcribe_file("data/corpus/p0/C01-1.wav", word_timestamps=True)

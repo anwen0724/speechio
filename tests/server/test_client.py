@@ -56,7 +56,7 @@ class ClientTests(unittest.TestCase):
     def test_remote_file_decodes_source_frames_before_http_transmission(self):
         path = self.path / "source.wav"
         sf.write(path, np.ones(515, dtype=np.int16), 16000, subtype="PCM_16")
-        config = ServerConfig(recognizer=RecognizerConfig(model_path=self.path), realtime=False)
+        config = ServerConfig(recognizer=RecognizerConfig(model=self.path), realtime=False)
         with TestClient(create_app(config)) as app:
             wait_ready(app)
 
@@ -81,7 +81,7 @@ class ClientTests(unittest.TestCase):
             self.assertEqual(result["event"]["audio_samples"], 515)
 
     def test_remote_reset_feed_tail_and_graceful_close_preserve_messages(self):
-        config = ServerConfig(recognizer=RecognizerConfig(model_path=self.path), realtime=False)
+        config = ServerConfig(recognizer=RecognizerConfig(model=self.path), realtime=False)
         with TestClient(create_app(config)) as app:
             wait_ready(app)
             with app.websocket_connect("/api/v1/ws") as socket:
@@ -115,7 +115,7 @@ class AutomaticClientTests(unittest.TestCase):
 
     def test_cancel_auto_segment_preserves_continuous_source_frame_remainder(self):
         config = ServerConfig(
-            recognizer=RecognizerConfig(model_path=self.path),
+            recognizer=RecognizerConfig(model=self.path),
             vad_model=self.vad.model_path,
             realtime=False,
         )

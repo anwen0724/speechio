@@ -27,7 +27,7 @@ def matrix(folder):
     rows = []
     for name, config in model_configs():
         measurement = ModelMeasurement()
-        if config.backend == "whisper":
+        if config.engine == "whisper":
             from faster_whisper import BatchedInferencePipeline
 
             instrument = patch.object(
@@ -68,7 +68,7 @@ def matrix(folder):
                         EndpointConfig(dynamic_silence=True),
                     ),
                 ]
-                if config.backend == "whisper" and language == "en":
+                if config.engine == "whisper" and language == "en":
                     cases.append(
                         (
                             "punctuation",
@@ -91,7 +91,7 @@ def matrix(folder):
                     )
                     row["backend"] = name
                     row["model_calls"] = (
-                        measurement.calls[before:] if config.backend == "whisper" else None
+                        measurement.calls[before:] if config.engine == "whisper" else None
                     )
                     old = next(
                         item
@@ -145,9 +145,9 @@ def local_cli(folder):
                 "realtime_asr",
                 "file",
                 "--model",
-                str(config.model_path),
+                str(config.model),
                 "--backend",
-                config.backend,
+                config.engine,
                 "--language",
                 "zh",
                 "--realtime",
@@ -175,7 +175,7 @@ def local_cli(folder):
             raise AssertionError(f"{name} 本地 CLI 最终结果与实际 SDK 不一致")
         if events[-1]["kind"] != "completed":
             raise AssertionError("本地 CLI 没有正常完成")
-        if config.backend == "nemotron" and not any(event["stream_finished"] for event in events):
+        if config.engine == "nemotron" and not any(event["stream_finished"] for event in events):
             raise AssertionError("Nemotron CLI 没有排空原生流")
         rows.append({"backend": name, "events": events, "exit_code": process.returncode})
     (folder / "local-cli.json").write_text(

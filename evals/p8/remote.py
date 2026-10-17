@@ -160,7 +160,7 @@ def audio_record_fields(message):
 class RemoteModelEngine(BaseTranscriptionEngine):
     """只在 eval 中提供的 HTTP／WebSocket 适配器，无本地模型路径。"""
 
-    capabilities = EngineCapabilities(backend="controlled-remote", device="remote", streaming=True)
+    capabilities = EngineCapabilities(engine="controlled-remote", device="remote", streaming=True)
 
     def __init__(self, url):
         self.url = url

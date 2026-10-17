@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from realtime_asr.backends.stream import NativeStream
+from realtime_asr.engines.stream import NativeStream
 from realtime_asr.errors import ASRError
 
 

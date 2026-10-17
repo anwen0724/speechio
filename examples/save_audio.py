@@ -18,7 +18,7 @@ def main():
     parser.add_argument("output", type=Path)
     parser.add_argument("--backend", choices=("whisper", "nemotron"), default="whisper")
     args = parser.parse_args()
-    with ASRRuntime(RecognizerConfig(model_path=args.model, backend=args.backend)) as runtime:
+    with ASRRuntime(RecognizerConfig(model=args.model, engine=args.backend)) as runtime:
         with closing(audio_file_chunks(args.input)) as blocks:
             format, first = next(blocks)
             session = runtime.create_session(SessionConfig(format=format))

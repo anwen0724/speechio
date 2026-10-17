@@ -25,7 +25,7 @@ from realtime_asr.server import ServerConfig
 
 OUTPUT = Path("artifacts/p9")
 MODELS = Path(".runtime/models/wake").resolve()
-ASR = RecognizerConfig(model_path=Path(".runtime/models/whisper-tiny").resolve())
+ASR = RecognizerConfig(model=Path(".runtime/models/whisper-tiny").resolve())
 VAD = Path(".runtime/models/vad/silero-v6.onnx").resolve()
 
 
@@ -125,7 +125,7 @@ def main():
             "file",
             str(filename),
             "--model",
-            str(ASR.model_path),
+            str(ASR.model),
             "--vad-model",
             str(VAD),
             "--wake-models",
@@ -178,7 +178,7 @@ def main():
         )
     saved = (OUTPUT / "saved.wav").resolve()
     run_command(
-        [sys.executable, "examples/save_audio.py", str(ASR.model_path), str(filename), str(saved)],
+        [sys.executable, "examples/save_audio.py", str(ASR.model), str(filename), str(saved)],
         "save-log.txt",
     )
     with wave.open(str(saved), "rb") as recording:

@@ -7,7 +7,7 @@ from realtime_asr.audio.microphone import (
     MicrophoneInput,
     list_input_devices,
 )
-from realtime_asr.backends.base import BaseTranscriptionEngine, EngineCapabilities, StreamingSession
+from realtime_asr.engines.base import BaseTranscriptionEngine, EngineCapabilities, StreamingSession
 from realtime_asr.errors import ASRError
 from realtime_asr.results import CloseResult, RecognitionResult, WordTimestamp
 from realtime_asr.runtime.asr import (

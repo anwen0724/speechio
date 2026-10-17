@@ -5,7 +5,8 @@ from dataclasses import dataclass, replace
 from os import PathLike
 from pathlib import Path
 
-from realtime_asr.backends.base import BaseTranscriptionEngine, EngineCapabilities
+from realtime_asr.engines.base import BaseTranscriptionEngine, EngineCapabilities
+from realtime_asr.engines.factory import available_engines, create_engine, normalize_engine
 from realtime_asr.errors import ASRError
 from realtime_asr.results import CloseError, CloseResult
 from realtime_asr.runtime.native.gpu import CUDA_DIRECTORY, GPUContext
@@ -15,25 +16,28 @@ LOGGER = logging.getLogger(__name__)
 
 @dataclass(frozen=True, kw_only=True)
 class RecognizerConfig:
-    """显式本地配置；自定义或远程引擎不需要创建此对象。"""
+    """显式本地配置；model 可以是模型名或已准备的本地目录。"""
 
-    model_path: str | PathLike
-    backend: str = "whisper"
+    model: str | PathLike
+    engine: str = "whisper"
     device: str = "cpu"
     compute_type: str | None = None
     device_index: int = 0
+    download_root: str | PathLike | None = None
+    local_files_only: bool = False
     cudnn_folder: str | PathLike | None = None
     cuda_directory: str | PathLike | None = None
 
     @property
     def capabilities(self):
         """内置能力的唯一声明位置，查询不加载模型。"""
-        if self.backend not in ("whisper", "nemotron"):
-            raise ASRError("INVALID_CONFIGURATION", "configure", "后端或设备组合无效")
-        whisper = self.backend == "whisper"
+        engine = normalize_engine(self.engine)
+        if engine not in ("whisper", "nemotron"):
+            raise ASRError("INVALID_CONFIGURATION", "configure", "引擎或设备组合无效")
+        whisper = engine == "whisper"
         return EngineCapabilities(
-            backend=self.backend,
-            model=str(self.model_path),
+            engine=engine,
+            model=str(self.model),
             device=self.device,
             snapshot=whisper,
             streaming=not whisper,
@@ -42,19 +46,26 @@ class RecognizerConfig:
 
 
 def resolve_config(config):
-    """保留已确认本地组合，固定路径，不触碰文件或加载 DLL。"""
+    """校验本地组合；模型名保持字符串，已存在的目录才解析为路径。"""
     if not isinstance(config, RecognizerConfig):
         raise ASRError("INVALID_CONFIGURATION", "configure", "需要 RecognizerConfig")
+    engine = normalize_engine(config.engine)
+    if engine not in ("whisper", "nemotron"):
+        raise ASRError(
+            "BACKEND_INCOMPATIBLE",
+            "configure",
+            f"不支持的引擎 {engine}；可用：{', '.join(available_engines())}",
+        )
     valid_index = isinstance(config.device_index, int) and not isinstance(config.device_index, bool)
     if (
-        config.backend not in ("whisper", "nemotron")
-        or config.device not in ("cpu", "cuda")
+        config.device not in ("cpu", "cuda")
         or not valid_index
         or config.device_index < 0
         or (config.device == "cpu" and config.device_index != 0)
-        or (config.backend == "nemotron" and config.device != "cpu")
+        or (engine == "nemotron" and config.device != "cpu")
+        or type(config.local_files_only) is not bool
     ):
-        raise ASRError("INVALID_CONFIGURATION", "configure", "后端或设备组合无效")
+        raise ASRError("INVALID_CONFIGURATION", "configure", "引擎或设备组合无效")
     compute_type = "float16" if config.device == "cuda" else "int8"
     if config.compute_type not in (None, compute_type):
         raise ASRError("INVALID_CONFIGURATION", "configure", "本阶段计算类型与设备不匹配")
@@ -64,14 +75,24 @@ def resolve_config(config):
         raise ASRError("INVALID_CONFIGURATION", "configure", "CPU 不使用 GPU 路径")
     if config.device == "cuda" and config.cudnn_folder is None:
         raise ASRError("INVALID_CONFIGURATION", "configure", "CUDA 需要显式 cuDNN 目录")
+    if not isinstance(config.model, (str, PathLike)):
+        raise ASRError("INVALID_CONFIGURATION", "configure", "模型应为名字或目录")
     try:
+        model = str(config.model)
+        if Path(model).is_dir():
+            model = Path(model).resolve()
         cudnn_folder = cuda_directory = None
         if config.device == "cuda":
             cudnn_folder = Path(config.cudnn_folder).resolve()
             cuda_directory = Path(config.cuda_directory or CUDA_DIRECTORY).resolve()
+        download_root = (
+            Path(config.download_root).resolve() if config.download_root is not None else None
+        )
         return replace(
             config,
-            model_path=Path(config.model_path).resolve(),
+            engine=engine,
+            model=model,
+            download_root=download_root,
             compute_type=compute_type,
             cudnn_folder=cudnn_folder,
             cuda_directory=cuda_directory,
@@ -110,19 +131,7 @@ class LocalEngine(BaseTranscriptionEngine):
             if self.config.device == "cuda":
                 self._gpu = GPUContext(self.config.cudnn_folder, self.config.cuda_directory)
                 self._gpu.__enter__()
-            if self.config.backend == "whisper":
-                from realtime_asr.backends.whisper import WhisperEngine
-
-                self._model = WhisperEngine(
-                    self.config.model_path,
-                    device=self.config.device,
-                    compute_type=self.config.compute_type,
-                    device_index=self.config.device_index,
-                )
-            else:
-                from realtime_asr.backends.nemotron import NemotronEngine
-
-                self._model = NemotronEngine(self.config.model_path)
+            self._model = create_engine(self.config)
         except BaseException as exc:
             cleanup = self.close()
             if cleanup.errors:
@@ -133,7 +142,7 @@ class LocalEngine(BaseTranscriptionEngine):
             raise ASRError(code, "load_model", str(exc)) from exc
 
     def transcribe(self, audio, language=None, *, role="final", word_timestamps=False):
-        if self.config.backend == "whisper":
+        if self.config.engine == "whisper":
             mapped = {"zh-CN": "zh", "en-US": "en"}.get(language, language)
             # 候选使用完整识别参数，模型内部仍只维护最终与实时两种参数组。
             parameter_role = "final" if role == "candidate" else role

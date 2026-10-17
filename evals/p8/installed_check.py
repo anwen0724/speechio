@@ -20,7 +20,7 @@ class Engine(sdk.BaseTranscriptionEngine):
 
     @property
     def capabilities(self):
-        return sdk.EngineCapabilities(backend='installed-custom')
+        return sdk.EngineCapabilities(engine='installed-custom')
 
     def prepare(self):
         self.prepared += 1
@@ -84,7 +84,7 @@ class Engine(BaseTranscriptionEngine):
 
     @property
     def capabilities(self):
-        return EngineCapabilities(backend='installed-dual', streaming=True)
+        return EngineCapabilities(engine='installed-dual', streaming=True)
 
     def create_streaming_session(self, language=None):
         stream = Stream(self.text)

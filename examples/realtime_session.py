@@ -17,7 +17,7 @@ def main():
     parser.add_argument("--backend", choices=("whisper", "nemotron"), default="whisper")
     parser.add_argument("--language")
     args = parser.parse_args()
-    model = RecognizerConfig(model_path=args.model, backend=args.backend)
+    model = RecognizerConfig(model=args.model, engine=args.backend)
     mode = model.capabilities.realtime_mode
     with ASRRuntime(
         model,

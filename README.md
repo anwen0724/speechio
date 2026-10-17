@@ -36,6 +36,8 @@ src/realtime_asr/
 ├── errors.py                # 公共错误与错误记录
 ├── results.py               # 识别与关闭结果
 ├── protocol.py              # 共享二进制音频包编码，不依赖网络框架
+├── model_manifests.py       # 固定权重发布包的不可变描述
+├── install_sherpa_models.py # 把固定 Nemotron 权重安装到显式目录
 ├── audio/
 │   ├── conversion.py        # 格式、连续转换、凑帧与标准样本位置
 │   ├── files.py             # 标准 WAV 与通用文件有限块解码
@@ -68,9 +70,10 @@ src/realtime_asr/
 │   ├── stabilizer.py        # 原文投影、稳定证据与最终差异
 │   ├── endpoint.py          # 动态等待与句末锚点策略
 │   └── realtime_merge.py    # 双路观察、锚点、内容代次与有限尾部
-├── backends/
+├── engines/
 │   ├── base.py              # 通用整段、流式与能力契约
-│   ├── local.py             # 内置配置、模型组装与专有参数
+│   ├── factory.py           # 引擎名到适配器的注册表
+│   ├── local.py             # 本地配置、GPU 与模型组装
 │   ├── whisper.py           # Whisper 整段与快照适配
 │   ├── nemotron.py          # Nemotron 识别器适配
 │   └── stream.py            # 原生流输入、解码、结束与关闭
@@ -198,7 +201,7 @@ asr remote --url http://127.0.0.1:8000 --output jsonl stdin --realtime --dual-re
 使用 uv 和 64 位 CPython 3.12。开发解释器由 `.python-version` 固定为已安装的 3.12.14，Python 依赖由 `uv.lock` 锁定。以下命令在项目根目录执行：
 
 ```powershell
-uv sync --locked --extra whisper --extra nemotron --extra audio --extra vad --extra microphone
+uv sync --locked --extra nemotron --extra vad --extra microphone
 uv run --no-sync python -m evals.p0 environment
 ```
 
@@ -268,7 +271,7 @@ with MicrophoneInput(MicrophoneConfig()) as microphone:
 服务只访问显式指定的本地模型。先同步依赖，再运行正式入口；没有 VAD 时只开放手动输入。
 
 ```powershell
-uv sync --locked --extra whisper --extra vad --extra server --extra client --extra audio --extra microphone
+uv sync --locked --extra vad --extra server --extra client --extra microphone
 uv run --no-sync asr serve --model .runtime/models/whisper-tiny --vad-model .runtime/models/vad/silero-v6.onnx
 ```
 
@@ -332,25 +335,45 @@ uv build
 
 ## Python SDK
 
-宿主可使用自己的 CPython 3.12 环境安装 wheel；模型与运行库路径由宿主指定，不要求在项目目录运行。按用途安装依赖组：
+宿主可使用自己的 CPython 3.12 环境安装 wheel，不要求在项目目录运行：
 
 ```powershell
-uv pip install "<wheel-path>[whisper,audio]"
-# 使用 Nemotron 时选择 nemotron；标准 16 kHz 字节或数组不需要 audio。
+uv pip install "<wheel-path>"
 ```
 
-`audio` 包含 SoundFile 与 SoXR，不引入麦克风依赖。模型应先显式准备，SDK 不下载或自动切换设备。
+默认安装包含 Whisper 后端、音频转换和 SoundFile/SoXR。`model` 可以是模型名，也可以是已经准备好的目录；名字由所选引擎解释：
 
 ```python
-from pathlib import Path
-from realtime_asr import AudioFormat, Recognizer, RecognizerConfig
+from realtime_asr import Recognizer, RecognizerConfig
 
-config = RecognizerConfig(model_path=Path("models/whisper-tiny"))
-with Recognizer(config) as recognizer:
-    result = recognizer.transcribe_file(Path("samples/speech.wav"), language="zh")
-    print(result.text)
-print(recognizer.close_result)
+with Recognizer() as recognizer:                      # 默认 Whisper tiny
+    print(recognizer.transcribe_file("samples/speech.wav", language="zh").text)
+
+with Recognizer(RecognizerConfig(model="small.en")) as recognizer:
+    print(recognizer.transcribe_file("samples/speech.wav").text)
 ```
+
+模型名首次使用时由 faster-whisper 下载到 HuggingFace 缓存。`download_root` 指定缓存目录，`local_files_only=True` 禁止联网。模型名与引擎的对应关系见 [Whisper 引擎说明](docs/engines/whisper.md)。
+
+已准备的目录按 `model-manifest.json` 校验，不信任目录名。固定权重（Nemotron）需要先安装：
+
+```powershell
+asr-install-sherpa-models --root D:/models/sherpa-onnx --model 560ms
+```
+
+```python
+from realtime_asr import Recognizer, RecognizerConfig
+
+with Recognizer(
+    RecognizerConfig(
+        model="D:/models/sherpa-onnx/sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11",
+        engine="nemotron",
+    )
+) as recognizer:
+    ...
+```
+
+宿主自己的模型实现 `BaseTranscriptionEngine` 后注入：`Recognizer(engine=MyEngine())`。SDK 只准备、调用和关闭该实例，不要求本地模型路径。
 
 完整 PCM16 字节使用 `recognizer.transcribe(pcm, format=AudioFormat(), language="zh")`。完整浮点数组声明真实采样率与声道，例如 `AudioFormat(48000, 2, "float32")`。
 
@@ -525,24 +548,24 @@ HTTP 支持 `word_timestamps=true`。远程 SDK 的 `transcribe_file(..., word_t
 
 ## 模型准备
 
-模型文件位于 `.runtime/models/`，与虚拟环境分开。准备操作保存来源、不可变修订、逐文件大小和 SHA-256。已有清单只能校验复用，不能用新清单覆盖文件篡改。
+Whisper 模型按名字由 faster-whisper 下载到缓存，不需要准备步骤。需要固定版本、离线分发或清单校验时，可先用 `prepare_whisper` 或本地快照写入指定目录，再用目录加载。
+
+Nemotron 固定权重使用安装器写入显式目录：
 
 ```powershell
-uv run --locked --extra whisper --extra nemotron python -m evals.p0 prepare-models --allow-download
+uv run --no-sync asr-install-sherpa-models --root D:/models/sherpa-onnx --model 560ms
 ```
 
-Whisper 使用 `Systran/faster-whisper-tiny`。首次下载解析具体仓库修订后保存，后续加载只读取本地文件。也可通过 `--local-whisper-snapshot <path>` 显式复制已有的不可变快照；复制模型文件不复用该快照所在环境的 Python 包。
+安装器校验压缩包大小和 SHA-256，压缩包先落 `.partial` 支持续传，在临时目录展开成功后原子改名；`--offline` 只校验已有模型。引擎启动不下载、不替换权重。
 
-Nemotron 使用 Spec 固定的 Sherpa 3.5 INT8 560 ms 发布包。准备操作先校验发布包，再展开并核对固定模型文件。
-
-没有 `--allow-download` 时只校验已有模型。运行矩阵不调用准备或下载入口；缺少模型时保存明确失败。
+评估矩阵仍用 `python -m evals.p0 prepare-models` 准备到 `.runtime`；那是评估入口，不是 SDK 的使用步骤。
 
 ## GPU 准备
 
 CPU 路径不需要执行此步骤。Windows GPU 验证显式使用系统 CUDA 12.8 的 `bin` 目录，以及项目 `.runtime/cudnn/9.16.0.29/bin`：
 
 ```powershell
-uv run --locked --extra whisper --extra nemotron python -m evals.p0 prepare-gpu
+uv run --locked --extra nemotron python -m evals.p0 prepare-gpu
 ```
 
 准备入口获取 NVIDIA cuDNN 包，校验发布哈希并保存原生文件清单。项目进程持有所选 DLL 和目录句柄，不修改系统 PATH，也不使用其他项目虚拟环境内的 cuDNN。实际已加载 DLL 路径进入验证记录；同名库同时加载时，不仅凭路径推定实际绑定版本。详细归属见 [GPU 运行库](docs/ARCHITECTURE.md#gpu-运行库的位置与复用边界)。
@@ -550,8 +573,8 @@ uv run --locked --extra whisper --extra nemotron python -m evals.p0 prepare-gpu
 ## 公开语料与听音核实
 
 ```powershell
-uv run --locked --extra whisper --extra nemotron python -m evals.p0 prepare-corpus
-uv run --locked --extra whisper --extra nemotron python -m evals.p0 validate-corpus --exploratory
+uv run --locked --extra nemotron python -m evals.p0 prepare-corpus
+uv run --locked --extra nemotron python -m evals.p0 validate-corpus --exploratory
 ```
 
 公开语料来自 Google FLEURS 的中文和英文录音。原始录音、来源索引、格式转换记录和增广参数保存在 `data/corpus/p0/`，清单为 `manifest.json`。已有清单不会被准备入口重写。
@@ -565,14 +588,14 @@ uv run --locked --extra whisper --extra nemotron python -m evals.p0 validate-cor
 未经核实的语料只允许显式探索：
 
 ```powershell
-uv run --locked --extra whisper --extra nemotron python -m evals.p0 run --exploratory
+uv run --locked --extra nemotron python -m evals.p0 run --exploratory
 ```
 
 核实全部标注后，运行正式验证：
 
 ```powershell
-uv run --locked --extra whisper --extra nemotron python -m evals.p0 validate-corpus
-uv run --locked --extra whisper --extra nemotron python -m evals.p0 run
+uv run --locked --extra nemotron python -m evals.p0 validate-corpus
+uv run --locked --extra nemotron python -m evals.p0 run
 ```
 
 默认声明并执行 M01—M10。可用 `--matrix M01,M03` 选择局部检查；未选择项仍记录为 `skipped`，局部成功不使阶段通过。

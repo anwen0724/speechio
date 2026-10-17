@@ -32,7 +32,7 @@ class SessionTests(unittest.TestCase):
             "faster_whisper.BatchedInferencePipeline.transcribe",
             return_value=(iter([]), SimpleNamespace(language=None, language_probability=None)),
         ):
-            with ASRRuntime(RecognizerConfig(model_path=self.path)) as runtime:
+            with ASRRuntime(RecognizerConfig(model=self.path)) as runtime:
                 session = runtime.create_session()
                 unit = session.start()
                 session.feed_audio(b"\x00\x00")
@@ -58,7 +58,7 @@ class SessionTests(unittest.TestCase):
                 language="en", language_probability=1.0
             )
 
-        runtime = ASRRuntime(RecognizerConfig(model_path=self.path))
+        runtime = ASRRuntime(RecognizerConfig(model=self.path))
         self.addCleanup(runtime.close)
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=native):
             runtime.prepare()
@@ -85,7 +85,7 @@ class SessionTests(unittest.TestCase):
             self.assertIsNone(session.get_event())
 
     def test_invalid_finish_terminates_only_its_unit_and_accepts_next_unit(self):
-        with ASRRuntime(RecognizerConfig(model_path=self.path)) as runtime:
+        with ASRRuntime(RecognizerConfig(model=self.path)) as runtime:
             session = runtime.create_session()
             for payload, code in ((b"", "INVALID_AUDIO"), (b"\x01", "AUDIO_INPUT_TRUNCATED")):
                 with self.subTest(code=code):
@@ -110,7 +110,7 @@ class SessionTests(unittest.TestCase):
             )
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=native):
-            with ASRRuntime(RecognizerConfig(model_path=self.path)) as runtime:
+            with ASRRuntime(RecognizerConfig(model=self.path)) as runtime:
                 session = runtime.create_session()
                 failed = session.start()
                 session.feed_audio(np.array([-1], np.int16))
@@ -142,7 +142,7 @@ class SessionTests(unittest.TestCase):
             return iter([]), SimpleNamespace(language=None, language_probability=None)
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=native):
-            with ASRRuntime(RecognizerConfig(model_path=self.path)) as runtime:
+            with ASRRuntime(RecognizerConfig(model=self.path)) as runtime:
                 session = runtime.create_session()
                 running = session.start()
                 session.feed_audio(np.array([1], np.int16))
@@ -187,7 +187,7 @@ class SessionTests(unittest.TestCase):
             return iter([]), SimpleNamespace(language=None, language_probability=None)
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=native):
-            with ASRRuntime(RecognizerConfig(model_path=self.path)) as runtime:
+            with ASRRuntime(RecognizerConfig(model=self.path)) as runtime:
                 session, other = runtime.create_session(), runtime.create_session()
                 old = session.start()
                 session.feed_audio(np.array([-1], np.int16))
@@ -226,7 +226,7 @@ class SessionTests(unittest.TestCase):
             return iter([]), SimpleNamespace(language=None, language_probability=None)
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=native):
-            with ASRRuntime(RecognizerConfig(model_path=self.path)) as runtime:
+            with ASRRuntime(RecognizerConfig(model=self.path)) as runtime:
                 session = runtime.create_session()
                 session.start()
                 session.feed_audio(np.array([1], np.int16))
@@ -256,7 +256,7 @@ class SessionTests(unittest.TestCase):
             return iter([]), SimpleNamespace(language=None, language_probability=None)
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=native):
-            with ASRRuntime(RecognizerConfig(model_path=self.path)) as runtime:
+            with ASRRuntime(RecognizerConfig(model=self.path)) as runtime:
                 session = runtime.create_session(
                     SessionConfig(max_audio_samples=3, max_pending_units=1)
                 )
@@ -292,7 +292,7 @@ class SessionTests(unittest.TestCase):
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=native):
             with ASRRuntime(
-                RecognizerConfig(model_path=self.path),
+                RecognizerConfig(model=self.path),
                 limits=RuntimeLimits(max_tasks=2, max_task_audio_samples=100),
             ) as runtime:
                 first, second = runtime.create_session(), runtime.create_session()
@@ -338,7 +338,7 @@ class SessionTests(unittest.TestCase):
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=native):
             with ASRRuntime(
-                RecognizerConfig(model_path=self.path),
+                RecognizerConfig(model=self.path),
                 limits=RuntimeLimits(max_tasks=4, max_task_audio_samples=2),
             ) as runtime:
                 session = runtime.create_session()
@@ -371,7 +371,7 @@ class SessionTests(unittest.TestCase):
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=native):
             with ASRRuntime(
-                RecognizerConfig(model_path=self.path), limits=RuntimeLimits(max_sessions=2)
+                RecognizerConfig(model=self.path), limits=RuntimeLimits(max_sessions=2)
             ) as runtime:
                 a, b = runtime.create_session(), runtime.create_session()
                 a.start()
@@ -404,7 +404,7 @@ class SessionTests(unittest.TestCase):
                 raise RuntimeError("测试未释放模型")
             return iter([]), SimpleNamespace(language=None, language_probability=None)
 
-        runtime = ASRRuntime(RecognizerConfig(model_path=self.path))
+        runtime = ASRRuntime(RecognizerConfig(model=self.path))
         self.addCleanup(runtime.close)
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=native):
             runtime.prepare()
@@ -441,7 +441,7 @@ class SessionTests(unittest.TestCase):
             return iter([]), SimpleNamespace(language=None, language_probability=None)
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=native):
-            with ASRRuntime(RecognizerConfig(model_path=self.path)) as runtime:
+            with ASRRuntime(RecognizerConfig(model=self.path)) as runtime:
                 session = runtime.create_session(
                     SessionConfig(format=AudioFormat(48000, 2), max_audio_samples=16)
                 )
@@ -463,7 +463,7 @@ class SessionTests(unittest.TestCase):
                 np.testing.assert_allclose(received[1], -expected, atol=1 / 32768)
 
     def test_prepare_retry_and_context_body_exception_keep_runtime_contract(self):
-        runtime = ASRRuntime(RecognizerConfig(model_path=self.path))
+        runtime = ASRRuntime(RecognizerConfig(model=self.path))
         self.addCleanup(runtime.close)
         with self.assertRaises(ASRError) as caught:
             runtime.create_session()
@@ -490,7 +490,7 @@ class SessionTests(unittest.TestCase):
             return iter([]), SimpleNamespace(language=None, language_probability=None)
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=native):
-            with ASRRuntime(RecognizerConfig(model_path=self.path)) as runtime:
+            with ASRRuntime(RecognizerConfig(model=self.path)) as runtime:
                 session = runtime.create_session(
                     SessionConfig(format=AudioFormat(sample_type="float32"), max_audio_samples=2)
                 )
@@ -537,7 +537,7 @@ class SessionTests(unittest.TestCase):
 
         runtime = ASRRuntime(
             RecognizerConfig(
-                model_path=self.path,
+                model=self.path,
                 device="cuda",
                 cudnn_folder=cudnn,
                 cuda_directory=self.path / "cuda",

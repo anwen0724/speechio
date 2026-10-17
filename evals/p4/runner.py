@@ -29,13 +29,13 @@ def read_audio(path):
 
 
 def run(project, model, output, *, configuration=None):
-    cpu = RecognizerConfig(model_path=project / ".runtime/models/whisper-tiny")
+    cpu = RecognizerConfig(model=project / ".runtime/models/whisper-tiny")
     gpu = RecognizerConfig(
-        model_path=cpu.model_path,
+        model=cpu.model,
         device="cuda",
         cudnn_folder=project / ".runtime/cudnn/9.16.0.29",
     )
-    native = RecognizerConfig(model_path=project / ".runtime/models/nemotron", backend="nemotron")
+    native = RecognizerConfig(model=project / ".runtime/models/nemotron", engine="nemotron")
     configs = {
         "whisper-cpu": (cpu, RealtimeConfig()),
         "whisper-cuda": (gpu, RealtimeConfig()),

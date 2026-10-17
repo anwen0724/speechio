@@ -66,11 +66,11 @@ def auto_baseline(config, vad, pcm, language, mode):
 
 def matrix(project, folder):
     vad = project / ".runtime/models/vad/silero-v6.onnx"
-    cpu = RecognizerConfig(model_path=project / ".runtime/models/whisper-tiny")
+    cpu = RecognizerConfig(model=project / ".runtime/models/whisper-tiny")
     cuda = RecognizerConfig(
-        model_path=cpu.model_path, device="cuda", cudnn_folder=project / ".runtime/cudnn/9.16.0.29"
+        model=cpu.model, device="cuda", cudnn_folder=project / ".runtime/cudnn/9.16.0.29"
     )
-    native = RecognizerConfig(model_path=project / ".runtime/models/nemotron", backend="nemotron")
+    native = RecognizerConfig(model=project / ".runtime/models/nemotron", engine="nemotron")
     reports = []
     for name, config in (("whisper-cpu", cpu), ("whisper-cuda", cuda), ("nemotron", native)):
         server_config = ServerConfig(recognizer=config, vad_model=str(vad))
@@ -251,7 +251,7 @@ def tls_check(project, folder):
         raise AssertionError(prepared.stderr.decode("utf-8", errors="replace"))
     trust = ssl.create_default_context(cafile=str(cert))
     config = ServerConfig(
-        recognizer=RecognizerConfig(model_path=project / ".runtime/models/whisper-tiny"),
+        recognizer=RecognizerConfig(model=project / ".runtime/models/whisper-tiny"),
         realtime=False,
         token="eval-only-token",
         ssl_certfile=str(cert),
@@ -277,7 +277,7 @@ def tls_check(project, folder):
 def upload_limits(project):
     """真实 HTTP 限制与断开，不用模型替身模拟网络接入。"""
     config = ServerConfig(
-        recognizer=RecognizerConfig(model_path=project / ".runtime/models/whisper-tiny"),
+        recognizer=RecognizerConfig(model=project / ".runtime/models/whisper-tiny"),
         realtime=False,
         max_http_bytes=1024,
         body_timeout=0.1,
@@ -324,7 +324,7 @@ def paced_realtime(project, folder):
     reports = []
     for device in ("cpu", "cuda"):
         config = RecognizerConfig(
-            model_path=project / ".runtime/models/whisper-tiny",
+            model=project / ".runtime/models/whisper-tiny",
             device=device,
             cudnn_folder=project / ".runtime/cudnn/9.16.0.29" if device == "cuda" else None,
         )

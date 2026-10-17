@@ -5,7 +5,7 @@ from ipaddress import ip_address
 from math import isfinite
 
 from realtime_asr import ASRError, CandidateConfig, RealtimeConfig, RecognizerConfig
-from realtime_asr.backends.base import validate_engine
+from realtime_asr.engines.base import validate_engine
 from realtime_asr.segmentation.wakeword import WakeConfig
 
 

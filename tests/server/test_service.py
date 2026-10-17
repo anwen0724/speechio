@@ -28,9 +28,7 @@ def wait_ready(client, *, headers=None):
 class ServiceTests(unittest.TestCase):
     def setUp(self):
         test_recognizer.RecognizerTests.setUp(self)
-        self.config = ServerConfig(
-            recognizer=RecognizerConfig(model_path=self.path), realtime=False
-        )
+        self.config = ServerConfig(recognizer=RecognizerConfig(model=self.path), realtime=False)
 
     def test_loading_model_does_not_block_live_or_claim_readiness(self):
         entered, release = Event(), Event()

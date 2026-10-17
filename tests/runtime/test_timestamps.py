@@ -22,7 +22,7 @@ class TimestampTests(unittest.TestCase):
             "faster_whisper.BatchedInferencePipeline.transcribe",
             return_value=(iter([segment]), info),
         ):
-            with Recognizer(RecognizerConfig(model_path=self.path)) as recognizer:
+            with Recognizer(RecognizerConfig(model=self.path)) as recognizer:
                 result = recognizer.transcribe(
                     np.ones(16000, np.int16), format=AudioFormat(), word_timestamps=True
                 )
@@ -40,7 +40,7 @@ class TimestampTests(unittest.TestCase):
                 info,
             ),
         ):
-            with Recognizer(RecognizerConfig(model_path=self.path)) as recognizer:
+            with Recognizer(RecognizerConfig(model=self.path)) as recognizer:
                 result = recognizer.transcribe(
                     np.ones(16000, np.int16), format=AudioFormat(), word_timestamps=True
                 )

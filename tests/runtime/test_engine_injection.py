@@ -27,7 +27,7 @@ class RecordingEngine:
     def capabilities(self):
         from realtime_asr import EngineCapabilities
 
-        return EngineCapabilities(backend="remote-test", device="remote", snapshot=True)
+        return EngineCapabilities(engine="remote-test", device="remote", snapshot=True)
 
     def prepare(self):
         self.preparations += 1
@@ -135,7 +135,7 @@ class EngineInjectionTests(unittest.TestCase):
             def capabilities(self):
                 from realtime_asr import EngineCapabilities
 
-                return EngineCapabilities(backend="shared", streaming=True)
+                return EngineCapabilities(engine="shared", streaming=True)
 
         engine = SharedEngine()
         runtime = ASRRuntime(
@@ -271,7 +271,7 @@ class RecordingStreamingEngine(RecordingEngine):
     def capabilities(self):
         from realtime_asr import EngineCapabilities
 
-        return EngineCapabilities(backend="remote-stream", transcription=False, streaming=True)
+        return EngineCapabilities(engine="remote-stream", transcription=False, streaming=True)
 
     def create_streaming_session(self, language=None):
         stream = RecordingStream()

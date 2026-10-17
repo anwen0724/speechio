@@ -21,9 +21,7 @@ from tests.server.test_websocket import open_socket
 class LifecycleTests(unittest.TestCase):
     def setUp(self):
         test_recognizer.RecognizerTests.setUp(self)
-        self.config = ServerConfig(
-            recognizer=RecognizerConfig(model_path=self.path), realtime=False
-        )
+        self.config = ServerConfig(recognizer=RecognizerConfig(model=self.path), realtime=False)
 
     def test_prepare_failure_is_visible_without_claiming_ready(self):
         with patch("faster_whisper.WhisperModel", side_effect=RuntimeError("load failed")):

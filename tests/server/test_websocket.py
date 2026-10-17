@@ -47,7 +47,7 @@ class WebSocketTests(unittest.TestCase):
     def setUp(self):
         test_recognizer.RecognizerTests.setUp(self)
         self.config = ServerConfig(
-            recognizer=RecognizerConfig(model_path=self.path),
+            recognizer=RecognizerConfig(model=self.path),
             realtime=False,
             idle_timeout=2,
             drain_timeout=2,
@@ -228,7 +228,7 @@ class AutomaticWebSocketTests(unittest.TestCase):
 
     def test_auto_eof_preserves_short_tail_and_repeated_eof_has_no_second_final(self):
         config = ServerConfig(
-            recognizer=RecognizerConfig(model_path=self.path),
+            recognizer=RecognizerConfig(model=self.path),
             vad_model=self.vad.model_path,
             realtime=False,
         )

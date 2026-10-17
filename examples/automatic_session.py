@@ -23,7 +23,7 @@ def main():
     parser.add_argument("--language", default=None)
     parser.add_argument("--realtime", action="store_true")
     args = parser.parse_args()
-    model = RecognizerConfig(model_path=args.model, backend=args.backend)
+    model = RecognizerConfig(model=args.model, engine=args.backend)
     realtime = None
     if args.realtime:
         realtime = RealtimeConfig(mode=model.capabilities.realtime_mode)

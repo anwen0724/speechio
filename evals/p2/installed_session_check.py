@@ -40,7 +40,7 @@ def main():
         "import_created_threads": False,
         "versions": {p: importlib.metadata.version(p) for p in ("numpy", "realtime-asr")},
     }
-    runtime = asr.ASRRuntime(asr.RecognizerConfig(model_path=args.model))
+    runtime = asr.ASRRuntime(asr.RecognizerConfig(model=args.model))
     if {t.ident for t in threading.enumerate()} != before:
         raise AssertionError("创建未准备运行时创建了线程")
     try:
