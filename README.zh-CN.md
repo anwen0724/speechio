@@ -18,32 +18,29 @@
 
 ## 安装
 
-从当前仓库安装：
-
 ```bash
-pip install .
+pip install realtime-asr
 ```
 
-发布到 PyPI 后，`pip install realtime-asr` 效果相同。
+实时转写不需要单独下载模型；Silero 检测模型随包提供。
 
-基础安装包含 Whisper 运行程序、麦克风支持、ONNX Runtime、WebRTC VAD，以及内置的 Silero 检测模型。
-
-Linux 上如果构建时找不到 PortAudio，先安装系统库：
+Linux 上先安装 PortAudio：
 
 ```bash
 sudo apt install portaudio19-dev
+pip install realtime-asr
 ```
 
 ### 可选：Nemotron
 
-Nemotron 是第二个引擎，支持原生流式，默认不安装。
+Nemotron 增加原生流式。先装运行程序，再下载模型：
 
 ```bash
-pip install ".[nemotron]"
+pip install "realtime-asr[nemotron]"
 asr-install-sherpa-models --root /models/sherpa-onnx --model 560ms
 ```
 
-第一条命令装运行程序，第二条下载模型。变体有 `80ms`、`560ms`、`1120ms`；省略 `--model` 会装全部三个。
+可选变体有 `80ms`、`560ms`、`1120ms`。省略 `--model` 会安装全部三个。
 
 ## 快速开始
 

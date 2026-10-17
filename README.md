@@ -18,32 +18,29 @@ Local speech-to-text for Python. Transcribe audio files or stream from a microph
 
 ## Install
 
-From this repository:
-
 ```bash
-pip install .
+pip install realtime-asr
 ```
 
-After publishing, `pip install realtime-asr` works the same way.
+Live transcription works without a separate model download; the Silero VAD model ships with the package.
 
-The base install includes the Whisper runtime, microphone support, ONNX Runtime, WebRTC VAD, and a bundled Silero detection model.
-
-On Linux, install PortAudio first if the build cannot find it:
+On Linux, install PortAudio first:
 
 ```bash
 sudo apt install portaudio19-dev
+pip install realtime-asr
 ```
 
 ### Optional: Nemotron
 
-Nemotron is a second engine with native streaming. It is not installed by default.
+Nemotron adds native streaming. Install the runtime, then download a model:
 
 ```bash
-pip install ".[nemotron]"
+pip install "realtime-asr[nemotron]"
 asr-install-sherpa-models --root /models/sherpa-onnx --model 560ms
 ```
 
-The first command installs the runtime. The second downloads the model. Available variants are `80ms`, `560ms`, and `1120ms`; omit `--model` to install all three.
+Available model variants are `80ms`, `560ms`, and `1120ms`. Omit `--model` to install all three.
 
 ## Quick start
 
