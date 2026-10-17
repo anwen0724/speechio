@@ -177,10 +177,13 @@ def run(project, environments, outside):
     report["installed_server_shutdown"] = "ok"
     with zipfile.ZipFile(project / "dist/realtime_asr-0.1.0-py3-none-any.whl") as wheel:
         names = wheel.namelist()
-        assert any(name.endswith("server/static/audio-worklet.js") for name in names)
-        assert not any(name.startswith(("evals/", "tests/", "web/", "docs/")) for name in names)
+        assert not any(
+            name.startswith(("evals/", "tests/", "web/", "docs/", "apps/")) for name in names
+        )
+        assert not any("/server/" in name for name in names)
         report["wheel_members"] = len(names)
-        report["ui_packaged"] = True
+        # server 与浏览器资源不再随库发布，P6 的安装后服务端检查需要按应用层重做。
+        report["ui_packaged"] = False
     return report
 
 

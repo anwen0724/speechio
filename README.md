@@ -83,9 +83,10 @@ apps/                          # 应用层参考实现，不随库发布
 │   ├── service.py             # 共享运行时与自有会话
 │   ├── connection.py          # 连接控制、有界发送与排空
 │   └── __main__.py            # 正式服务启动器
-└── client/
-    ├── connection.py          # RemoteClient / RemoteSession
-    └── __main__.py            # remote 文件、stdin 与客户端麦克风
+├── client/
+│   ├── connection.py          # RemoteClient / RemoteSession
+│   └── __main__.py            # remote 文件、stdin 与客户端麦克风
+└── web/                       # React / TypeScript / Vite 浏览器客户端
 
 evals/p0/                    # 语料、评分与基线验证
 evals/p1/                    # 同步 SDK 真实验收
@@ -99,7 +100,6 @@ evals/p8/                    # 引擎边界、双实时对照、真实入口及�
 evals/module_organization.py # 目录迁移前后的真实回放
 
 examples/                    # 只通过公开 SDK 使用产品
-web/                         # React / TypeScript / Vite 浏览器源码
 tests/
 ├── audio/                   # 音频格式、转换与文件
 ├── cli/                     # 命令行公开行为与外部输入输出
@@ -326,12 +326,12 @@ with RemoteClient("http://127.0.0.1:8000") as client:
 开发时使用当前 Node.js 24。先构建页面，再启动 Python 服务；根路径 `http://127.0.0.1:8000/` 提供同源页面。缺少构建时根路径明确返回 503，API 仍独立可用。
 
 ```powershell
-npm --prefix web ci
-npm --prefix web run build
+npm --prefix apps/web ci
+npm --prefix apps/web run build
 uv build
 ```
 
-静态资源构建到 `apps/server/static/`，供仓库内服务端使用，不随库 wheel 交付。node_modules 与静态生成目录不进入 Git。若使用 Vite 开发服务器，`npm --prefix web run dev` 通过 `/api` 代理到本地 8000 服务。
+静态资源构建到 `apps/server/static/`，供仓库内服务端使用，不随库 wheel 交付。node_modules 与静态生成目录不进入 Git。若使用 Vite 开发服务器，`npm --prefix apps/web run dev` 通过 `/api` 代理到本地 8000 服务。
 
 页面只保留当前内存中的 Token。打开失败、输入失败或连接断开时释放自有设备流和音频图；正常停止先递交短尾再释放采集资源，连接继续交付该输入的结果。实时失败是可观察错误，不能冒充最终，也不结束其他有效任务。最小入口不包含后续稳定、候选或完整时间线。
 
@@ -616,9 +616,9 @@ uv run --locked --extra nemotron python -m evals.p0 run
 uv run --no-sync python -m unittest discover -s tests -t . -v
 uv run --no-sync ruff check src evals tests examples
 uv run --no-sync ruff format --check src evals tests examples
-npm --prefix web run check
-npm --prefix web run format:check
-npm --prefix web run build
+npm --prefix apps/web run check
+npm --prefix apps/web run format:check
+npm --prefix apps/web run build
 uv build
 ```
 

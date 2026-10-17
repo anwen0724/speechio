@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { writeFile } from "node:fs/promises";
 import assert from "node:assert/strict";
 
-const require = createRequire(resolve("web/package.json"));
+const require = createRequire(resolve("apps/web/package.json"));
 const { chromium } = require("playwright");
 const [url, folder, wav] = process.argv.slice(2);
 const dual = process.argv[5] === "dual";

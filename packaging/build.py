@@ -25,8 +25,8 @@ def main():
     if npm is None or uv is None:
         raise RuntimeError("构建需要 Node/npm 和 uv")
     if args.install_web_deps:
-        subprocess.run([npm, "ci"], cwd=project / "web", env=env, check=True)
-    subprocess.run([npm, "run", "build"], cwd=project / "web", env=env, check=True)
+        subprocess.run([npm, "ci"], cwd=project / "apps/web", env=env, check=True)
+    subprocess.run([npm, "run", "build"], cwd=project / "apps/web", env=env, check=True)
     subprocess.run([uv, "build", "--wheel"], cwd=project, env=env, check=True)
     expected = {
         path.relative_to(project / "src").as_posix(): path.read_bytes()

@@ -4,7 +4,7 @@ import { writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import assert from 'node:assert/strict';
 
-const require = createRequire(resolve('web/package.json'));
+const require = createRequire(resolve('apps/web/package.json'));
 const { chromium } = require('playwright');
 const [url, audio, folder] = process.argv.slice(2);
 const browser = await chromium.launch({

@@ -14,7 +14,7 @@ build/
 AGENTS.md
 /.idea/
 /.codegraph/
-/web/node_modules/
+/apps/web/node_modules/
 /apps/server/static/
 
 # 本机启动配置包含设备与绝对路径，不进入版本库。
