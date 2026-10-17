@@ -8,13 +8,12 @@ from pathlib import Path
 
 from realtime_asr.errors import ASRError
 from realtime_asr.runtime.models.manifest import WHISPER_FILES, verify_manifest
-from realtime_asr.runtime.models.pinned import DETECTION_MODELS, WHISPER_MODEL, nemotron_model
+from realtime_asr.runtime.models.pinned import DETECTION_MODELS, WHISPER_MODEL
 from realtime_asr.runtime.models.prepare import prepare_model
 from realtime_asr.runtime.native.gpu import CUDNN_VERSION, prepare_cudnn, verify_runtime
 
 KINDS = {
     "whisper": "whisper",
-    "nemotron": "nemotron",
     "vad": "silero-vad",
     "openwakeword": "openwakeword",
 }
@@ -30,7 +29,6 @@ def parser(gpu):
     prepare.add_argument("--download", action="store_true")
     if not gpu:
         prepare.add_argument("--kind", choices=tuple(KINDS), required=True)
-        prepare.add_argument("--variant", choices=("560ms", "1120ms", "80ms"))
         prepare.add_argument("--local-snapshot", type=Path)
         prepare.add_argument("--local-source", type=Path)
     verify = actions.add_parser("verify", help="只检查文件与清单")
@@ -45,13 +43,6 @@ def model_catalog():
             "backend": "whisper",
             **WHISPER_MODEL,
             "files": list(WHISPER_FILES),
-            "download_extra": "models",
-        },
-        "nemotron": {
-            "backend": "nemotron",
-            "variants": {
-                variant: nemotron_model(variant)["id"] for variant in ("560ms", "1120ms", "80ms")
-            },
             "download_extra": "models",
         },
     }
@@ -106,7 +97,6 @@ def main(argv=None, *, gpu=False, stdout=None):
                     KINDS[args.kind],
                     args.path,
                     allow_download=args.download,
-                    variant=args.variant,
                     local_snapshot=args.local_snapshot,
                     local_source=args.local_source,
                 )

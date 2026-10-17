@@ -8,10 +8,11 @@ from itertools import chain
 from threading import Event, Thread
 from time import monotonic
 
-from apps.cli.args import candidate_role, parse_args, realtime_roles, wake_role
 from apps.cli.candidates import CandidateTicker
 from apps.cli.input import stdin_blocks
+from apps.cli.options import candidate_role, realtime_roles, wake_role
 from apps.cli.output import Output
+from apps.cli.parser import parse_args
 from realtime_asr import (
     ASRError,
     ASRRuntime,
@@ -252,11 +253,11 @@ def main(argv=None, *, stdin=None, stdout=None, stderr=None):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
     argv = list(sys.argv[1:] if argv is None else argv)
-    from apps.cli.config import forward_config, split_config
+    from apps.cli.settings import forward_config, split_config
 
     selected, argv = split_config(argv)
     if argv and argv[0] == "config":
-        from apps.cli.config import main as configuration
+        from apps.cli.settings import main as configuration
 
         return configuration(argv[1:], path=selected, stdout=stdout, stderr=stderr)
     if argv and argv[0] in ("models", "gpu-runtime"):
@@ -298,7 +299,7 @@ def _execute(args, stdin, output):
             return 0
         config = RecognizerConfig(
             model=args.model,
-            engine=args.backend,
+            engine=args.engine,
             device=args.device,
             device_index=args.device_index,
             cudnn_folder=args.cudnn_folder,

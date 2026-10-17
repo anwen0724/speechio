@@ -1,4 +1,4 @@
-"""启动配置边界：读取 TOML、解释相对路径并交给既有参数解析器校验。"""
+"""启动配置边界：读取 TOML、解释相对路径并生成配置模板。"""
 
 import argparse
 import importlib.util
@@ -8,134 +8,36 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from apps.cli.options import (
+    LOCAL,
+    OPTIONS,
+    SECTION_COMMENTS,
+    TARGETS,
+    candidate_role,
+    realtime_roles,
+    wake_role,
+)
 from realtime_asr import ASRError
 
-LOCAL = ("mic", "file", "stdin")
-TARGETS = (*LOCAL, "devices")
+SCALARS = {
+    "str": str,
+    "int": int,
+    "float": float,
+    "bool": bool,
+    "model": str,
+    "path": str,
+}
 
-# 字段只定义映射、类型和适用入口；具体默认值与取值校验继续由原解析器负责。
-FIELDS = {
-    "model": {
-        "backend": ("backend", str),
-        "model_path": ("model", Path),
-        "device": ("device", str),
-        "device_index": ("device_index", int),
-    },
-    "gpu": {
-        "cudnn_folder": ("cudnn_folder", Path),
-        "cuda_directory": ("cuda_directory", Path),
-    },
-    "recognition": {
-        "language": ("language", str),
-        "mode": ("mode", str),
-        "word_timestamps": ("word_timestamps", bool),
-    },
-    "microphone": {
-        "device_index": ("input_device", int),
-        "sample_rate": ("sample_rate", int),
-        "channels": ("channels", int),
-        "chunk_frames": ("chunk_frames", int),
-        "queue_seconds": ("queue_seconds", float),
-        "duration": ("duration", float),
-    },
-    "input": {
-        "sample_rate": ("sample_rate", int),
-        "channels": ("channels", int),
-        "sample_type": ("sample_type", str),
-    },
-    "realtime": {
-        "enabled": ("realtime", bool),
-        "model_path": ("realtime_model", Path),
-        "backend": ("realtime_backend", str),
-        "device": ("realtime_device", str),
-        "interval": ("realtime_interval", float),
-        "initial_delay": ("realtime_initial_delay", float),
-        "stable_text": ("stable_text", bool),
-        "dual_realtime": ("dual_realtime", bool),
-        "acoustic_boundaries": ("acoustic_boundaries", bool),
-    },
-    "ultrafast": {
-        "model_path": ("ultrafast_model", Path),
-        "backend": ("ultrafast_backend", str),
-        "device": ("ultrafast_device", str),
-    },
-    "vad": {
-        "model_path": ("vad_model", Path),
-        "webrtc_mode": ("webrtc_mode", int),
-        "silero_sensitivity": ("silero_sensitivity", float),
-        "silero_end_detection": ("silero_end_detection", bool),
-    },
-    "segmentation": {
-        "silence_confirmation": ("silence_confirmation", float),
-        "post_speech_silence": ("post_speech_silence", float),
-        "min_recording_duration": ("min_recording_duration", float),
-        "min_gap": ("min_gap", float),
-        "pre_roll_duration": ("pre_roll_duration", float),
-        "trim_pre_roll": ("trim_pre_roll", bool),
-        "backdate_duration": ("backdate_seconds", float),
-    },
-    "endpoint": {
-        "early_transcription_silence": ("early_transcription_silence", float),
-        "dynamic_silence": ("dynamic_silence", bool),
-        "punctuation_split": ("punctuation_split", bool),
-    },
-    "candidate": {
-        "enabled": ("candidates", bool),
-        "model_path": ("candidate_model", Path),
-        "backend": ("candidate_backend", str),
-        "device": ("candidate_device", str),
-        "only": ("candidate_only", bool),
-        "kind": ("candidate_kind", str),
-        "every": ("candidate_every", float),
-        "hint": ("candidate_hint", bool),
-        "completion_mode": ("completion_mode", str),
-        "retain_for_correction": ("retain_for_correction", bool),
-        "correct_after_final": ("correct_after_final", bool),
-    },
-    "wake": {
-        "enabled": ("wake", bool),
-        "backend": ("wake_backend", str),
-        "keywords": ("wake_keywords", list),
-        "model_paths": ("wake_models", list),
-        "model_path": ("wake_parameter_model", Path),
-        "feature_model_dir": ("wake_feature_dir", Path),
-        "sensitivity": ("wake_sensitivity", float),
-        "activation_delay": ("wake_activation_delay", float),
-        "speech_timeout": ("wake_speech_timeout", float),
-        "trim_duration": ("wake_trim_duration", float),
-        "followup_window": ("wake_followup_window", float),
-    },
-    "output": {"format": ("output", str)},
-    "limits": {
-        "max_audio_seconds": ("max_audio_seconds", float),
-        "drain_timeout": ("drain_timeout", float),
-        "close_timeout": ("close_timeout", float),
-    },
-}
-SCOPES = {
-    "model": LOCAL,
-    "gpu": LOCAL,
-    "recognition": LOCAL,
-    "microphone": ("mic", "devices"),
-    "input": ("stdin",),
-    "realtime": LOCAL,
-    "ultrafast": LOCAL,
-    "vad": LOCAL,
-    "segmentation": LOCAL,
-    "endpoint": LOCAL,
-    "candidate": LOCAL,
-    "wake": LOCAL,
-    "output": TARGETS,
-    "limits": LOCAL,
-}
-# 只有麦克风命令独有的字段需要从可选目标里再收窄。
-OVERRIDES = {
-    ("microphone", "device_index"): ("mic",),
-    ("microphone", "sample_rate"): ("mic",),
-    ("microphone", "chunk_frames"): ("mic",),
-    ("microphone", "queue_seconds"): ("mic",),
-    ("microphone", "duration"): ("mic",),
-}
+
+def _grouped():
+    """按声明顺序返回配置分组；模板和读取共用同一份分组。"""
+    result = {}
+    for option in OPTIONS:
+        result.setdefault(option.section, []).append(option)
+    return result
+
+
+SECTIONS = _grouped()
 
 
 def split_config(argv):
@@ -173,7 +75,7 @@ class ConfigArguments:
 
 
 def configure(argv, target):
-    """配置转为既有命令参数；显式参数整项覆盖，最终仍使用原参数校验。"""
+    """配置转为命令参数；显式参数整项覆盖，最终仍由解析器校验。"""
     selected, original = split_config(list(argv))
     invocation = ConfigArguments(original)
     if "--help" in original or "-h" in original:
@@ -187,75 +89,139 @@ def configure(argv, target):
     path = (selected or Path("config.toml")).resolve()
     if not path.exists() and selected is None:
         return invocation
+    data = _load(path)
+    invocation.path = path
+    configured = []
+    for section, values in data.items():
+        options = SECTIONS.get(section)
+        if options is None or not isinstance(values, dict):
+            raise ASRError("INVALID_CONFIGURATION", "load_config", f"未知配置分组：{section}")
+        names = {option.config_key: option for option in options}
+        for key, value in values.items():
+            option = names.get(key)
+            if option is None:
+                raise ASRError(
+                    "INVALID_CONFIGURATION", "load_config", f"未知配置字段：{section}.{key}"
+                )
+            _check(option, section, key, value)
+            if target not in option.commands or option.dest in invocation.explicit:
+                continue
+            _extend(configured, invocation, option, value, path)
+    _drop_unused_gpu_paths(configured, invocation, data, original, target)
+    invocation.argv = [*original, *configured]
+    return invocation
+
+
+def _load(path):
     try:
         with path.open("rb") as source:
-            data = tomllib.load(source)
+            return tomllib.load(source)
     except (OSError, ValueError) as exc:
         raise ASRError(
             "INVALID_CONFIGURATION", "load_config", f"无法读取配置 {path}：{exc}"
         ) from exc
-    invocation.path = path
-    explicit = invocation.explicit
-    configured = []
-    for section, values in data.items():
-        if section not in FIELDS or not isinstance(values, dict):
-            raise ASRError("INVALID_CONFIGURATION", "load_config", f"未知配置分组：{section}")
-        for key, value in values.items():
-            if key not in FIELDS[section]:
-                raise ASRError(
-                    "INVALID_CONFIGURATION", "load_config", f"未知配置字段：{section}.{key}"
-                )
-            option, kind = FIELDS[section][key]
-            expected = str if kind is Path else kind
-            valid = type(value) is expected or (kind is float and type(value) is int)
-            if kind is list:
-                valid = valid and all(isinstance(item, str) and item for item in value)
-            if not valid:
-                raise ASRError(
-                    "INVALID_CONFIGURATION", "load_config", f"配置类型无效：{section}.{key}"
-                )
-            if target not in OVERRIDES.get((section, key), SCOPES[section]) or option in explicit:
-                continue
-            if kind is Path:
-                value = str((path.parent / value).resolve())
-            elif option == "wake_models":
-                value = [str((path.parent / item).resolve()) for item in value]
-            flag = "--" + option.replace("_", "-")
-            if kind is bool:
-                arguments = [flag if value else "--no-" + option.replace("_", "-")]
-            elif kind is list:
-                if not value:
-                    continue
-                arguments = (
-                    [part for item in value for part in (flag, item)]
-                    if option == "allowed_origin"
-                    else [flag, *value]
-                )
-            else:
-                arguments = [flag, str(value)]
-            configured.extend(arguments)
-            invocation.sources[option] = f"config:{section}.{key}"
-    # CPU 模式忽略文件中的 GPU 路径；命令行显式不兼容参数仍由原契约拒绝。
+
+
+def _check(option, section, key, value):
+    """配置值只核对类型；取值范围由同一选项声明在解析时校验。"""
+    kind = option.kind
+    if kind == "float":
+        valid = type(value) in (int, float)
+    elif kind == "int":
+        valid = type(value) is int
+    elif kind in ("strlist", "pathlist"):
+        valid = isinstance(value, list) and all(isinstance(item, str) and item for item in value)
+    else:
+        valid = type(value) is SCALARS[kind]
+    if not valid:
+        raise ASRError("INVALID_CONFIGURATION", "load_config", f"配置类型无效：{section}.{key}")
+
+
+def _extend(configured, invocation, option, value, path):
+    flag = option.config_flag
+    if option.kind == "bool":
+        configured.append(flag if value else "--no-" + option.flag)
+    elif option.kind == "strlist":
+        if not value:
+            return
+        configured.extend([flag, *value])
+    elif option.kind == "pathlist":
+        if not value:
+            return
+        configured.extend([flag, *(str((path.parent / item).resolve()) for item in value)])
+    elif option.kind == "path":
+        configured.extend([flag, str((path.parent / value).resolve())])
+    elif option.kind == "model":
+        configured.extend([flag, _model_value(path.parent, value)])
+    else:
+        configured.extend([flag, str(value)])
+    invocation.sources[option.dest] = f"config:{option.section}.{option.config_key}"
+
+
+def _model_value(base, value):
+    """模型名保持原样，看起来是路径的值按配置文件目录解析。"""
+    if Path(value).is_absolute() or value.startswith(".") or "/" in value or "\\" in value:
+        return str((base / value).resolve())
+    return value
+
+
+def _drop_unused_gpu_paths(configured, invocation, data, original, target):
+    """CPU 模式忽略配置中的 GPU 路径；命令行显式参数仍由原有检查处理。"""
     device = data.get("model", {}).get("device", "cpu")
     for index, token in enumerate(original):
         if token == "--device" and index + 1 < len(original):
             device = original[index + 1]
         elif token.startswith("--device="):
             device = token.partition("=")[2]
-    if target in LOCAL and device != "cuda":
-        for option in ("cudnn_folder", "cuda_directory"):
-            if option in invocation.sources:
-                flag = "--" + option.replace("_", "-")
-                index = configured.index(flag)
-                del configured[index : index + 2]
-                del invocation.sources[option]
-    invocation.argv = [*original, *configured]
-    return invocation
+    if target not in LOCAL or device == "cuda":
+        return
+    for dest in ("cudnn_folder", "cuda_directory"):
+        if dest not in invocation.sources:
+            continue
+        flag = "--" + dest.replace("_", "-")
+        index = configured.index(flag)
+        del configured[index : index + 2]
+        del invocation.sources[dest]
+
+
+def template():
+    """按选项声明生成配置模板；示例值只作提示。"""
+    lines = [
+        "# 本机启动配置。修改后重新启动命令生效。",
+        "# 本文件由 asr config init 生成；相对路径以本文件目录为基准。",
+        "# 命令行参数只覆盖当次运行。",
+        "",
+    ]
+    for section, options in SECTIONS.items():
+        lines.append("# " + SECTION_COMMENTS.get(section, section))
+        lines.append(f"[{section}]")
+        for option in options:
+            comment = f"  # {option.comment}" if option.comment else ""
+            if option.default is not None:
+                lines.append(f"{option.config_key} = {_toml(option.default)}{comment}")
+            elif option.sample is not None and option.active_sample:
+                lines.append(f"{option.config_key} = {option.sample}{comment}")
+            elif option.sample is not None:
+                lines.append(f"# {option.config_key} = {option.sample}{comment}")
+            else:
+                lines.append(f"# {option.config_key} = <值>{comment}")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _toml(value):
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return repr(value)
+    if isinstance(value, (list, tuple)):
+        return "[" + ", ".join(_toml(item) for item in value) + "]"
+    return json.dumps(str(value), ensure_ascii=False)
 
 
 def parse_target(target, argv):
     """管理命令复用实际启动解析，不维护第二套默认值或功能规则。"""
-    from apps.cli.args import parse_args
+    from apps.cli.parser import parse_args
 
     return parse_args([target, *argv], diagnostic=True)
 
@@ -267,14 +233,12 @@ def check_paths(args, target):
 
     model = RecognizerConfig(
         model=args.model,
-        engine=args.backend,
+        engine=args.engine,
         device=args.device,
         device_index=args.device_index,
         cudnn_folder=args.cudnn_folder,
         cuda_directory=args.cuda_directory,
     )
-    from apps.cli.args import candidate_role, realtime_roles, wake_role
-
     resolve_config(model)
     realtime, ultrafast = realtime_roles(args, model)
     candidate = candidate_role(args, model)
@@ -359,9 +323,7 @@ def main(argv, *, path=None, stdout=None, stderr=None):
                 parser.error("init 不接收识别参数")
             destination = (path or Path("config.toml")).resolve()
             with destination.open("x", encoding="utf-8") as target:
-                target.write(
-                    Path(__file__).with_name("config.example.toml").read_text(encoding="utf-8")
-                )
+                target.write(template())
             output.write(
                 json.dumps(
                     {"status": "created", "config_file": str(destination)}, ensure_ascii=False

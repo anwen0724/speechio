@@ -80,9 +80,7 @@ class ResourceCommandTests(unittest.TestCase):
             )
             output = io.StringIO()
             self.assertEqual(
-                main(
-                    ["models", "prepare", "--kind", "nemotron", "--path", str(root)], stdout=output
-                ),
+                main(["models", "prepare", "--kind", "vad", "--path", str(root)], stdout=output),
                 1,
             )
             self.assertEqual(json.loads(output.getvalue())["code"], "MODEL_INTEGRITY")

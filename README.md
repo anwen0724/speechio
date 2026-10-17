@@ -23,7 +23,7 @@ python -m apps.cli mic
 
 配置中的相对路径以配置文件目录为准，待转写文件路径和命令行路径仍以调用目录为准。临时参数优先于配置且不会改写文件，例如 `python -m apps.cli file recording.wav --device cuda`。布尔开关支持 --no-*，如 `python -m apps.cli mic --no-realtime`。其他目录使用 `python -m apps.cli --config C:/all/work/practice/realtime-asr/config.toml mic`。
 
-完整字段与适用入口见[配置模板](apps/cli/config.example.toml)。本机 config.toml 不提交 Git；密钥使用环境变量。config check 不加载模型或占用设备，成功不代表实际推理或识别质量验收通过。正文默认仍不自动保存，命令行可重定向最终输出。
+完整字段与注释由 `python -m apps.cli config init` 生成到当前目录的 `config.toml`；已有文件不会被覆盖。本机 config.toml 不提交 Git；密钥使用环境变量。config check 不加载模型或占用设备，成功不代表实际推理或识别质量验收通过。正文默认仍不自动保存，命令行可重定向最终输出。
 
 ## 代码结构
 
@@ -67,9 +67,9 @@ src/realtime_asr/              # 库：只包含核心能力
     └── native/                # GPU 资源与原生运行库加载
 
 apps/cli/                      # 本地命令行工具，不随库发布
-├── config.py                  # TOML、路径、覆盖、来源与配置管理
-├── config.example.toml        # 中文配置模板
-├── args.py                    # 命令与参数
+├── options.py                 # 选项与命令声明，argparse、配置和模板的唯一来源
+├── parser.py                  # 由声明生成 argparse 与跨参数校验
+├── settings.py                # config.toml 读取、来源标注与模板生成
 ├── candidates.py              # 候选请求时钟
 ├── input.py                   # raw stdin 与可停止管道读取
 ├── output.py                  # 文本与 JSONL 出口
@@ -171,7 +171,7 @@ with ASRRuntime(
 本地 CLI 的实际参数：
 
 ```powershell
-python -m apps.cli stdin --model models/nemotron-1120ms --backend nemotron --ultrafast-model models/nemotron-80ms --realtime --dual-realtime --output jsonl
+python -m apps.cli stdin --model models/nemotron-1120ms --engine nemotron --ultrafast-model models/nemotron-80ms --realtime --dual-realtime --output jsonl
 ```
 
 独立准确模型使用 `--realtime-model`。两路 backend 和 device 可独立指定，缺省沿用最终配置。
@@ -318,7 +318,7 @@ uv run --no-sync python -m evals.p1
 ```python
 from realtime_asr import ASRRuntime, RecognizerConfig, SessionConfig
 
-with ASRRuntime(RecognizerConfig(model_path="models/whisper-tiny")) as runtime:
+with ASRRuntime(RecognizerConfig(model="models/whisper-tiny")) as runtime:
     session = runtime.create_session(SessionConfig(language="zh"))
     for pcm in (first_pcm, second_pcm):  # 示例：两个完整 PCM16 音频单元
         session.start()
@@ -354,7 +354,7 @@ uv run --no-sync python -m evals.p2
 from realtime_asr import ASRRuntime, RealtimeConfig, RecognizerConfig, SessionConfig
 
 with ASRRuntime(
-    RecognizerConfig(model_path="models/whisper-tiny"),
+    RecognizerConfig(model="models/whisper-tiny"),
     realtime=RealtimeConfig(),
 ) as runtime:
     session = runtime.create_session(SessionConfig(realtime=True, language="zh"))
@@ -394,7 +394,7 @@ uv run --no-sync python -m evals.p3
 ```python
 from realtime_asr import ASRRuntime, RecognizerConfig, SessionConfig, VadConfig
 
-with ASRRuntime(RecognizerConfig(model_path=".runtime/models/whisper-tiny")) as runtime:
+with ASRRuntime(RecognizerConfig(model=".runtime/models/whisper-tiny")) as runtime:
     session = runtime.create_auto_session(
         vad=VadConfig(model_path=".runtime/models/vad/silero-v6.onnx"),
         config=SessionConfig(language="zh-CN"),
@@ -574,6 +574,6 @@ uv run --no-sync python -m apps.cli models verify --path .runtime/models/whisper
 uv run --no-sync python -m apps.cli gpu-runtime verify --path .runtime/cudnn/9.16.0.29
 ```
 
-模型工具支持 Whisper tiny、Nemotron 的 560ms／1120ms／80ms、固定 Silero v6 和 OpenWakeWord Alexa ONNX 资源。Porcupine 自定义文件和 AccessKey 由使用者提供。下载必须明确 --download；损坏或冲突文件不会被重写为成功缓存。
+模型工具支持 Whisper tiny、固定 Silero v6 和 OpenWakeWord Alexa ONNX 资源；Nemotron 固定权重统一使用 `asr-install-sherpa-models`。Porcupine 自定义文件和 AccessKey 由使用者提供。下载必须明确 --download；损坏或冲突文件不会被重写为成功缓存。
 
 本次在四种新建 Windows 环境及项目外完成实际 CPU／GPU、CLI 和保存示例验证。支持仅限实测组合；正式语料评分、人工设备、Porcupine 正向及双实时收益没有被这些结果代替。

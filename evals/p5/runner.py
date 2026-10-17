@@ -30,7 +30,7 @@ def run(project, folder):
         options = [
             "--model",
             str(config.model),
-            "--backend",
+            "--engine",
             config.engine,
             "--device",
             config.device,
@@ -133,7 +133,7 @@ def run(project, folder):
             "mic",
             "--model",
             str(native.model),
-            "--backend",
+            "--engine",
             "nemotron",
             "--mode",
             "manual",
