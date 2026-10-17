@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from realtime_asr import (
+from speechio import (
     ASRError,
     AudioFormat,
     ModelConfig,
@@ -15,9 +15,9 @@ from realtime_asr import (
     RuntimeLimits,
     SessionConfig,
 )
-from realtime_asr.runtime.asr import ASRRuntime
-from realtime_asr.runtime.models.manifest import create_manifest
-from realtime_asr.runtime.models.pinned import NEMOTRON_FILES
+from speechio.runtime.asr import ASRRuntime
+from speechio.runtime.models.manifest import create_manifest
+from speechio.runtime.models.pinned import NEMOTRON_FILES
 from tests.engines.test_stream import RuntimeRecognizer, RuntimeStream
 from tests.runtime import test_transcriber
 
@@ -27,7 +27,7 @@ class RealtimeTests(unittest.TestCase):
         test_transcriber.RecognizerTests.setUp(self)
 
     def test_acoustic_followup_observes_same_audio_without_stabilizing_duplicate_evidence(self):
-        from realtime_asr import StabilizationConfig
+        from speechio import StabilizationConfig
 
         voice = np.sin(2 * np.pi * 180 * np.arange(3200) / 16000)
         audio = (
@@ -298,7 +298,7 @@ class RealtimeTests(unittest.TestCase):
         clock = [0.0]
         native = (iter([]), SimpleNamespace(language=None, language_probability=None))
         with (
-            patch("realtime_asr.runtime.realtime.monotonic", side_effect=lambda: clock[0]),
+            patch("speechio.runtime.realtime.monotonic", side_effect=lambda: clock[0]),
             patch(
                 "faster_whisper.BatchedInferencePipeline.transcribe",
                 side_effect=lambda *a, **k: (iter([]), native[1]),

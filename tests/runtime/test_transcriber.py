@@ -11,8 +11,8 @@ from unittest.mock import patch
 import numpy as np
 import soundfile as sf
 
-from realtime_asr import ASRError, AudioFormat, ModelConfig, Transcriber
-from realtime_asr.runtime.models.manifest import create_manifest
+from speechio import ASRError, AudioFormat, ModelConfig, Transcriber
+from speechio.runtime.models.manifest import create_manifest
 
 
 class RecognizerTests(unittest.TestCase):
@@ -196,7 +196,7 @@ class RecognizerTests(unittest.TestCase):
 
 class LocalConfigTests(unittest.TestCase):
     def test_compute_type_and_device_follow_the_caller(self):
-        from realtime_asr.engines.local import resolve_config
+        from speechio.engines.local import resolve_config
 
         self.assertEqual(resolve_config(ModelConfig(model="tiny")).compute_type, "default")
         resolved = resolve_config(

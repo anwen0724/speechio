@@ -9,7 +9,7 @@ from pathlib import Path
 from apps.cli.options import COMMANDS, LOCAL, OPTIONS
 from apps.cli.parser import _options_for, parse_args
 from apps.cli.settings import configure, main, template
-from realtime_asr import ASRError
+from speechio import ASRError
 
 
 def _template_keys(text):

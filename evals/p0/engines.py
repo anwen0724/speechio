@@ -8,7 +8,7 @@ from uuid import uuid4
 from evals.p0.diagnostics.native_libraries import loaded_libraries
 from evals.p0.diagnostics.resources import ResourceSampler
 from evals.p0.execution import execute_trial
-from realtime_asr.errors import ASRError, error_record
+from speechio.errors import ASRError, error_record
 
 
 class EnginePool:
@@ -24,15 +24,15 @@ class EnginePool:
 
     def _create(self, backend):
         """只在显式加载阶段导入后端；设备由声明决定。"""
-        from realtime_asr import ModelConfig
+        from speechio import ModelConfig
 
         if backend == "nemotron":
-            from realtime_asr.engines.nemotron import NemotronEngine
+            from speechio.engines.nemotron import NemotronEngine
 
             return NemotronEngine(
                 ModelConfig(model=self.root / "models/nemotron", engine="nemotron")
             )
-        from realtime_asr.engines.whisper import WhisperEngine
+        from speechio.engines.whisper import WhisperEngine
 
         return WhisperEngine(
             ModelConfig(

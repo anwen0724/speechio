@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from realtime_asr import (
+from speechio import (
     EndpointConfig,
     ModelConfig,
     RealtimeConfig,
@@ -16,7 +16,7 @@ from realtime_asr import (
     SessionConfig,
     StabilizationConfig,
 )
-from realtime_asr.runtime.asr import ASRRuntime
+from speechio.runtime.asr import ASRRuntime
 from tests.session import test_automatic
 
 
@@ -85,7 +85,7 @@ class EndpointTests(unittest.TestCase):
     def test_running_early_task_retains_capacity_until_return_and_cannot_replace_resumed_audio(
         self,
     ):
-        from realtime_asr import RuntimeLimits
+        from speechio import RuntimeLimits
 
         entered, release = Event(), Event()
         self.addCleanup(release.set)

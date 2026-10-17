@@ -2,7 +2,7 @@
 
 import unittest
 
-from realtime_asr.text.tail_repair import repair_tail
+from speechio.text.tail_repair import repair_tail
 
 
 class TailRepairTests(unittest.TestCase):

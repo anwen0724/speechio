@@ -23,13 +23,13 @@ def main():
     subprocess.run([uv, "build", "--wheel"], cwd=project, env=env, check=True)
     expected = {
         path.relative_to(project / "src").as_posix(): path.read_bytes()
-        for path in (project / "src/realtime_asr").rglob("*")
+        for path in (project / "src/speechio").rglob("*")
         if path.is_file() and "__pycache__" not in path.parts
     }
-    wheels = list((project / "dist").glob("realtime_asr-*.whl"))
+    wheels = list((project / "dist").glob("speechio-*.whl"))
     wheel = max(wheels, key=lambda path: path.stat().st_mtime)
     with zipfile.ZipFile(wheel) as package:
-        names = {name for name in package.namelist() if name.startswith("realtime_asr/")}
+        names = {name for name in package.namelist() if name.startswith("speechio/")}
         if names != set(expected):
             raise RuntimeError(
                 f"wheel 成员与当前包不一致：{sorted(names.symmetric_difference(expected))}"

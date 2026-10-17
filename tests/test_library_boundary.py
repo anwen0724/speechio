@@ -4,7 +4,7 @@ import ast
 import unittest
 from pathlib import Path
 
-LIBRARY = Path(__file__).resolve().parents[1] / "src" / "realtime_asr"
+LIBRARY = Path(__file__).resolve().parents[1] / "src" / "speechio"
 
 
 class LibraryBoundaryTests(unittest.TestCase):

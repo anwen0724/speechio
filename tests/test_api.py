@@ -6,8 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import realtime_asr
-from realtime_asr import (
+import speechio
+from speechio import (
     ASRError,
     AudioFormat,
     CloseResult,
@@ -16,7 +16,7 @@ from realtime_asr import (
     transcribe_audio,
     transcribe_stream,
 )
-from realtime_asr.bundled import default_vad_model
+from speechio.bundled import default_vad_model
 
 
 class RecordingTranscriber:
@@ -114,7 +114,7 @@ def event(kind, text="", error=None):
 class EntryTests(unittest.TestCase):
     def test_audio_entry_dispatches_by_input_type(self):
         RecordingTranscriber.calls = []
-        with patch("realtime_asr.api.Transcriber", RecordingTranscriber):
+        with patch("speechio.api.Transcriber", RecordingTranscriber):
             self.assertEqual(transcribe_audio("a.wav").text, "file")
             self.assertEqual(transcribe_audio(b"\x00\x00").text, "audio")
             self.assertEqual(transcribe_audio([b"\x00\x00"]).text, "chunks")
@@ -124,16 +124,16 @@ class EntryTests(unittest.TestCase):
 
     def test_entry_names_are_public_and_runtime_is_not(self):
         for name in ("transcribe_audio", "transcribe_stream", "Transcriber", "StreamTranscriber"):
-            self.assertIn(name, realtime_asr.__all__)
-        self.assertNotIn("ASRRuntime", realtime_asr.__all__)
-        self.assertFalse(hasattr(realtime_asr, "ASRRuntime"))
+            self.assertIn(name, speechio.__all__)
+        self.assertNotIn("ASRRuntime", speechio.__all__)
+        self.assertFalse(hasattr(speechio, "ASRRuntime"))
 
     def test_stream_uses_bundled_vad_model_by_default(self):
         session = FakeSession([event("final", "hello")])
         runtime = FakeRuntime(session)
         with (
-            patch("realtime_asr.api.ASRRuntime", lambda *args, **kwargs: runtime),
-            patch("realtime_asr.api.MicrophoneInput", FakeMicrophone),
+            patch("speechio.api.ASRRuntime", lambda *args, **kwargs: runtime),
+            patch("speechio.api.MicrophoneInput", FakeMicrophone),
         ):
             for _ in transcribe_stream(model="tiny"):
                 break
@@ -146,8 +146,8 @@ class EntryTests(unittest.TestCase):
             session = FakeSession([event("final", "hello")])
             runtime = FakeRuntime(session)
             with (
-                patch("realtime_asr.api.ASRRuntime", lambda *args, **kwargs: runtime),
-                patch("realtime_asr.api.MicrophoneInput", FakeMicrophone),
+                patch("speechio.api.ASRRuntime", lambda *args, **kwargs: runtime),
+                patch("speechio.api.MicrophoneInput", FakeMicrophone),
             ):
                 for _ in transcribe_stream(model="tiny", vad_model=custom):
                     break
@@ -168,8 +168,8 @@ class EntryTests(unittest.TestCase):
         runtime = FakeRuntime(session)
         partials = []
         with (
-            patch("realtime_asr.api.ASRRuntime", lambda *args, **kwargs: runtime),
-            patch("realtime_asr.api.MicrophoneInput", FakeMicrophone),
+            patch("speechio.api.ASRRuntime", lambda *args, **kwargs: runtime),
+            patch("speechio.api.MicrophoneInput", FakeMicrophone),
         ):
             for transcript in transcribe_stream(model="tiny", on_partial=partials.append):
                 self.assertEqual(transcript.text, "hello")
@@ -182,8 +182,8 @@ class EntryTests(unittest.TestCase):
         session = FakeSession([event("failed", error=error)])
         runtime = FakeRuntime(session)
         with (
-            patch("realtime_asr.api.ASRRuntime", lambda *args, **kwargs: runtime),
-            patch("realtime_asr.api.MicrophoneInput", FakeMicrophone),
+            patch("speechio.api.ASRRuntime", lambda *args, **kwargs: runtime),
+            patch("speechio.api.MicrophoneInput", FakeMicrophone),
         ):
             with self.assertRaises(ASRError) as caught:
                 for _ in transcribe_stream(model="tiny"):

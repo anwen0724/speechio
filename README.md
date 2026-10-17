@@ -1,4 +1,4 @@
-# realtime-asr
+# speechio
 
 [中文](README.zh-CN.md)
 
@@ -19,7 +19,7 @@ Local speech-to-text for Python. Transcribe audio files or stream from a microph
 ## Install
 
 ```bash
-pip install realtime-asr
+pip install speechio
 ```
 
 Live transcription works without a separate model download; the Silero VAD model ships with the package.
@@ -28,7 +28,7 @@ On Linux, install PortAudio first:
 
 ```bash
 sudo apt install portaudio19-dev
-pip install realtime-asr
+pip install speechio
 ```
 
 ### Optional: Nemotron
@@ -36,7 +36,7 @@ pip install realtime-asr
 Nemotron adds native streaming. Install the runtime, then download a model:
 
 ```bash
-pip install "realtime-asr[nemotron]"
+pip install "speechio[nemotron]"
 asr-install-sherpa-models --root /models/sherpa-onnx --model 560ms
 ```
 
@@ -47,7 +47,7 @@ Available model variants are `80ms`, `560ms`, and `1120ms`. Omit `--model` to in
 Transcribe a file:
 
 ```python
-from realtime_asr import transcribe_audio
+from speechio import transcribe_audio
 
 result = transcribe_audio("speech.wav", model="tiny", language="en")
 print(result.text)
@@ -60,7 +60,7 @@ print(result.text)
 Live microphone input:
 
 ```python
-from realtime_asr import transcribe_stream
+from speechio import transcribe_stream
 
 for transcript in transcribe_stream(model="tiny", on_partial=print):
     print(transcript.text)
@@ -72,7 +72,7 @@ for transcript in transcribe_stream(model="tiny", on_partial=print):
 List input devices and pick one:
 
 ```python
-from realtime_asr import list_input_devices, transcribe_stream
+from speechio import list_input_devices, transcribe_stream
 
 for device in list_input_devices():
     print(device.index, device.name, "default" if device.is_default else "")
@@ -88,7 +88,7 @@ Whisper uses snapshot mode by default. It re-transcribes the audio received so f
 Nemotron uses native streaming. Text grows as audio arrives, with lower latency.
 
 ```python
-from realtime_asr import StreamTranscriber
+from speechio import StreamTranscriber
 
 with StreamTranscriber(
     model="/models/sherpa-onnx/sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11",

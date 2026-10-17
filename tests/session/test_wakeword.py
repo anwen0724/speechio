@@ -5,9 +5,9 @@ from threading import Event, Thread
 
 import numpy as np
 
-import realtime_asr as sdk
-from realtime_asr.runtime.asr import ASRRuntime
-from realtime_asr.segmentation.vad import VoiceActivity
+import speechio as sdk
+from speechio.runtime.asr import ASRRuntime
+from speechio.segmentation.vad import VoiceActivity
 from tests.runtime.test_engine_injection import RecordingEngine
 
 

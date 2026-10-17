@@ -13,7 +13,7 @@ from apps.cli.input import stdin_blocks
 from apps.cli.options import candidate_role, realtime_roles, wake_role
 from apps.cli.output import Output
 from apps.cli.parser import parse_args
-from realtime_asr import (
+from speechio import (
     ASRError,
     AudioFormat,
     EndpointConfig,
@@ -27,9 +27,9 @@ from realtime_asr import (
     VadConfig,
     list_input_devices,
 )
-from realtime_asr.audio.files import audio_file_chunks
-from realtime_asr.bundled import default_vad_model
-from realtime_asr.runtime.asr import ASRRuntime
+from speechio.audio.files import audio_file_chunks
+from speechio.bundled import default_vad_model
+from speechio.runtime.asr import ASRRuntime
 
 
 class _EventConsumer:

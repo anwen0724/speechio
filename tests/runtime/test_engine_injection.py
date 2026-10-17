@@ -5,14 +5,14 @@ from threading import Event
 
 import numpy as np
 
-from realtime_asr import (
+from speechio import (
     ASRError,
     AudioFormat,
     SessionConfig,
     Transcriber,
     Transcript,
 )
-from realtime_asr.runtime.asr import ASRRuntime
+from speechio.runtime.asr import ASRRuntime
 
 
 class RecordingEngine:
@@ -25,7 +25,7 @@ class RecordingEngine:
 
     @property
     def capabilities(self):
-        from realtime_asr import EngineCapabilities
+        from speechio import EngineCapabilities
 
         return EngineCapabilities(engine="remote-test", device="remote", snapshot=True)
 
@@ -64,7 +64,7 @@ class EngineInjectionTests(unittest.TestCase):
         self.assertEqual(engine.closes, 1)
 
     def test_custom_stream_receives_new_audio_and_drains_each_independent_unit(self):
-        from realtime_asr import RealtimeConfig
+        from speechio import RealtimeConfig
 
         final = RecordingEngine()
         streaming = RecordingStreamingEngine()
@@ -104,7 +104,7 @@ class EngineInjectionTests(unittest.TestCase):
         self.assertEqual((final.closes, streaming.closes), (1, 1))
 
     def test_custom_snapshot_uses_fixed_prefix_then_complete_final_input(self):
-        from realtime_asr import RealtimeConfig
+        from speechio import RealtimeConfig
 
         engine = RecordingEngine()
         runtime = ASRRuntime(engine=engine, realtime=RealtimeConfig(initial_delay=0))
@@ -128,12 +128,12 @@ class EngineInjectionTests(unittest.TestCase):
         np.testing.assert_array_equal(engine.inputs[-1][0], source.astype(np.float32) / 32768)
 
     def test_same_injected_instance_is_shared_and_closed_once(self):
-        from realtime_asr import RealtimeConfig
+        from speechio import RealtimeConfig
 
         class SharedEngine(RecordingStreamingEngine):
             @property
             def capabilities(self):
-                from realtime_asr import EngineCapabilities
+                from speechio import EngineCapabilities
 
                 return EngineCapabilities(engine="shared", streaming=True)
 
@@ -269,7 +269,7 @@ class RecordingStreamingEngine(RecordingEngine):
 
     @property
     def capabilities(self):
-        from realtime_asr import EngineCapabilities
+        from speechio import EngineCapabilities
 
         return EngineCapabilities(engine="remote-stream", transcription=False, streaming=True)
 

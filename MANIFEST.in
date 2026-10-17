@@ -1,6 +1,6 @@
 include README.md pyproject.toml .python-version
 recursive-include src *.py
-recursive-include src/realtime_asr/assets *
+recursive-include src/speechio/assets *
 recursive-include evals *.py *.mjs
 recursive-include tests *.py *.mjs
 recursive-include examples *.py

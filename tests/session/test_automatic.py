@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from realtime_asr import (
+from speechio import (
     ASRError,
     AudioFormat,
     ModelConfig,
@@ -18,8 +18,8 @@ from realtime_asr import (
     SessionConfig,
     VadConfig,
 )
-from realtime_asr.audio.conversion import AudioConverter
-from realtime_asr.runtime.asr import ASRRuntime
+from speechio.audio.conversion import AudioConverter
+from speechio.runtime.asr import ASRRuntime
 from tests.engines.test_stream import RuntimeRecognizer, RuntimeStream
 from tests.runtime import test_realtime, test_transcriber
 

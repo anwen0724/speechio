@@ -4,7 +4,7 @@ from dataclasses import asdict
 from time import perf_counter_ns
 from uuid import uuid4
 
-from realtime_asr.errors import error_record
+from speechio.errors import error_record
 
 
 class Trial:

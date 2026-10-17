@@ -4,8 +4,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from realtime_asr import ModelConfig
-from realtime_asr.runtime.asr import ASRRuntime
+from speechio import ModelConfig
+from speechio.runtime.asr import ASRRuntime
 from tests.runtime import test_transcriber
 
 

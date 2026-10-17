@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from realtime_asr.errors import ASRError
+from speechio.errors import ASRError
 
 
 class CandidateTicker:

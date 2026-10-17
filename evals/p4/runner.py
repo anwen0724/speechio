@@ -9,7 +9,7 @@ from dataclasses import asdict
 import numpy as np
 import psutil
 
-from realtime_asr import (
+from speechio import (
     AudioFormat,
     ModelConfig,
     RealtimeConfig,
@@ -18,7 +18,7 @@ from realtime_asr import (
     Transcriber,
     VadConfig,
 )
-from realtime_asr.runtime.asr import ASRRuntime
+from speechio.runtime.asr import ASRRuntime
 
 
 def read_audio(path):

@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from apps.cli.runner import main
-from realtime_asr.runtime.models.manifest import create_manifest
+from speechio.runtime.models.manifest import create_manifest
 
 
 class ResourceCommandTests(unittest.TestCase):

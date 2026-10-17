@@ -1,4 +1,4 @@
-# realtime-asr
+# speechio
 
 [English](README.md)
 
@@ -19,7 +19,7 @@
 ## 安装
 
 ```bash
-pip install realtime-asr
+pip install speechio
 ```
 
 实时转写不需要单独下载模型；Silero 检测模型随包提供。
@@ -28,7 +28,7 @@ Linux 上先安装 PortAudio：
 
 ```bash
 sudo apt install portaudio19-dev
-pip install realtime-asr
+pip install speechio
 ```
 
 ### 可选：Nemotron
@@ -36,7 +36,7 @@ pip install realtime-asr
 Nemotron 增加原生流式。先装运行程序，再下载模型：
 
 ```bash
-pip install "realtime-asr[nemotron]"
+pip install "speechio[nemotron]"
 asr-install-sherpa-models --root /models/sherpa-onnx --model 560ms
 ```
 
@@ -47,7 +47,7 @@ asr-install-sherpa-models --root /models/sherpa-onnx --model 560ms
 转写文件：
 
 ```python
-from realtime_asr import transcribe_audio
+from speechio import transcribe_audio
 
 result = transcribe_audio("speech.wav", model="tiny", language="zh")
 print(result.text)
@@ -60,7 +60,7 @@ print(result.text)
 麦克风实时输入：
 
 ```python
-from realtime_asr import transcribe_stream
+from speechio import transcribe_stream
 
 for transcript in transcribe_stream(model="tiny", on_partial=print):
     print(transcript.text)
@@ -72,7 +72,7 @@ for transcript in transcribe_stream(model="tiny", on_partial=print):
 列出输入设备并指定：
 
 ```python
-from realtime_asr import list_input_devices, transcribe_stream
+from speechio import list_input_devices, transcribe_stream
 
 for device in list_input_devices():
     print(device.index, device.name, "默认" if device.is_default else "")
@@ -88,7 +88,7 @@ for transcript in transcribe_stream(model="tiny", input_device=1):
 Nemotron 使用原生流式。音频不断进入，文字增量产生，延迟更低。
 
 ```python
-from realtime_asr import StreamTranscriber
+from speechio import StreamTranscriber
 
 with StreamTranscriber(
     model="/models/sherpa-onnx/sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11",

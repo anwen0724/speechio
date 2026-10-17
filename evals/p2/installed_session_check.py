@@ -20,7 +20,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     before = {t.ident for t in threading.enumerate()}
-    import realtime_asr as asr
+    import speechio as asr
 
     optional = ("soundfile", "soxr", "faster_whisper", "sherpa_onnx", "onnxruntime", "pyaudio")
     loaded = [name for name in optional if name in sys.modules]
@@ -38,7 +38,7 @@ def main():
         "installed_module": str(module_path),
         "optional_loaded_by_import": loaded,
         "import_created_threads": False,
-        "versions": {p: importlib.metadata.version(p) for p in ("numpy", "realtime-asr")},
+        "versions": {p: importlib.metadata.version(p) for p in ("numpy", "speechio")},
     }
     runtime = asr.ASRRuntime(asr.ModelConfig(model=args.model))
     if {t.ident for t in threading.enumerate()} != before:

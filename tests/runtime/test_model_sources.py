@@ -6,9 +6,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from realtime_asr import ASRError, ModelConfig, Transcriber
-from realtime_asr.engines.whisper import WhisperEngine
-from realtime_asr.runtime.models.manifest import create_manifest
+from speechio import ASRError, ModelConfig, Transcriber
+from speechio.engines.whisper import WhisperEngine
+from speechio.runtime.models.manifest import create_manifest
 
 
 class ModelSourceTests(unittest.TestCase):

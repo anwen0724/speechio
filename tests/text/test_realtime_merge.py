@@ -2,9 +2,9 @@
 
 import unittest
 
-import realtime_asr as sdk
-from realtime_asr.text.realtime_merge import RealtimeMerger
-from realtime_asr.text.stabilizer import TextObservation
+import speechio as sdk
+from speechio.text.realtime_merge import RealtimeMerger
+from speechio.text.stabilizer import TextObservation
 
 
 class RealtimeMergeTests(unittest.TestCase):

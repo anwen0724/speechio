@@ -4,7 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
-from realtime_asr.errors import ASRError
+from speechio.errors import ASRError
 
 
 def parser():
@@ -45,7 +45,7 @@ def main():
 
                 result = inspect_environment()
             case "prepare-models":
-                from realtime_asr.runtime.models.prepare import (
+                from speechio.runtime.models.prepare import (
                     prepare_nemotron,
                     prepare_whisper,
                 )
@@ -93,7 +93,7 @@ def main():
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
     except (ASRError, OSError, ValueError) as exc:
-        from realtime_asr.errors import error_record
+        from speechio.errors import error_record
 
         print(json.dumps(error_record(exc, arguments.command), ensure_ascii=False, indent=2))
         return 2

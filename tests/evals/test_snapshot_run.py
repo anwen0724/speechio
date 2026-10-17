@@ -9,7 +9,7 @@ from evals.p0.cancellation import CancellationSource
 from evals.p0.snapshot_run import run_snapshots
 from evals.p0.trial import Trial
 from evals.p0.whole_run import run_whole
-from realtime_asr.results import Transcript
+from speechio.results import Transcript
 
 
 class ReplayClock:

@@ -5,14 +5,14 @@ import json
 import wave
 from dataclasses import asdict
 
-from realtime_asr import (
+from speechio import (
     ModelConfig,
     RealtimeConfig,
     SessionConfig,
     VadConfig,
 )
-from realtime_asr.bundled import default_vad_model
-from realtime_asr.runtime.asr import ASRRuntime
+from speechio.bundled import default_vad_model
+from speechio.runtime.asr import ASRRuntime
 
 
 def main():

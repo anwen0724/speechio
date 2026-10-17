@@ -4,11 +4,11 @@ import importlib.util
 import json
 import sys
 
-import realtime_asr
-from realtime_asr.runtime.asr import ASRRuntime
+import speechio
+from speechio.runtime.asr import ASRRuntime
 
 report = {
-    "package": realtime_asr.__file__,
+    "package": speechio.__file__,
     "isolated": bool(sys.flags.isolated),
     "vad_loaded_on_import": "onnxruntime" in sys.modules or "webrtcvad" in sys.modules,
     "optional_dependencies": {

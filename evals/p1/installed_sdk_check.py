@@ -11,9 +11,9 @@ from pathlib import Path
 
 import numpy as np
 
-import realtime_asr
-from realtime_asr import ASRError, AudioFormat, ModelConfig, Transcriber
-from realtime_asr.audio.conversion import AudioConverter
+import speechio
+from speechio import ASRError, AudioFormat, ModelConfig, Transcriber
+from speechio.audio.conversion import AudioConverter
 
 
 def expect_error(code, call):
@@ -35,7 +35,7 @@ def main():
     parser.add_argument("--audio", type=Path)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
-    module_path = Path(realtime_asr.__file__).resolve()
+    module_path = Path(speechio.__file__).resolve()
     if "site-packages" not in module_path.parts:
         raise AssertionError("没有使用独立安装的 wheel")
     optional = ("soundfile", "soxr", "faster_whisper", "sherpa_onnx", "onnxruntime", "pyaudio")
@@ -55,7 +55,7 @@ def main():
         "cwd": str(Path.cwd()),
         "installed_module": str(module_path),
         "optional_loaded_by_import": loaded,
-        "versions": {p: importlib.metadata.version(p) for p in ("numpy", "realtime-asr")},
+        "versions": {p: importlib.metadata.version(p) for p in ("numpy", "speechio")},
     }
     converter = AudioConverter(AudioFormat(48000))
     try:

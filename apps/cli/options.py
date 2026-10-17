@@ -611,7 +611,7 @@ OPTIONS = (
 
 def wake_role(args):
     """只组装唤醒配置；模型准备由自动会话负责。"""
-    from realtime_asr import WakeConfig
+    from speechio import WakeConfig
 
     if not args.wake:
         return None
@@ -631,7 +631,7 @@ def wake_role(args):
 
 def _local_role_model(args, role, primary):
     """统一角色的路径、设备继承和 GPU 运行库复用，不加载模型。"""
-    from realtime_asr import ASRError, ModelConfig
+    from speechio import ASRError, ModelConfig
 
     path = getattr(args, role + "_model")
     engine = getattr(args, role + "_engine")
@@ -651,7 +651,7 @@ def _local_role_model(args, role, primary):
 
 def candidate_role(args, primary):
     """候选专用时主路径属于候选；正常模式缺省共用最终引擎。"""
-    from realtime_asr import CandidateConfig
+    from speechio import CandidateConfig
 
     model = _local_role_model(args, "candidate", primary)
     if not (args.candidates or args.candidate_only or model is not None):
@@ -663,7 +663,7 @@ def candidate_role(args, primary):
 
 def realtime_roles(args, final):
     """外部角色参数转为 SDK 配置，模式只从声明能力选择。"""
-    from realtime_asr import ASRError, RealtimeConfig
+    from speechio import ASRError, RealtimeConfig
 
     roles = {}
     for role in ("realtime", "ultrafast"):

@@ -3,7 +3,7 @@
 import argparse
 from importlib import import_module
 
-from realtime_asr import Transcriber
+from speechio import Transcriber
 
 
 def main():

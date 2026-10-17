@@ -4,9 +4,9 @@ import argparse
 from contextlib import closing
 from pathlib import Path
 
-from realtime_asr import CandidateConfig, ModelConfig, SessionConfig
-from realtime_asr.audio.files import audio_file_chunks
-from realtime_asr.runtime.asr import ASRRuntime
+from speechio import CandidateConfig, ModelConfig, SessionConfig
+from speechio.audio.files import audio_file_chunks
+from speechio.runtime.asr import ASRRuntime
 
 
 def wait_for(session, kind):

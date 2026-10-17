@@ -5,10 +5,10 @@ import json
 import sys
 from pathlib import Path
 
-from realtime_asr.errors import ASRError
-from realtime_asr.runtime.models.manifest import WHISPER_FILES, verify_manifest
-from realtime_asr.runtime.models.pinned import DETECTION_MODELS, WHISPER_MODEL
-from realtime_asr.runtime.models.prepare import prepare_model
+from speechio.errors import ASRError
+from speechio.runtime.models.manifest import WHISPER_FILES, verify_manifest
+from speechio.runtime.models.pinned import DETECTION_MODELS, WHISPER_MODEL
+from speechio.runtime.models.prepare import prepare_model
 
 KINDS = {
     "whisper": "whisper",

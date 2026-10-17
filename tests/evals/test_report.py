@@ -7,7 +7,7 @@ from pathlib import Path
 
 from evals.p0.report import phase_status
 from evals.p0.saved_report import rebuild_report
-from realtime_asr.errors import ASRError
+from speechio.errors import ASRError
 
 
 class ReportTests(unittest.TestCase):

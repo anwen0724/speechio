@@ -6,8 +6,8 @@ from unittest.mock import patch
 
 import numpy as np
 
-from realtime_asr import ASRError
-from realtime_asr.segmentation.vad import VadConfig, VoiceActivityDetector
+from speechio import ASRError
+from speechio.segmentation.vad import VadConfig, VoiceActivityDetector
 
 
 class VadTests(unittest.TestCase):

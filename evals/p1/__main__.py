@@ -14,8 +14,8 @@ import numpy as np
 import soundfile as sf
 import soxr
 
-from realtime_asr import ASRError, AudioFormat, ModelConfig, Transcriber
-from realtime_asr.audio.conversion import AudioConverter
+from speechio import ASRError, AudioFormat, ModelConfig, Transcriber
+from speechio.audio.conversion import AudioConverter
 
 
 def saved_baselines(path):

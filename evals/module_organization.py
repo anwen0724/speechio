@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 
 from evals.p4.runner import read_audio
-from realtime_asr import (
+from speechio import (
     AudioFormat,
     ModelConfig,
     RealtimeConfig,
@@ -18,7 +18,7 @@ from realtime_asr import (
     Transcriber,
     VadConfig,
 )
-from realtime_asr.runtime.asr import ASRRuntime
+from speechio.runtime.asr import ASRRuntime
 
 
 def replay(project):

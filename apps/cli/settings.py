@@ -16,8 +16,8 @@ from apps.cli.options import (
     realtime_roles,
     wake_role,
 )
-from realtime_asr import ASRError
-from realtime_asr.bundled import default_vad_model
+from speechio import ASRError
+from speechio.bundled import default_vad_model
 
 SCALARS = {
     "str": str,
@@ -209,7 +209,7 @@ def parse_target(target, argv):
 def check_paths(args, target):
     """只核对选中入口的文件、目录与依赖；完整性及模型加载另行执行。"""
     modules = set()
-    from realtime_asr.engines.local import ModelConfig, resolve_config
+    from speechio.engines.local import ModelConfig, resolve_config
 
     model = ModelConfig(
         model=args.model,
@@ -228,7 +228,7 @@ def check_paths(args, target):
     for selected in selected_models:
         modules.add("faster_whisper" if selected.engine == "whisper" else "sherpa_onnx")
     if args.mode == "auto":
-        from realtime_asr import EndpointConfig, SegmentationConfig, VadConfig
+        from speechio import EndpointConfig, SegmentationConfig, VadConfig
 
         VadConfig(
             model_path=args.vad_model or default_vad_model(),

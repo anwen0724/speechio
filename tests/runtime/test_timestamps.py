@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from realtime_asr import AudioFormat, ModelConfig, Transcriber
+from speechio import AudioFormat, ModelConfig, Transcriber
 from tests.runtime import test_transcriber
 
 

@@ -2,8 +2,8 @@
 
 import unittest
 
-from realtime_asr import Transcript, WordTimestamp
-from realtime_asr.text.endpoint import SentenceBoundaryPolicy
+from speechio import Transcript, WordTimestamp
+from speechio.text.endpoint import SentenceBoundaryPolicy
 
 
 class SentencePolicyTests(unittest.TestCase):

@@ -4,9 +4,9 @@ import unittest
 
 import numpy as np
 
-from realtime_asr import SegmentationConfig
-from realtime_asr.runtime.asr import ASRRuntime
-from realtime_asr.segmentation.vad import VoiceActivity
+from speechio import SegmentationConfig
+from speechio.runtime.asr import ASRRuntime
+from speechio.segmentation.vad import VoiceActivity
 from tests.runtime.test_engine_injection import RecordingEngine
 
 

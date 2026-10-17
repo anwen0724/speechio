@@ -9,7 +9,7 @@ from threading import Event, Thread
 import numpy as np
 import psutil
 
-from realtime_asr import (
+from speechio import (
     ASRError,
     AudioFormat,
     ModelConfig,
@@ -17,7 +17,7 @@ from realtime_asr import (
     SessionConfig,
     Transcriber,
 )
-from realtime_asr.runtime.asr import ASRRuntime
+from speechio.runtime.asr import ASRRuntime
 
 
 def configurations(project):

@@ -13,7 +13,7 @@ from uuid import uuid4
 import numpy as np
 
 from evals.p0.matrix import declare_matrix
-from realtime_asr.errors import ASRError, error_record
+from speechio.errors import ASRError, error_record
 
 
 def require(condition, message):

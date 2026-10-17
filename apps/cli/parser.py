@@ -6,12 +6,12 @@ from math import isfinite
 from pathlib import Path
 
 from apps.cli.options import COMMANDS, OPTIONS
-from realtime_asr import ASRError
+from speechio import ASRError
 
 
 def build_parser(*, diagnostic=False):
     """按命令声明组装解析器；diagnostic 允许文件命令不带路径。"""
-    parser = argparse.ArgumentParser(prog="asr", description="本地实时音频识别")
+    parser = argparse.ArgumentParser(prog="speechio", description="本地实时音频识别")
     parser.add_argument(
         "--config", default=argparse.SUPPRESS, help="指定 config.toml，默认读取当前目录"
     )

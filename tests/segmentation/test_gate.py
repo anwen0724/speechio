@@ -2,9 +2,9 @@
 
 import unittest
 
-from realtime_asr.audio.conversion import AudioFrame
-from realtime_asr.segmentation.gate import SegmentationConfig, SegmentationGate
-from realtime_asr.segmentation.vad import VoiceActivity
+from speechio.audio.conversion import AudioFrame
+from speechio.segmentation.gate import SegmentationConfig, SegmentationGate
+from speechio.segmentation.vad import VoiceActivity
 
 
 class SegmentationTests(unittest.TestCase):

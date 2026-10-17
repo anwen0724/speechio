@@ -19,7 +19,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     before = {t.ident for t in threading.enumerate()}
-    import realtime_asr as asr
+    import speechio as asr
 
     module = Path(asr.__file__).resolve()
     optional = ("faster_whisper", "sherpa_onnx", "onnxruntime", "soxr", "soundfile", "pyaudio")

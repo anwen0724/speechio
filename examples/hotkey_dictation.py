@@ -6,14 +6,14 @@ from contextlib import contextmanager
 from pathlib import Path
 from time import sleep
 
-from realtime_asr import (
+from speechio import (
     AudioFormat,
     MicrophoneConfig,
     MicrophoneInput,
     ModelConfig,
     SessionConfig,
 )
-from realtime_asr.runtime.asr import ASRRuntime
+from speechio.runtime.asr import ASRRuntime
 
 
 @contextmanager

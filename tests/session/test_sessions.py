@@ -8,14 +8,14 @@ from unittest.mock import patch
 import numpy as np
 import soxr
 
-from realtime_asr import (
+from speechio import (
     ASRError,
     AudioFormat,
     ModelConfig,
     RuntimeLimits,
     SessionConfig,
 )
-from realtime_asr.runtime.asr import ASRRuntime
+from speechio.runtime.asr import ASRRuntime
 from tests.runtime import test_transcriber
 
 

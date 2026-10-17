@@ -10,7 +10,7 @@ import numpy as np
 import soundfile as sf
 
 from evals.p4.runner import read_audio
-from realtime_asr import AudioFormat, ModelConfig, Transcriber, list_input_devices
+from speechio import AudioFormat, ModelConfig, Transcriber, list_input_devices
 
 
 def run(project, folder):

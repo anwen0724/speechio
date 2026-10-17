@@ -6,8 +6,8 @@ import wave
 from dataclasses import asdict
 from pathlib import Path
 
-from realtime_asr import ModelConfig, SessionConfig
-from realtime_asr.runtime.asr import ASRRuntime
+from speechio import ModelConfig, SessionConfig
+from speechio.runtime.asr import ASRRuntime
 
 
 def main():

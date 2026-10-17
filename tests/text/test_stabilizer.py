@@ -2,8 +2,8 @@
 
 import unittest
 
-from realtime_asr import TurnRef
-from realtime_asr.text.stabilizer import StabilizationConfig, TextObservation, TextStabilizer
+from speechio import TurnRef
+from speechio.text.stabilizer import StabilizationConfig, TextObservation, TextStabilizer
 
 
 class StabilizerTests(unittest.TestCase):
