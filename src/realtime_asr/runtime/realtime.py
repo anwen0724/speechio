@@ -10,8 +10,8 @@ from uuid import uuid4
 import numpy as np
 
 from realtime_asr.errors import ASRError
-from realtime_asr.results import CloseError, RecognitionResult
-from realtime_asr.runtime.recognizer import RecognizerConfig
+from realtime_asr.results import CloseError, Transcript
+from realtime_asr.runtime.transcriber import ModelConfig
 from realtime_asr.segmentation.acoustic import AcousticBoundary, AcousticBoundaryDetector
 from realtime_asr.session.session import EventError, SessionEvent
 
@@ -21,7 +21,7 @@ class RealtimeConfig:
     """一个实时角色；model 或 engine 指定拥有者，缺省共用最终引擎。"""
 
     mode: str = "snapshot"
-    model: RecognizerConfig | None = None
+    model: ModelConfig | None = None
     engine: object = None
     interval: float = 0.2
     initial_delay: float = 0.2
@@ -63,7 +63,7 @@ class RealtimeConfig:
         )
         if (
             self.mode not in ("snapshot", "native")
-            or (self.model is not None and not isinstance(self.model, RecognizerConfig))
+            or (self.model is not None and not isinstance(self.model, ModelConfig))
             or (self.model is not None and self.engine is not None)
         ):
             raise ASRError("INVALID_CONFIGURATION", "configure", "实时模式或模型配置无效")
@@ -236,7 +236,7 @@ class RealtimeExecutor:
                 continue
             del self.states[ref]
             self.states[ref] = state
-            pcm = bytes(state.pending) if native else state.session.snapshot_audio(state.ref)
+            pcm = bytes(state.pending) if native else state.session.turn_audio(state.ref)
             if native:
                 state.pending.clear()
             state.trigger_reason = "native" if native else "periodic"
@@ -288,8 +288,8 @@ class RealtimeExecutor:
         else:
             state.stream.decode()
             result, error = state.stream.get_result(), None
-        if not isinstance(result, RecognitionResult):
-            raise ASRError("BACKEND_INCOMPATIBLE", "read_stream", "流应返回 RecognitionResult")
+        if not isinstance(result, Transcript):
+            raise ASRError("BACKEND_INCOMPATIBLE", "read_stream", "流应返回 Transcript")
         return replace(
             result,
             requested_language=state.session.config.language,
@@ -344,7 +344,7 @@ class RealtimeExecutor:
             event = SessionEvent(
                 kind="realtime_failed" if error else "realtime",
                 sequence=0,
-                unit=state.ref,
+                turn=state.ref,
                 task_id=uuid4().hex,
                 audio_samples=samples,
                 audio_version=samples,

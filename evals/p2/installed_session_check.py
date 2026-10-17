@@ -40,7 +40,7 @@ def main():
         "import_created_threads": False,
         "versions": {p: importlib.metadata.version(p) for p in ("numpy", "realtime-asr")},
     }
-    runtime = asr.ASRRuntime(asr.RecognizerConfig(model=args.model))
+    runtime = asr.ASRRuntime(asr.ModelConfig(model=args.model))
     if {t.ident for t in threading.enumerate()} != before:
         raise AssertionError("创建未准备运行时创建了线程")
     try:
@@ -71,15 +71,15 @@ def main():
                 session.start()
                 for offset in range(0, len(pcm), 1001):
                     session.feed_audio(pcm[offset : offset + 1001])
-                tasks.append(session.finish())
-            events = [session.get_event(timeout=30) for _ in range(4)]
+                tasks.append(session.end_turn())
+            events = [session.next_event(timeout=30) for _ in range(4)]
             for index, task in enumerate(tasks):
                 final, completed = events[index * 2 : index * 2 + 2]
                 if final is None or completed is None:
                     raise AssertionError("缺少独立安装事件")
                 if (final.kind, completed.kind) != ("final", "completed"):
                     raise AssertionError("独立安装事件顺序错误")
-                if final.unit != task.unit or final.result.text != expected:
+                if final.turn != task.turn or final.result.text != expected:
                     raise AssertionError("独立安装归属或正文错误")
             report["events"] = [asdict(event) for event in events]
             report["same_p1_text"] = True

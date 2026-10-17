@@ -28,7 +28,7 @@ def main():
     if any(importlib.util.find_spec(name) for name in ("soxr", "soundfile", "pyaudio")):
         raise AssertionError("无 audio 验收环境安装了音频依赖")
     runtime = asr.ASRRuntime(
-        asr.RecognizerConfig(model=args.model),
+        asr.ModelConfig(model=args.model),
         realtime=asr.RealtimeConfig(initial_delay=0, interval=10),
     )
     if {t.ident for t in threading.enumerate()} != before:
@@ -66,7 +66,7 @@ def main():
             session = runtime.create_session(asr.SessionConfig(realtime=True, language="en"))
             session.start()
             session.feed_audio(pcm[:8192])
-            observation = session.get_event(timeout=30)
+            observation = session.next_event(timeout=30)
             if observation is None or (observation.kind, observation.source) != (
                 "realtime",
                 "snapshot",
@@ -75,12 +75,12 @@ def main():
             report["events"].append(asdict(observation))
             for offset in range(8192, len(pcm), 1001):
                 session.feed_audio(pcm[offset : offset + 1001])
-            task = session.finish()
-            final, completed = session.get_event(timeout=30), session.get_event(timeout=30)
+            task = session.end_turn()
+            final, completed = session.next_event(timeout=30), session.next_event(timeout=30)
             if (
                 (final.kind, completed.kind) != ("final", "completed")
                 or final.result.text != expected
-                or final.unit != task.unit
+                or final.turn != task.turn
             ):
                 raise AssertionError("独立安装最终事件与基线不同")
             report["events"].extend((asdict(final), asdict(completed)))

@@ -4,7 +4,9 @@ import unittest
 
 import numpy as np
 
-from realtime_asr import ASRRuntime, SegmentationConfig
+from realtime_asr import SegmentationConfig
+from realtime_asr.runtime.asr import ASRRuntime
+from realtime_asr.segmentation.vad import VoiceActivity
 from tests.runtime.test_engine_injection import RecordingEngine
 
 
@@ -15,7 +17,6 @@ class ControlledDetector:
         self.info = {"backend": "custom-vad", "context": identity}
 
     def detect(self, pcm, start_sample, *, recording=False):
-        from realtime_asr import VoiceActivity
 
         speech = bool(np.any(np.frombuffer(pcm, dtype="<i2")))
         return VoiceActivity(speech, speech, speech, speech, 0.1 if speech else 0)
@@ -49,13 +50,13 @@ class DetectorInjectionTests(unittest.TestCase):
             self.assertEqual(session.vad_info, {"backend": "custom-vad", "context": generation})
             session.feed_audio(np.full(1024, 2000, np.int16))
             session.feed_audio(np.zeros(1024, np.int16))
-            session.finish_input()
+            session.end_input()
             kinds = []
             while session.pending_segments:
-                event = session.get_event(timeout=5)
+                event = session.next_event(timeout=5)
                 self.assertIsNotNone(event)
                 kinds.append(event.kind)
-                self.assertEqual(event.unit.generation, generation)
+                self.assertEqual(event.turn.generation, generation)
             self.assertEqual(kinds, ["final", "completed"])
             if generation == 0:
                 session.reset()

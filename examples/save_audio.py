@@ -7,8 +7,9 @@ from contextlib import closing
 from dataclasses import asdict
 from pathlib import Path
 
-from realtime_asr import ASRRuntime, RecognizerConfig, SessionConfig
+from realtime_asr import ModelConfig, SessionConfig
 from realtime_asr.audio.files import audio_file_chunks
+from realtime_asr.runtime.asr import ASRRuntime
 
 
 def main():
@@ -18,7 +19,7 @@ def main():
     parser.add_argument("output", type=Path)
     parser.add_argument("--backend", choices=("whisper", "nemotron"), default="whisper")
     args = parser.parse_args()
-    with ASRRuntime(RecognizerConfig(model=args.model, engine=args.backend)) as runtime:
+    with ASRRuntime(ModelConfig(model=args.model, engine=args.backend)) as runtime:
         with closing(audio_file_chunks(args.input)) as blocks:
             format, first = next(blocks)
             session = runtime.create_session(SessionConfig(format=format))
@@ -26,7 +27,7 @@ def main():
             session.feed_audio(first)
             for _, block in blocks:
                 session.feed_audio(block)
-            snapshot = session.audio_snapshot()
+            snapshot = session.current_audio()
             with wave.open(str(args.output), "wb") as recording:
                 recording.setparams((1, 2, snapshot.sample_rate, 0, "NONE", "not compressed"))
                 recording.writeframes(snapshot.pcm)
@@ -34,16 +35,16 @@ def main():
                 json.dumps(
                     {
                         "saved": str(args.output),
-                        "unit": asdict(snapshot.unit),
+                        "unit": asdict(snapshot.turn),
                         "start_sample": snapshot.start_sample,
                         "end_sample": snapshot.end_sample,
                     },
                     ensure_ascii=False,
                 )
             )
-            session.finish()
+            session.end_turn()
             while True:
-                event = session.get_event(timeout=60)
+                event = session.next_event(timeout=60)
                 if event is None:
                     raise TimeoutError("等待最终结果超时")
                 if event.error:

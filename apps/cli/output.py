@@ -27,7 +27,7 @@ class Output:
     def record(self, kind, **fields):
         with self._lock:
             if self.mode == "jsonl":
-                record = {"schema_version": 1, "record_type": kind, **fields}
+                record = {"schema_version": 2, "record_type": kind, **fields}
                 self._write_stdout(json.dumps(record, ensure_ascii=False) + "\n")
                 if kind == "error":
                     self.stderr.write(f"[{fields['code']}] {fields['message']}\n")
@@ -61,12 +61,12 @@ class Output:
                     text = event.stabilization.display_text
                 else:
                     text = event.result.text
-                self.stderr.write(f"[{event.source}:{event.unit.unit_id}] {text}\n")
+                self.stderr.write(f"[{event.source}:{event.turn.turn_id}] {text}\n")
                 self.stderr.flush()
             elif event.candidate is not None:
                 value = event.candidate
                 self.stderr.write(
-                    f"[{event.kind}:{value.status}:{event.unit.unit_id}] {value.text}\n"
+                    f"[{event.kind}:{value.status}:{event.turn.turn_id}] {value.text}\n"
                 )
                 if event.error is not None:
                     self.stderr.write(f"[{event.error.code}] {event.error.message}\n")

@@ -11,7 +11,7 @@ from unittest.mock import patch
 import numpy as np
 import soundfile as sf
 
-from realtime_asr import ASRError, AudioFormat, Recognizer, RecognizerConfig
+from realtime_asr import ASRError, AudioFormat, ModelConfig, Transcriber
 from realtime_asr.runtime.models.manifest import create_manifest
 
 
@@ -43,7 +43,7 @@ class RecognizerTests(unittest.TestCase):
         with patch(
             "faster_whisper.BatchedInferencePipeline.transcribe", side_effect=native_transcribe
         ):
-            recognizer = Recognizer(RecognizerConfig(model=self.path))
+            recognizer = Transcriber(ModelConfig(model=self.path))
             result = recognizer.transcribe(
                 np.array([1, -1, 32767], np.int16), format=AudioFormat(), language="zh-CN"
             )
@@ -63,7 +63,7 @@ class RecognizerTests(unittest.TestCase):
                 raise RuntimeError("测试没有释放模型边界")
             return iter([]), SimpleNamespace(language=None, language_probability=None)
 
-        recognizer = Recognizer(RecognizerConfig(model=self.path))
+        recognizer = Transcriber(ModelConfig(model=self.path))
 
         def run():
             try:
@@ -108,7 +108,7 @@ class RecognizerTests(unittest.TestCase):
 
         path = self.path / "input.wav"
         sf.write(path, source, 16000, subtype="PCM_16")
-        recognizer = Recognizer(RecognizerConfig(model=self.path))
+        recognizer = Transcriber(ModelConfig(model=self.path))
         with patch(
             "faster_whisper.BatchedInferencePipeline.transcribe", side_effect=native_transcribe
         ):
@@ -122,7 +122,7 @@ class RecognizerTests(unittest.TestCase):
         self.assertEqual(recognizer.close().status, "ok")
 
     def test_context_prepares_and_closes_without_suppressing_body_error(self):
-        recognizer = Recognizer(RecognizerConfig(model=self.path))
+        recognizer = Transcriber(ModelConfig(model=self.path))
         original = RuntimeError("调用方失败")
         with self.assertRaises(RuntimeError) as caught:
             with recognizer as ready:
@@ -138,7 +138,7 @@ class RecognizerTests(unittest.TestCase):
         manifest = json.loads(path.read_text(encoding="utf-8"))
         manifest["backend"] = "foreign"
         path.write_text(json.dumps(manifest), encoding="utf-8")
-        recognizer = Recognizer(RecognizerConfig(model=self.path))
+        recognizer = Transcriber(ModelConfig(model=self.path))
         with self.assertRaises(ASRError) as caught:
             recognizer.prepare()
         self.assertEqual(caught.exception.code, "BACKEND_INCOMPATIBLE")
@@ -149,7 +149,7 @@ class RecognizerTests(unittest.TestCase):
             yield b"\x00\x00"
             raise OSError("来源中断")
 
-        recognizer = Recognizer(RecognizerConfig(model=self.path))
+        recognizer = Transcriber(ModelConfig(model=self.path))
         with patch("faster_whisper.WhisperModel", side_effect=AssertionError("不能加载模型")):
             with self.assertRaises(ASRError) as caught:
                 recognizer.transcribe_chunks(failed_input(), format=AudioFormat())
@@ -158,7 +158,7 @@ class RecognizerTests(unittest.TestCase):
         self.assertEqual(recognizer.state, "unprepared")
 
     def test_prepare_failure_can_retry_and_late_model_failure_is_not_prefix_success(self):
-        recognizer = Recognizer(RecognizerConfig(model=self.path))
+        recognizer = Transcriber(ModelConfig(model=self.path))
         with patch("faster_whisper.WhisperModel", side_effect=RuntimeError("加载失败")):
             with self.assertRaises(ASRError) as caught:
                 recognizer.prepare()
@@ -185,7 +185,7 @@ class RecognizerTests(unittest.TestCase):
             self.fail("参数失败不应读取输入")
             yield b""
 
-        recognizer = Recognizer(RecognizerConfig(model=self.path))
+        recognizer = Transcriber(ModelConfig(model=self.path))
         with self.assertRaises(ASRError) as caught:
             recognizer.transcribe_chunks(never_read(), format=AudioFormat(), language=1)
         self.assertEqual(caught.exception.code, "INVALID_CONFIGURATION")
@@ -198,12 +198,12 @@ class LocalConfigTests(unittest.TestCase):
     def test_compute_type_and_device_follow_the_caller(self):
         from realtime_asr.engines.local import resolve_config
 
-        self.assertEqual(resolve_config(RecognizerConfig(model="tiny")).compute_type, "default")
+        self.assertEqual(resolve_config(ModelConfig(model="tiny")).compute_type, "default")
         resolved = resolve_config(
-            RecognizerConfig(model="tiny", device="cuda", compute_type="int8_float16")
+            ModelConfig(model="tiny", device="cuda", compute_type="int8_float16")
         )
         self.assertEqual(resolved.compute_type, "int8_float16")
         resolved = resolve_config(
-            RecognizerConfig(model="models/nemotron", engine="nemotron", device="cuda")
+            ModelConfig(model="models/nemotron", engine="nemotron", device="cuda")
         )
         self.assertEqual(resolved.device, "cuda")

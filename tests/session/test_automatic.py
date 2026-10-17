@@ -10,22 +10,23 @@ import numpy as np
 
 from realtime_asr import (
     ASRError,
-    ASRRuntime,
     AudioFormat,
+    ModelConfig,
     RealtimeConfig,
-    RecognizerConfig,
     RuntimeLimits,
     SegmentationConfig,
     SessionConfig,
     VadConfig,
 )
+from realtime_asr.audio.conversion import AudioConverter
+from realtime_asr.runtime.asr import ASRRuntime
 from tests.engines.test_stream import RuntimeRecognizer, RuntimeStream
-from tests.runtime import test_realtime, test_recognizer
+from tests.runtime import test_realtime, test_transcriber
 
 
 class AutomaticTests(unittest.TestCase):
     def setUp(self):
-        test_recognizer.RecognizerTests.setUp(self)
+        test_transcriber.RecognizerTests.setUp(self)
         self.vad = VadConfig(
             model_path=Path(".venv/Lib/site-packages/faster_whisper/assets/silero_vad_v6.onnx"),
             warmup=False,
@@ -63,14 +64,14 @@ class AutomaticTests(unittest.TestCase):
                 np.full(515, 700, np.int16),
             )
         )
-        with ASRRuntime(RecognizerConfig(model=self.path)) as runtime:
+        with ASRRuntime(ModelConfig(model=self.path)) as runtime:
             session = runtime.create_auto_session(vad=self.vad)
             for start in range(0, len(audio), 317):
                 session.feed_audio(audio[start : start + 317])
-            session.finish_input()
+            session.end_input()
             finals = []
             while session.pending_segments:
-                event = session.get_event(timeout=5)
+                event = session.next_event(timeout=5)
                 self.assertIsNotNone(event, "自动封口没有交付事件")
                 if event.kind == "final":
                     finals.append(event)
@@ -83,20 +84,20 @@ class AutomaticTests(unittest.TestCase):
                 )
 
     def test_cancel_current_segment_keeps_listening_without_recreating_cancelled_audio(self):
-        with ASRRuntime(RecognizerConfig(model=self.path)) as runtime:
+        with ASRRuntime(ModelConfig(model=self.path)) as runtime:
             session = runtime.create_auto_session(vad=self.vad)
             session.feed_audio(np.full(1024, 500, np.int16))
-            self.assertTrue(session.cancel())
-            self.assertEqual(session.get_event(timeout=1).kind, "cancelled")
+            self.assertTrue(session.cancel_turn())
+            self.assertEqual(session.next_event(timeout=1).kind, "cancelled")
             session.feed_audio(np.full(515, 700, np.int16))
-            session.finish_input()
-            final = session.get_event(timeout=5)
+            session.end_input()
+            final = session.next_event(timeout=5)
             self.assertEqual(final.kind, "final")
             self.assertEqual(final.boundary.start_sample, 1024)
             np.testing.assert_array_equal(self.final_audio[-1], np.full(515, 700) / 32768)
 
     def test_detection_failure_fails_active_unit_and_reset_recovers(self):
-        with ASRRuntime(RecognizerConfig(model=self.path)) as runtime:
+        with ASRRuntime(ModelConfig(model=self.path)) as runtime:
             session = runtime.create_auto_session(vad=self.vad)
             session.feed_audio(np.full(1024, 500, np.int16))
             with patch(
@@ -106,18 +107,18 @@ class AutomaticTests(unittest.TestCase):
                     session.feed_audio(np.full(512, 500, np.int16))
             self.assertEqual(caught.exception.code, "VAD_FAILED")
             self.assertEqual(session.input_state, "failed")
-            event = session.get_event(timeout=1)
+            event = session.next_event(timeout=1)
             self.assertEqual((event.kind, event.error.code), ("failed", "VAD_FAILED"))
             session.reset()
             session.feed_audio(np.full(515, 700, np.int16))
-            session.finish_input()
-            final = session.get_event(timeout=5)
-            self.assertEqual((final.unit.generation, final.boundary.start_sample), (1, 0))
+            session.end_input()
+            final = session.next_event(timeout=5)
+            self.assertEqual((final.turn.generation, final.boundary.start_sample), (1, 0))
 
     def test_close_during_detection_does_not_wait_or_register_late_segment(self):
         entered, release = Event(), Event()
         outcomes = []
-        with ASRRuntime(RecognizerConfig(model=self.path)) as runtime:
+        with ASRRuntime(ModelConfig(model=self.path)) as runtime:
             session = runtime.create_auto_session(vad=self.vad)
 
             def blocked(names, feeds):
@@ -159,7 +160,7 @@ class AutomaticTests(unittest.TestCase):
         segmentation = SegmentationConfig(max_buffer_samples=40000)
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=blocked):
             with ASRRuntime(
-                RecognizerConfig(model=self.path), limits=RuntimeLimits(max_tasks=1)
+                ModelConfig(model=self.path), limits=RuntimeLimits(max_tasks=1)
             ) as runtime:
                 session = runtime.create_auto_session(
                     vad=self.vad, config=config, segmentation=segmentation
@@ -175,11 +176,11 @@ class AutomaticTests(unittest.TestCase):
                 finally:
                     release.set()
                 for _ in range(4):
-                    self.assertIsNotNone(session.get_event(timeout=5))
+                    self.assertIsNotNone(session.next_event(timeout=5))
                 session.feed_audio(block)
-                session.finish_input()
+                session.end_input()
                 while session.pending_segments:
-                    self.assertIsNotNone(session.get_event(timeout=5))
+                    self.assertIsNotNone(session.next_event(timeout=5))
                 actual = np.concatenate(self.final_audio)
                 expected = np.concatenate((np.full(16384, 500), np.full(16000, 700), block))
                 np.testing.assert_array_equal(actual, expected / 32768)
@@ -210,14 +211,14 @@ class AutomaticTests(unittest.TestCase):
                 segmentation=SegmentationConfig(backdate_duration=0.2),
             )
             session.feed_audio(audio[:10240])
-            first = session.get_event(timeout=5)
+            first = session.next_event(timeout=5)
             self.assertEqual(first.source, "native")
             self.assertLessEqual(first.stream_end_sample, 10240 - 3200)
             session.feed_audio(audio[10240:])
-            session.finish_input()
+            session.end_input()
             finals = []
             while session.pending_segments:
-                event = session.get_event(timeout=5)
+                event = session.next_event(timeout=5)
                 self.assertIsNotNone(event)
                 if event.kind == "final":
                     finals.append(event)
@@ -233,7 +234,6 @@ class AutomaticTests(unittest.TestCase):
                     self.assertTrue(stream.ended)
 
     def test_source_resampling_stays_continuous_across_automatic_units(self):
-        from realtime_asr import AudioConverter
 
         audio = np.repeat(np.array([500, 700, 900], np.float32) / 32768, 9000)
         source = np.column_stack((audio, audio))
@@ -241,7 +241,7 @@ class AutomaticTests(unittest.TestCase):
         converter = AudioConverter(format)
         expected = b"".join(f.pcm for f in converter.feed(source) + converter.finish())
         outputs = []
-        with ASRRuntime(RecognizerConfig(model=self.path)) as runtime:
+        with ASRRuntime(ModelConfig(model=self.path)) as runtime:
             for block_size in (317, 2000):
                 self.final_audio.clear()
                 session = runtime.create_auto_session(
@@ -253,10 +253,10 @@ class AutomaticTests(unittest.TestCase):
                 )
                 for start in range(0, len(source), block_size):
                     session.feed_audio(source[start : start + block_size])
-                session.finish_input()
+                session.end_input()
                 boundaries = []
                 while session.pending_segments:
-                    event = session.get_event(timeout=5)
+                    event = session.next_event(timeout=5)
                     self.assertIsNotNone(event)
                     if event.kind == "final":
                         boundaries.append((event.boundary.start_sample, event.boundary.end_sample))
@@ -268,29 +268,29 @@ class AutomaticTests(unittest.TestCase):
             np.testing.assert_array_equal(actual, np.frombuffer(expected, "<i2") / 32768)
 
     def test_explicit_finish_seals_short_segment_and_keeps_listening(self):
-        with ASRRuntime(RecognizerConfig(model=self.path)) as runtime:
+        with ASRRuntime(ModelConfig(model=self.path)) as runtime:
             session = runtime.create_auto_session(vad=self.vad)
             session.feed_audio(np.full(512, 500, np.int16))
-            task = session.finish()
+            task = session.end_turn()
             self.assertEqual((task.audio_samples, task.boundary.reason), (512, "manual"))
             self.assertEqual(session.input_state, "listening")
             session.feed_audio(np.full(515, 700, np.int16))
-            session.finish_input()
-            session.finish_input()
+            session.end_input()
+            session.end_input()
             finals = []
             while session.pending_segments:
-                event = session.get_event(timeout=5)
+                event = session.next_event(timeout=5)
                 self.assertIsNotNone(event)
                 if event.kind == "final":
                     finals.append(event)
             self.assertEqual([event.audio_samples for event in finals], [512, 515])
 
     def test_silent_input_finishes_without_creating_a_task(self):
-        with ASRRuntime(RecognizerConfig(model=self.path)) as runtime:
+        with ASRRuntime(ModelConfig(model=self.path)) as runtime:
             session = runtime.create_auto_session(vad=self.vad)
             session.feed_audio(bytes(32000))
-            session.finish_input()
+            session.end_input()
             self.assertEqual(session.input_state, "finished")
             self.assertEqual(session.pending_segments, 0)
-            self.assertIsNone(session.get_event())
+            self.assertIsNone(session.next_event())
             self.assertEqual(runtime.capacity.tasks, 0)

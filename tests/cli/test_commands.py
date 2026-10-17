@@ -9,12 +9,12 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from apps.cli.runner import main
-from tests.runtime import test_recognizer
+from tests.runtime import test_transcriber
 
 
 class CommandTests(unittest.TestCase):
     def setUp(self):
-        test_recognizer.RecognizerTests.setUp(self)
+        test_transcriber.RecognizerTests.setUp(self)
 
     def test_cli_candidates_arrive_before_eof_and_late_correction_is_drained(self):
         received = Event()

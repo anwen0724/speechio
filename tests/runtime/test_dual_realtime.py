@@ -6,6 +6,7 @@ from threading import Event
 import numpy as np
 
 import realtime_asr as sdk
+from realtime_asr.runtime.asr import ASRRuntime
 from tests.runtime.test_engine_injection import RecordingEngine, RecordingStream
 
 
@@ -26,7 +27,7 @@ class RoleEngine(RecordingEngine):
 
         class Stream(RecordingStream):
             def get_result(self):
-                return sdk.RecognitionResult(text=text)
+                return sdk.Transcript(text=text)
 
             def finish(self):
                 self.finishes += 1
@@ -58,7 +59,7 @@ class DualRealtimeTests(unittest.TestCase):
                 return stream
 
         accurate, fast = BlockingRole("speech system"), BlockingRole("speech system today")
-        runtime = sdk.ASRRuntime(
+        runtime = ASRRuntime(
             engine=accurate,
             realtime=sdk.RealtimeConfig(mode="native", initial_delay=0, max_units=1),
             ultrafast=sdk.RealtimeConfig(mode="native", engine=fast, initial_delay=0, max_units=1),
@@ -84,7 +85,7 @@ class DualRealtimeTests(unittest.TestCase):
             accurate.release.set()
             fast.release.set()
         self.assertEqual(runtime.close(timeout=5).status, "ok")
-        self.assertIsNone(session.get_event())
+        self.assertIsNone(session.next_event())
         self.assertEqual((accurate.closes, fast.closes), (1, 1))
 
     def test_one_failed_role_does_not_replace_accurate_text_or_fail_final(self):
@@ -99,7 +100,7 @@ class DualRealtimeTests(unittest.TestCase):
                 return stream
 
         accurate, fast = RoleEngine("speech system"), FailedRole("unused")
-        with sdk.ASRRuntime(
+        with ASRRuntime(
             engine=accurate,
             realtime=sdk.RealtimeConfig(mode="native", initial_delay=0),
             ultrafast=sdk.RealtimeConfig(mode="native", engine=fast, initial_delay=0),
@@ -109,10 +110,10 @@ class DualRealtimeTests(unittest.TestCase):
             )
             session.start()
             session.feed_audio(np.ones(525, np.int16))
-            session.finish()
+            session.end_turn()
             events = []
             while not events or events[-1].kind != "completed":
-                event = session.get_event(timeout=5)
+                event = session.next_event(timeout=5)
                 self.assertIsNotNone(event)
                 events.append(event)
             failure = next(event for event in events if event.kind == "realtime_failed")
@@ -125,7 +126,7 @@ class DualRealtimeTests(unittest.TestCase):
 
     def test_start_rejects_all_roles_together_when_fast_capacity_is_full(self):
         accurate, fast = RoleEngine("speech system"), RoleEngine("speech system today")
-        with sdk.ASRRuntime(
+        with ASRRuntime(
             engine=accurate,
             realtime=sdk.RealtimeConfig(mode="native", max_units=2),
             ultrafast=sdk.RealtimeConfig(mode="native", engine=fast, max_units=1),
@@ -142,7 +143,7 @@ class DualRealtimeTests(unittest.TestCase):
 
     def test_each_unit_drains_both_roles_and_final_remains_independent(self):
         accurate, fast = RoleEngine("speech system"), RoleEngine("speech system today")
-        runtime = sdk.ASRRuntime(
+        runtime = ASRRuntime(
             engine=accurate,
             realtime=sdk.RealtimeConfig(mode="native", initial_delay=0),
             ultrafast=sdk.RealtimeConfig(mode="native", engine=fast, initial_delay=0),
@@ -157,13 +158,13 @@ class DualRealtimeTests(unittest.TestCase):
             session.start()
             session.feed_audio(source[:512])
             session.feed_audio(source[512:])
-            session.finish()
+            session.end_turn()
         completions, drained, merges, finals = 0, {"accurate": set(), "ultrafast": set()}, [], []
         while completions < 2:
-            event = session.get_event(timeout=5)
+            event = session.next_event(timeout=5)
             self.assertIsNotNone(event)
             if event.kind == "realtime" and event.stream_finished:
-                drained[event.realtime_role].add(event.unit.unit_id)
+                drained[event.realtime_role].add(event.turn.turn_id)
                 merges.append(event.merge.text)
             if event.kind == "final":
                 finals.append(event.result.text)

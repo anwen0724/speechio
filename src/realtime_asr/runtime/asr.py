@@ -11,8 +11,8 @@ from realtime_asr.results import CloseError
 from realtime_asr.runtime.candidates import CandidateConfig, execute_candidate
 from realtime_asr.runtime.engines import EngineResources
 from realtime_asr.runtime.realtime import RealtimeConfig, RealtimeGroup
-from realtime_asr.runtime.recognizer import Recognizer
 from realtime_asr.runtime.tasks import InferenceRequest
+from realtime_asr.runtime.transcriber import Transcriber
 from realtime_asr.session.session import Session, SessionConfig, _validate_timeout
 
 
@@ -82,7 +82,7 @@ class ASRRuntime:
                     "INVALID_CONFIGURATION", "configure", "候选专用宿主只接受明确的候选模型或引擎"
                 )
             config, engine = candidate.model, candidate.engine
-        self._recognizer = Recognizer(config, engine=engine)
+        self._recognizer = Transcriber(config, engine=engine)
         if not self._recognizer.capabilities.transcription:
             raise ASRError("BACKEND_INCOMPATIBLE", "configure", "最终角色需要整段识别能力")
         if realtime is not None and not isinstance(realtime, RealtimeConfig):
@@ -206,7 +206,7 @@ class ASRRuntime:
                         "failed" if errors else "ok", errors=errors
                     )
                 else:
-                    self._recognizer = Recognizer(self._recognizer.config)
+                    self._recognizer = Transcriber(self._recognizer.config)
                     self._engines = EngineResources(self._recognizer, self._model_lock)
                     if self._realtime is not None:
                         self._realtime = RealtimeGroup(
@@ -258,7 +258,7 @@ class ASRRuntime:
         """显式准备检测器；加载不持有共享协调锁，失败不注册会话。"""
         from realtime_asr.segmentation.gate import SegmentationConfig
         from realtime_asr.segmentation.vad import VadConfig
-        from realtime_asr.session.automatic import AutomaticSession
+        from realtime_asr.session.automatic import LiveSession
 
         if (
             (vad is None) == (detector_factory is None)
@@ -276,7 +276,7 @@ class ASRRuntime:
             self._require_ready()
             if config.realtime and self._realtime is None:
                 raise ASRError("REALTIME_NOT_CONFIGURED", "create_session", "运行时未配置实时角色")
-        session = AutomaticSession(
+        session = LiveSession(
             self,
             config,
             vad,
@@ -332,7 +332,7 @@ class ASRRuntime:
     def pending_for(self, session_id):
         """只报告仍在真实调用中的工作，不把逻辑取消视作物理退出。"""
         pending = int(
-            self._running is not None and self._running.task.unit.session_id == session_id
+            self._running is not None and self._running.task.turn.session_id == session_id
         )
         if self._realtime is not None:
             pending += self._realtime.pending_for(session_id)
@@ -399,7 +399,7 @@ class ASRRuntime:
             completed_at = monotonic()
             with self._condition:
                 timing = (job.submitted_at, started_at, completed_at)
-                session = self._sessions.get(job.task.unit.session_id)
+                session = self._sessions.get(job.task.turn.session_id)
                 if session is not None:
                     session.accept_completion(job, result, error, timing)
                 self._tasks -= 1
@@ -442,7 +442,7 @@ class ASRRuntime:
     def _has_work_ready(self):
         """本单元原生排空之前，最终任务不能领取模型执行资源。"""
         return any(
-            job.priority != "final" or self._realtime_ready(job.task.unit) for job in self._queue
+            job.priority != "final" or self._realtime_ready(job.task.turn) for job in self._queue
         )
 
     def _next_job(self):
@@ -450,13 +450,13 @@ class ASRRuntime:
         ready = [
             job
             for job in self._queue
-            if job.priority != "final" or self._realtime_ready(job.task.unit)
+            if job.priority != "final" or self._realtime_ready(job.task.turn)
         ]
         job = next((job for job in ready if job.priority == "final"), ready[0])
         self._queue.remove(job)
         others, same_session = deque(), deque()
         for queued in self._queue:
-            if queued.task.unit.session_id == job.task.unit.session_id:
+            if queued.task.turn.session_id == job.task.turn.session_id:
                 same_session.append(queued)
             else:
                 others.append(queued)

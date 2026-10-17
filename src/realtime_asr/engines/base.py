@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 from realtime_asr.errors import ASRError
-from realtime_asr.results import RecognitionResult
+from realtime_asr.results import Transcript
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -57,11 +57,11 @@ class StreamingSession(ABC):
         """推进已接纳输入；异步接收型引擎可以直接使用已有结果缓存。"""
 
     @abstractmethod
-    def get_result(self) -> RecognitionResult:
+    def get_result(self) -> Transcript:
         """返回本单元累计结果，不结束核心音频单元。"""
 
     @abstractmethod
-    def finish(self) -> RecognitionResult:
+    def finish(self) -> Transcript:
         """结束并排空全部接纳输入，重复结束不得再次递交结束消息。"""
 
     def close(self):

@@ -9,7 +9,7 @@ import numpy as np
 
 from realtime_asr.audio.conversion import AudioConverter, AudioFormat
 from realtime_asr.errors import ASRError
-from realtime_asr.results import RecognitionResult
+from realtime_asr.results import Transcript
 from realtime_asr.runtime.tasks import InferenceRequest
 from realtime_asr.segmentation.acoustic import AcousticBoundary
 from realtime_asr.segmentation.gate import SegmentBoundary
@@ -84,19 +84,19 @@ class SessionConfig:
 
 
 @dataclass(frozen=True)
-class UnitRef:
+class TurnRef:
     """单元归属；重置改变代次但不复用单元序号。"""
 
     session_id: str
     generation: int
-    unit_id: int
+    turn_id: int
 
 
 @dataclass(frozen=True)
 class AudioSnapshot:
     """当前单元已经确定归属的标准音频副本，范围为半开样本区间。"""
 
-    unit: UnitRef
+    turn: TurnRef
     pcm: bytes
     start_sample: int
     end_sample: int
@@ -107,7 +107,7 @@ class AudioSnapshot:
 class FinalTask:
     """已接受的封口任务描述，不表示模型已经完成。"""
 
-    unit: UnitRef
+    turn: TurnRef
     task_id: str
     audio_samples: int
     audio_version: int
@@ -129,11 +129,11 @@ class SessionEvent:
 
     kind: str
     sequence: int
-    unit: UnitRef
+    turn: TurnRef
     task_id: str | None
     audio_samples: int
     audio_version: int
-    result: RecognitionResult | None = None
+    result: Transcript | None = None
     error: EventError | None = None
     source: str = "final"
     audio_start_sample: int = 0
@@ -172,7 +172,7 @@ class SessionChange:
 class _AudioUnit:
     """会话独占的可变音频和事件，执行器只取得固定快照。"""
 
-    ref: UnitRef
+    ref: TurnRef
     converter: AudioConverter
     pcm: bytearray = field(default_factory=bytearray)
     source_bytes: int = 0
@@ -219,7 +219,7 @@ class Session:
         self._retained = None
 
     @property
-    def active_unit(self):
+    def active_turn(self):
         """返回当前输入归属，调用方无需读取会话内部音频容器。"""
         with self._runtime.coordination:
             return self._active.ref if self._active is not None else None
@@ -272,7 +272,7 @@ class Session:
         if self._closed:
             raise ASRError("SESSION_CLOSED", "session", "会话已经关闭")
 
-    def start(self) -> UnitRef:
+    def start(self) -> TurnRef:
         """开始独立音频单元；不覆盖仍在接收的输入。"""
         with self._runtime.coordination:
             return self._begin_unit(self.config.format)
@@ -285,7 +285,7 @@ class Session:
                 raise ASRError("UNIT_ACTIVE", "start", "已有活动音频单元")
             if len(self._units) >= self.config.max_pending_units:
                 raise ASRError("RESULT_CAPACITY_EXCEEDED", "start", "未消费单元达到容量上限")
-            ref = UnitRef(self.session_id, self._generation, self._next_unit)
+            ref = TurnRef(self.session_id, self._generation, self._next_unit)
             unit = self._new_unit(ref, format)
             if self._runtime.candidate_config is not None:
                 unit.candidates = CandidateState(ref)
@@ -297,7 +297,7 @@ class Session:
                 self._runtime.realtime.add_unit(self, ref)
             self._clear_correction()
             self._next_unit += 1
-            self._units[ref.unit_id] = unit
+            self._units[ref.turn_id] = unit
             self._active = unit
             self._last_task = None
             return ref
@@ -307,18 +307,18 @@ class Session:
 
     def audio_samples(self, ref):
         """协调条件内查询进度，定时轮询不复制整段历史。"""
-        unit = self._units.get(ref.unit_id)
+        unit = self._units.get(ref.turn_id)
         return len(unit.pcm) // 2 if unit is not None and unit.ref == ref else 0
 
-    def snapshot_audio(self, ref):
+    def turn_audio(self, ref):
         """仅在领取任务时复制该单元的固定标准输入。"""
-        unit = self._units.get(ref.unit_id)
+        unit = self._units.get(ref.turn_id)
         return bytes(unit.pcm) if unit is not None and unit.ref == ref else b""
 
     def accept_realtime(self, event):
         """执行器只交付有归属的观察，不访问可变单元。"""
-        unit = self._units.get(event.unit.unit_id)
-        if unit is not None and unit.ref == event.unit:
+        unit = self._units.get(event.turn.turn_id)
+        if unit is not None and unit.ref == event.turn:
             self._record_realtime(unit, event)
 
     def accept_completion(self, request, result, error, timing):
@@ -330,16 +330,16 @@ class Session:
 
     def _accept_candidate(self, job, result, error, timing):
         context = self._retained
-        if context is not None and job.task.unit == context.unit:
+        if context is not None and job.task.turn == context.turn:
             if job.task.task_id == context.state.replacing("correction"):
                 self._accept_correction(context, job, result, error, timing)
                 return
-        unit = self._units.get(job.task.unit.unit_id)
-        if unit is None or unit.ref != job.task.unit or unit.events is not None:
+        unit = self._units.get(job.task.turn.turn_id)
+        if unit is None or unit.ref != job.task.turn or unit.events is not None:
             return
         value = unit.candidates.resolve(
             job.task.task_id,
-            result if result is not None else RecognitionResult(text=""),
+            result if result is not None else Transcript(text=""),
             unit.task.audio_version if unit.task is not None else len(unit.pcm) // 2,
         )
         if value is None:
@@ -369,7 +369,7 @@ class Session:
         """修正只关联原最终任务，不产生第二个最终或完成事件。"""
         value = context.state.resolve(
             job.task.task_id,
-            result if result is not None else RecognitionResult(text=""),
+            result if result is not None else Transcript(text=""),
             len(context.pcm) // 2,
         )
         if value is None:
@@ -383,7 +383,7 @@ class Session:
         context.event = SessionEvent(
             kind="correction_failed" if error else "correction",
             sequence=0,
-            unit=context.unit,
+            turn=context.turn,
             task_id=job.task.task_id,
             audio_samples=job.task.audio_samples,
             audio_version=job.task.audio_version,
@@ -405,7 +405,7 @@ class Session:
         with self._runtime.coordination:
             self._require_open()
             context = self._retained
-            if context is None or context.unit != unit:
+            if context is None or context.turn != unit:
                 raise ASRError("CORRECTION_UNAVAILABLE", "correct", "目标没有可用的整轮修正上下文")
             samples = len(context.pcm) // 2
             request = context.state.describe("correction", False, 0, samples)
@@ -501,13 +501,13 @@ class Session:
         for frame in unit.converter.drain_ready():
             self._append_standard(unit, frame.pcm)
 
-    def audio_snapshot(self):
+    def current_audio(self):
         """观察已接纳标准短尾，不结束输入或暴露可变缓冲。"""
         with self._runtime.coordination:
             self._require_open()
             unit = self._require_active()
             if unit.task is not None:
-                raise ASRError("NO_ACTIVE_UNIT", "audio_snapshot", "当前单元已经封口")
+                raise ASRError("NO_ACTIVE_UNIT", "current_audio", "当前单元已经封口")
             self._drain_ready_audio(unit)
             pcm = bytes(unit.pcm)
             start = unit.stream_start_sample or 0
@@ -578,7 +578,7 @@ class Session:
 
     def observation_context(self, ref, audio_end_sample):
         """执行器领取输入时固定继续归属，不在迟到回交时改写代次。"""
-        unit = self._units.get(ref.unit_id)
+        unit = self._units.get(ref.turn_id)
         state = unit.candidates if unit is not None and unit.ref == ref else None
         return (
             (state.epoch, state.resume_id, state.start_sample)
@@ -586,7 +586,7 @@ class Session:
             else (0, None, 0)
         )
 
-    def finish(self) -> FinalTask:
+    def end_turn(self) -> FinalTask:
         """刷新尾部并提交不可变完整音频；调用返回后可开始下一单元。"""
         with self._runtime.coordination:
             self._require_open()
@@ -598,7 +598,7 @@ class Session:
                 for frame in unit.converter.finish():
                     unit.pcm.extend(frame.pcm)
                 if not unit.pcm:
-                    raise ASRError("INVALID_AUDIO", "finish", "完整输入没有标准采样")
+                    raise ASRError("INVALID_AUDIO", "end_turn", "完整输入没有标准采样")
             except ASRError as exc:
                 self._terminal(unit, "failed", error=exc)
                 raise
@@ -619,10 +619,10 @@ class Session:
 
     def _resolve(self, task, result=None, error=None, *, timing=None):
         """后台结果只登记到仍有效的单元；消费顺序由会话决定。"""
-        unit = self._units.get(task.unit.unit_id)
-        if unit is None or unit.ref != task.unit or unit.events is not None:
+        unit = self._units.get(task.turn.turn_id)
+        if unit is None or unit.ref != task.turn or unit.events is not None:
             return
-        if error is None and unit.sealed_pcm and unit.ref.unit_id == self._next_unit - 1:
+        if error is None and unit.sealed_pcm and unit.ref.turn_id == self._next_unit - 1:
             state = unit.candidates
             retained_state = CandidateState(
                 unit.ref,
@@ -654,7 +654,7 @@ class Session:
 
     def _record_realtime(self, unit, event):
         """每个角色保留一个最新槽；只用准确路更新稳定和端点证据。"""
-        if self._units.get(unit.ref.unit_id) is unit and unit.events is None:
+        if self._units.get(unit.ref.turn_id) is unit and unit.events is None:
             if unit.candidates is not None and (
                 event.resume_epoch != unit.candidates.epoch
                 or (
@@ -694,7 +694,7 @@ class Session:
             unit.realtime_events.pop(role, None)
             unit.realtime_events[role] = event
 
-    def cancel(self, target: UnitRef | None = None) -> bool:
+    def cancel_turn(self, target: TurnRef | None = None) -> bool:
         """取消当前输入或指定单元；不扩大到其他单元或会话。"""
         with self._runtime.coordination:
             self._require_open()
@@ -702,19 +702,19 @@ class Session:
                 unit = self._active
             else:
                 if (
-                    not isinstance(target, UnitRef)
+                    not isinstance(target, TurnRef)
                     or target.session_id != self.session_id
                     or target.generation > self._generation
-                    or target.unit_id < 1
-                    or target.unit_id >= self._next_unit
+                    or target.turn_id < 1
+                    or target.turn_id >= self._next_unit
                 ):
                     raise ASRError("INVALID_TARGET", "cancel", "目标不属于已创建的会话单元")
                 if target.generation < self._generation:
                     return False
-                if self._retained is not None and self._retained.unit == target:
+                if self._retained is not None and self._retained.turn == target:
                     self._clear_correction()
                     return True
-                unit = self._units.get(target.unit_id)
+                unit = self._units.get(target.turn_id)
                 if unit is not None and unit.ref != target:
                     raise ASRError("INVALID_TARGET", "cancel", "目标代次与音频单元不匹配")
             if unit is None or unit.events is not None:
@@ -732,7 +732,7 @@ class Session:
         return SessionEvent(
             kind=kind,
             sequence=0,
-            unit=unit.ref,
+            turn=unit.ref,
             task_id=task.task_id if task else None,
             audio_samples=samples,
             audio_version=samples,
@@ -843,7 +843,7 @@ class Session:
                 return unit, "candidate"
         return None
 
-    def get_event(self, *, timeout=0.0) -> SessionEvent | None:
+    def next_event(self, *, timeout=0.0) -> SessionEvent | None:
         """按单元顺序消费；慢消费者不持有模型执行锁。"""
         _validate_timeout(timeout, allow_none=True)
         with self._runtime.coordination:
@@ -876,5 +876,5 @@ class Session:
                 )
             event = replace(unit.events.popleft(), sequence=self._sequence)
             if not unit.events:
-                del self._units[unit.ref.unit_id]
+                del self._units[unit.ref.turn_id]
             return event

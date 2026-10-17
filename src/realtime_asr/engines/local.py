@@ -15,7 +15,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, kw_only=True)
-class RecognizerConfig:
+class ModelConfig:
     """显式本地配置；model 可以是模型名或已准备的本地目录。"""
 
     model: str | PathLike
@@ -46,8 +46,8 @@ class RecognizerConfig:
 
 def resolve_config(config):
     """校验本地组合；模型名保持字符串，已存在的目录才解析为路径。"""
-    if not isinstance(config, RecognizerConfig):
-        raise ASRError("INVALID_CONFIGURATION", "configure", "需要 RecognizerConfig")
+    if not isinstance(config, ModelConfig):
+        raise ASRError("INVALID_CONFIGURATION", "configure", "需要 ModelConfig")
     engine = normalize_engine(config.engine)
     if engine not in ("whisper", "nemotron"):
         raise ASRError(

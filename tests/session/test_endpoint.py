@@ -9,14 +9,14 @@ from unittest.mock import patch
 import numpy as np
 
 from realtime_asr import (
-    ASRRuntime,
     EndpointConfig,
+    ModelConfig,
     RealtimeConfig,
-    RecognizerConfig,
     SegmentationConfig,
     SessionConfig,
     StabilizationConfig,
 )
+from realtime_asr.runtime.asr import ASRRuntime
 from tests.session import test_automatic
 
 
@@ -33,7 +33,7 @@ class EndpointTests(unittest.TestCase):
     def test_exact_early_result_is_reused_but_new_audio_is_not(self):
         for resume in (False, True):
             self.final_audio.clear()
-            with ASRRuntime(RecognizerConfig(model=self.path)) as runtime:
+            with ASRRuntime(ModelConfig(model=self.path)) as runtime:
                 session = runtime.create_auto_session(
                     vad=self.vad,
                     segmentation=SegmentationConfig(silence_confirmation=0),
@@ -44,8 +44,8 @@ class EndpointTests(unittest.TestCase):
                 self.wait_completed(session)
                 if resume:
                     session.feed_audio(np.full(512, 700, np.int16))
-                session.finish()
-                final = session.get_event(timeout=5)
+                session.end_turn()
+                final = session.next_event(timeout=5)
                 self.assertEqual(final.kind, "final")
                 self.assertEqual(final.source, "final" if resume else "early-final")
                 self.assertEqual(final.audio_samples, len(audio) + (512 if resume else 0))
@@ -65,7 +65,7 @@ class EndpointTests(unittest.TestCase):
             ),
         ):
             with ASRRuntime(
-                RecognizerConfig(model=self.path), realtime=RealtimeConfig(initial_delay=0)
+                ModelConfig(model=self.path), realtime=RealtimeConfig(initial_delay=0)
             ) as runtime:
                 session = runtime.create_auto_session(
                     vad=self.vad,
@@ -74,11 +74,11 @@ class EndpointTests(unittest.TestCase):
                     endpoint=endpoint,
                 )
                 session.feed_audio(np.full(10240, 500, np.int16))
-                self.assertEqual(session.get_event(timeout=5).result.text, "结束。")
+                self.assertEqual(session.next_event(timeout=5).result.text, "结束。")
                 session.feed_audio(np.zeros(4096, np.int16))
-                final = session.get_event(timeout=5)
+                final = session.next_event(timeout=5)
                 while final.kind == "realtime":
-                    final = session.get_event(timeout=5)
+                    final = session.next_event(timeout=5)
                 self.assertEqual((final.kind, final.boundary.reason), ("final", "silence"))
                 self.assertEqual(session.input_state, "listening")
 
@@ -103,7 +103,7 @@ class EndpointTests(unittest.TestCase):
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=model):
             with ASRRuntime(
-                RecognizerConfig(model=self.path), limits=RuntimeLimits(max_tasks=1)
+                ModelConfig(model=self.path), limits=RuntimeLimits(max_tasks=1)
             ) as runtime:
                 session = runtime.create_auto_session(
                     vad=self.vad,
@@ -115,11 +115,11 @@ class EndpointTests(unittest.TestCase):
                 )
                 self.assertTrue(entered.wait(5))
                 session.feed_audio(np.full(515, 900, np.int16))
-                session.finish_input()
+                session.end_input()
                 self.assertEqual(runtime.capacity.tasks, 1)
                 self.assertEqual(session.pending_segments, 1)
                 release.set()
-                final = session.get_event(timeout=5)
+                final = session.next_event(timeout=5)
                 self.assertEqual(
                     (final.kind, final.source, final.audio_samples), ("final", "final", 19459)
                 )
@@ -141,7 +141,7 @@ class EndpointTests(unittest.TestCase):
             ), SimpleNamespace(language="zh", language_probability=1)
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=model):
-            with ASRRuntime(RecognizerConfig(model=self.path)) as runtime:
+            with ASRRuntime(ModelConfig(model=self.path)) as runtime:
                 session = runtime.create_auto_session(
                     vad=self.vad,
                     segmentation=SegmentationConfig(silence_confirmation=0),
@@ -157,8 +157,8 @@ class EndpointTests(unittest.TestCase):
                 ):
                     Event().wait(0.001)
                 self.assertEqual(session.optimization_status.get("early_failed"), 1)
-                session.finish_input()
-                final = session.get_event(timeout=5)
+                session.end_input()
+                final = session.next_event(timeout=5)
                 self.assertEqual((final.kind, final.result.text), ("final", "完成"))
                 self.assertEqual(final.optimization["last_error"], "INFERENCE_FAILED")
 
@@ -179,7 +179,7 @@ class EndpointTests(unittest.TestCase):
             ), SimpleNamespace(language="en", language_probability=1)
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=model):
-            with ASRRuntime(RecognizerConfig(model=self.path)) as runtime:
+            with ASRRuntime(ModelConfig(model=self.path)) as runtime:
                 session = runtime.create_auto_session(
                     vad=self.vad,
                     segmentation=SegmentationConfig(silence_confirmation=0),
@@ -193,11 +193,11 @@ class EndpointTests(unittest.TestCase):
                 self.assertEqual((change.generation, change.pending_tasks), (1, 1))
                 self.assertEqual(session.optimization_status, {})
                 session.feed_audio(np.full(515, 900, np.int16))
-                session.finish_input()
+                session.end_input()
                 release.set()
-                final = session.get_event(timeout=5)
+                final = session.next_event(timeout=5)
                 self.assertEqual(
-                    (final.kind, final.unit.generation, final.result.text), ("final", 1, "515")
+                    (final.kind, final.turn.generation, final.result.text), ("final", 1, "515")
                 )
                 self.assertIsNone(final.optimization)
 
@@ -261,7 +261,7 @@ class EndpointTests(unittest.TestCase):
         )
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=model):
             with ASRRuntime(
-                RecognizerConfig(model=self.path),
+                ModelConfig(model=self.path),
                 realtime=RealtimeConfig(initial_delay=0, interval=0.001),
             ) as runtime:
                 session = runtime.create_auto_session(
@@ -270,26 +270,26 @@ class EndpointTests(unittest.TestCase):
                     endpoint=EndpointConfig(punctuation_split=True),
                 )
                 session.feed_audio(np.full(1024, 500, np.int16))
-                session.get_event(timeout=5)
+                session.next_event(timeout=5)
                 session.feed_audio(np.full(32768, 500, np.int16))
-                second = session.get_event(timeout=5)
+                second = session.next_event(timeout=5)
                 if chinese:
                     self.assertNotIn("。", second.stabilization.stable_text)
                 session.feed_audio(np.full(512, 500, np.int16))
                 self.assertTrue(entered.wait(5), "稳定句末未请求真实词时间")
                 session.feed_audio(np.full(515, 900, np.int16))
                 release.set()
-                first = session.get_event(timeout=5)
+                first = session.next_event(timeout=5)
                 while first.kind != "final":
                     self.assertIsNotNone(first)
-                    first = session.get_event(timeout=5)
+                    first = session.next_event(timeout=5)
                 self.assertEqual(
                     (first.boundary.reason, first.boundary.end_sample), ("punctuation", 12432)
                 )
-                session.finish_input()
+                session.end_input()
                 events = [first]
                 while session.pending_segments:
-                    events.append(session.get_event(timeout=5))
+                    events.append(session.next_event(timeout=5))
                 final_events = [event for event in events if event.kind == "final"]
                 self.assertEqual(len(final_events), 2)
                 self.assertEqual(final_events[1].boundary.start_sample, 12432)

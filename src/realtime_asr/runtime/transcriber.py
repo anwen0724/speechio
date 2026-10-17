@@ -11,22 +11,24 @@ import numpy as np
 from realtime_asr.audio.conversion import AudioConverter, AudioFormat
 from realtime_asr.audio.files import read_audio_file
 from realtime_asr.engines.base import validate_engine
-from realtime_asr.engines.local import LocalEngine, RecognizerConfig
+from realtime_asr.engines.local import LocalEngine, ModelConfig
 from realtime_asr.errors import ASRError
-from realtime_asr.results import CloseError, CloseResult, RecognitionResult
+from realtime_asr.results import CloseError, CloseResult, Transcript
 
 LOGGER = logging.getLogger(__name__)
 LOGGER.addHandler(logging.NullHandler())
 
 
-class Recognizer:
+class Transcriber:
     """通过小接口隐藏模型准备、输入转换和资源管理，不持有设备或服务。"""
 
-    def __init__(self, config: RecognizerConfig | None = None, *, engine=None):
-        if config is not None and engine is not None:
-            raise ASRError("INVALID_CONFIGURATION", "configure", "本地配置与引擎应且仅应提供一个")
+    def __init__(self, config: ModelConfig | None = None, *, engine=None, model=None, **options):
+        if config is not None and (engine is not None or model is not None or options):
+            raise ASRError("INVALID_CONFIGURATION", "configure", "配置对象与选项应且仅应提供一个")
+        if engine is not None and options:
+            raise ASRError("INVALID_CONFIGURATION", "configure", "注入引擎不接受本地选项")
         if config is None and engine is None:
-            config = RecognizerConfig(model="tiny")
+            config = ModelConfig(model=model or "tiny", **options)
         self._engine = LocalEngine(config) if engine is None else engine
         self._config = self._engine.config if engine is None else None
         self._capabilities = validate_engine(self._engine)
@@ -47,7 +49,7 @@ class Recognizer:
         return False
 
     @property
-    def config(self) -> RecognizerConfig | None:
+    def config(self) -> ModelConfig | None:
         return self._config
 
     @property
@@ -208,8 +210,8 @@ class Recognizer:
             raise
         except Exception as exc:
             raise ASRError("INFERENCE_FAILED", "transcribe", str(exc)) from exc
-        if not isinstance(result, RecognitionResult):
-            raise ASRError("BACKEND_INCOMPATIBLE", "transcribe", "引擎应返回 RecognitionResult")
+        if not isinstance(result, Transcript):
+            raise ASRError("BACKEND_INCOMPATIBLE", "transcribe", "引擎应返回 Transcript")
         unavailable = word_timestamps and (
             not self.capabilities.word_timestamps or result.words is None
         )

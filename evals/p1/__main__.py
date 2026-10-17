@@ -14,7 +14,8 @@ import numpy as np
 import soundfile as sf
 import soxr
 
-from realtime_asr import ASRError, AudioConverter, AudioFormat, Recognizer, RecognizerConfig
+from realtime_asr import ASRError, AudioFormat, ModelConfig, Transcriber
+from realtime_asr.audio.conversion import AudioConverter
 
 
 def saved_baselines(path):
@@ -40,12 +41,12 @@ def check_backend(name, root, corpus, manifest, baselines, output):
     """一次准备复用模型，输入入口和原生流按每次调用独立执行。"""
     backend = "nemotron" if name == "nemotron" else "whisper"
     gpu = name == "whisper-gpu"
-    config = RecognizerConfig(
+    config = ModelConfig(
         model=root / "models" / ("nemotron" if backend == "nemotron" else "whisper-tiny"),
         engine=backend,
         device="cuda" if gpu else "cpu",
     )
-    recognizer = Recognizer(config)
+    recognizer = Transcriber(config)
     record = {
         "backend": name,
         "config": {

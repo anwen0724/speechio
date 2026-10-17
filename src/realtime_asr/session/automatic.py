@@ -11,7 +11,7 @@ import numpy as np
 
 from realtime_asr.audio.conversion import AudioConverter, AudioFormat, AudioFrame
 from realtime_asr.errors import ASRError
-from realtime_asr.results import RecognitionResult
+from realtime_asr.results import Transcript
 from realtime_asr.runtime.tasks import InferenceRequest
 from realtime_asr.segmentation.gate import SegmentationGate
 from realtime_asr.segmentation.vad import (
@@ -55,7 +55,7 @@ class EarlyFinalResult:
 
     audio_samples: int
     audio_digest: bytes
-    result: RecognitionResult
+    result: Transcript
     timing: tuple[float, float, float]
 
     def matches_audio(self, pcm):
@@ -85,7 +85,7 @@ class _AutomaticUnit(_AudioUnit):
     wake_context: dict | None = None
 
 
-class AutomaticSession(Session):
+class LiveSession(Session):
     """宿主只连续送音频；封口和后台任务使用普通会话的同一实现。"""
 
     def __init__(
@@ -205,7 +205,7 @@ class AutomaticSession(Session):
         with self._input_lock, self._runtime.coordination:
             if self._input is None:
                 return 0
-            unassigned = sum(segment.unit is None for segment in self._input.segments)
+            unassigned = sum(segment.turn is None for segment in self._input.segments)
             return len(self._units) + unassigned
 
     def start(self):
@@ -238,12 +238,12 @@ class AutomaticSession(Session):
         """自动输入的录音段由门控负责，不把继续误作重新开始分句。"""
         raise ASRError("MODE_UNAVAILABLE", "resume", "同轮继续只适用于手动输入")
 
-    def audio_snapshot(self):
+    def current_audio(self):
         """先递交已形成的确定音频，不把未确定回溯尾部归给当前单元。"""
         with self._input_lock, self._runtime.coordination:
             state = self._require_input()
             self._pump(state)
-            return super().audio_snapshot()
+            return super().current_audio()
 
     def feed_audio(self, chunk):
         """本会话串行转换和检测；不持有全局锁，也不等待 ASR 模型。"""
@@ -342,15 +342,15 @@ class AutomaticSession(Session):
         while state.segments:
             segment = state.segments[0]
             try:
-                if segment.unit is None:
-                    segment.unit = self._begin_unit(AudioFormat())
+                if segment.turn is None:
+                    segment.turn = self._begin_unit(AudioFormat())
                     self._active.stream_start_sample = segment.start_sample
                     self._active.wake_context = (
                         dict(state.wake.recording_context or state.wake.status)
                         if state.wake
                         else None
                     )
-                unit = self._units[segment.unit.unit_id]
+                unit = self._units[segment.turn.turn_id]
                 samples = len(segment.pcm) // 2
                 if segment.boundary is None:
                     samples = max(0, samples - int(self._segmentation.backdate_duration * 16000))
@@ -362,7 +362,7 @@ class AutomaticSession(Session):
                         self._schedule_endpoint(state, unit)
                     return
                 unit.boundary = segment.boundary
-                Session.finish(self)
+                Session.end_turn(self)
                 state.segments.popleft()
             except ASRError as exc:
                 if exc.code in (
@@ -482,7 +482,7 @@ class AutomaticSession(Session):
         minimum = max(8000, int(self._segmentation.min_recording_duration * 16000))
         if (
             segment is None
-            or segment.unit != unit.ref
+            or segment.turn != unit.ref
             or unit.sentence_policy.current_hint != hint
             or not minimum <= cut <= covered - 8000
         ):
@@ -518,8 +518,8 @@ class AutomaticSession(Session):
         """通用结果以任务标识交回，策略用途只在本会话解析。"""
         if request.priority == "final":
             return super().accept_completion(request, result, error, timing)
-        unit = self._units.get(request.task.unit.unit_id)
-        if unit is None or unit.ref != request.task.unit:
+        unit = self._units.get(request.task.turn.turn_id)
+        if unit is None or unit.ref != request.task.turn:
             return
         context = unit.auxiliary
         if context is None or context.request.task.task_id != request.task.task_id:
@@ -574,19 +574,19 @@ class AutomaticSession(Session):
             state.state = "listening"
         if state.cancelled_units:
             state.segments = deque(
-                segment for segment in state.segments if segment.unit not in state.cancelled_units
+                segment for segment in state.segments if segment.turn not in state.cancelled_units
             )
             state.cancelled_units.clear()
 
-    def cancel(self, target=None):
+    def cancel_turn(self, target=None):
         """立即失效任务；检测线程在下一边界清除自己的候选与缓存。"""
         with self._runtime.coordination:
             self._require_open()
             state = self._input
             current = state.gate.active
-            ref = target if target is not None else (current.unit if current else None)
-            changed = Session.cancel(self, ref) if ref is not None else False
-            if current is not None and (target is None or current.unit == target):
+            ref = target if target is not None else (current.turn if current else None)
+            changed = Session.cancel_turn(self, ref) if ref is not None else False
+            if current is not None and (target is None or current.turn == target):
                 state.cancel_current = True
                 changed = True
             if changed and ref is not None:
@@ -594,14 +594,14 @@ class AutomaticSession(Session):
             self._runtime.coordination.notify_all()
             return changed
 
-    def finish_input(self):
+    def end_input(self):
         """只刷新一次源尾部；终止监听但不取消已固定任务。"""
         with self._input_lock:
             with self._runtime.coordination:
                 self._require_open()
                 state = self._input
                 if state.state == "failed":
-                    raise ASRError("INPUT_ENDED", "finish_input", "输入已失败，请重置")
+                    raise ASRError("INPUT_ENDED", "end_input", "输入已失败，请重置")
                 self._apply_cancellations(state)
             if state.state != "finished":
                 try:
@@ -618,7 +618,7 @@ class AutomaticSession(Session):
                 self._check_generation(state)
                 self._pump(state)
 
-    def finish(self):
+    def end_turn(self):
         """手动封口当前自动段，继续监听；容量失败可原样重试。"""
         with self._input_lock, self._runtime.coordination:
             state = self._require_input()
@@ -628,10 +628,10 @@ class AutomaticSession(Session):
                 if state.segments and state.segments[0].boundary is not None:
                     segment = state.segments[0]
                 else:
-                    raise ASRError("NO_ACTIVE_UNIT", "finish", "没有活动录音段")
+                    raise ASRError("NO_ACTIVE_UNIT", "end_turn", "没有活动录音段")
             self._pump(state)
             if segment in state.segments:
-                raise ASRError("TASK_CAPACITY_EXCEEDED", "finish", "封口段已保留，等待容量后重试")
+                raise ASRError("TASK_CAPACITY_EXCEEDED", "end_turn", "封口段已保留，等待容量后重试")
             state.state = "listening"
             if state.wake:
                 state.wake.recording_finished(state.gate.position)
@@ -647,7 +647,7 @@ class AutomaticSession(Session):
             self._closed,
         )
 
-    def get_event(self, *, timeout=0.0):
+    def next_event(self, *, timeout=0.0):
         """消费和容量唤醒都推进待递交段，等待不阻塞持续输入。"""
         _validate_timeout(timeout, allow_none=True)
         deadline = None if timeout is None else monotonic() + timeout
@@ -657,7 +657,7 @@ class AutomaticSession(Session):
                     return None
                 state = self._input
                 self._pump(state)
-                event = Session.get_event(self)
+                event = Session.next_event(self)
                 if event is not None:
                     self._pump(state)
                     return event

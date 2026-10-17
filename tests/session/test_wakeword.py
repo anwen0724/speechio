@@ -6,6 +6,7 @@ from threading import Event, Thread
 import numpy as np
 
 import realtime_asr as sdk
+from realtime_asr.runtime.asr import ASRRuntime
 from realtime_asr.segmentation.vad import VoiceActivity
 from tests.runtime.test_engine_injection import RecordingEngine
 
@@ -52,7 +53,7 @@ class WakeTests(unittest.TestCase):
                 return super().detect(pcm)
 
         detector, errors = BlockingWake(), []
-        runtime = sdk.ASRRuntime(engine=RecordingEngine())
+        runtime = ASRRuntime(engine=RecordingEngine())
         self.addCleanup(runtime.close)
         runtime.prepare()
         session = runtime.create_auto_session(
@@ -90,7 +91,7 @@ class WakeTests(unittest.TestCase):
 
         detectors = [FailedWake(), WakeDetector()]
         supplied = iter(detectors)
-        with sdk.ASRRuntime(engine=RecordingEngine()) as runtime:
+        with ASRRuntime(engine=RecordingEngine()) as runtime:
             session = runtime.create_auto_session(
                 detector_factory=SpeechDetector,
                 wake=sdk.WakeConfig(trim_duration=0),
@@ -102,7 +103,7 @@ class WakeTests(unittest.TestCase):
             self.assertEqual(session.wake_status["state"], "failed")
             session.reset()
             session.feed_audio(np.full(512, 500, np.int16))
-            self.assertEqual(session.active_unit.generation, 1)
+            self.assertEqual(session.active_turn.generation, 1)
         self.assertEqual([detector.closed for detector in detectors], [1, 1])
 
     def test_speech_timeout_and_finish_followup_window_use_audio_clock(self):
@@ -111,7 +112,7 @@ class WakeTests(unittest.TestCase):
                 speech = np.frombuffer(pcm, dtype="<i2")[0] == 200
                 return VoiceActivity(speech, speech, speech, speech, 0)
 
-        with sdk.ASRRuntime(engine=RecordingEngine()) as runtime:
+        with ASRRuntime(engine=RecordingEngine()) as runtime:
             session = runtime.create_auto_session(
                 detector_factory=BodyDetector,
                 segmentation=sdk.SegmentationConfig(pre_roll_duration=0, min_recording_duration=0),
@@ -120,24 +121,24 @@ class WakeTests(unittest.TestCase):
             )
             for value in (500, 0, 200):
                 session.feed_audio(np.full(512, value, np.int16))
-            self.assertIsNone(session.active_unit)
+            self.assertIsNone(session.active_turn)
             self.assertEqual(session.wake_status["timeouts"], 1)
             session.feed_audio(np.full(512, 500, np.int16))
             session.feed_audio(np.full(512, 200, np.int16))
-            session.finish()
+            session.end_turn()
             self.assertEqual(session.wake_status["state"], "followup")
             self.assertEqual(session.wake_status["deadline_sample"], 3584)
             session.feed_audio(np.full(512, 200, np.int16))
-            self.assertIsNotNone(session.active_unit)
-            session.finish()
+            self.assertIsNotNone(session.active_turn)
+            session.end_turn()
             session.feed_audio(np.zeros(1024, np.int16))
             session.feed_audio(np.full(512, 200, np.int16))
             self.assertEqual(session.wake_status["state"], "awaiting_wake")
-            self.assertIsNone(session.active_unit)
+            self.assertIsNone(session.active_turn)
 
     def test_wake_gates_speech_and_trims_only_fixed_prefix(self):
         engine, detector = RecordingEngine(), WakeDetector()
-        with sdk.ASRRuntime(engine=engine) as runtime:
+        with ASRRuntime(engine=engine) as runtime:
             session = runtime.create_auto_session(
                 detector_factory=SpeechDetector,
                 segmentation=sdk.SegmentationConfig(
@@ -149,17 +150,17 @@ class WakeTests(unittest.TestCase):
             before, wake, speech = (np.full(512, value, np.int16) for value in (100, 500, 800))
             session.feed_audio(before)
             self.assertEqual(session.wake_status["state"], "awaiting_wake")
-            self.assertIsNone(session.active_unit)
+            self.assertIsNone(session.active_turn)
             session.feed_audio(wake)
             session.feed_audio(speech)
             self.assertEqual(session.wake_status["state"], "recording")
-            session.finish_input()
-            final = session.get_event(timeout=5)
+            session.end_input()
+            final = session.next_event(timeout=5)
             self.assertEqual(final.kind, "final")
             self.assertEqual(final.stream_start_sample, 128)
             np.testing.assert_array_equal(
                 engine.inputs[0][0],
                 np.concatenate((before, wake, speech))[128:].astype(np.float32) / 32768,
             )
-            self.assertEqual(session.get_event(timeout=5).kind, "completed")
+            self.assertEqual(session.next_event(timeout=5).kind, "completed")
         self.assertEqual(detector.closed, 1)

@@ -12,7 +12,8 @@ from pathlib import Path
 import numpy as np
 
 import realtime_asr
-from realtime_asr import ASRError, AudioConverter, AudioFormat, Recognizer, RecognizerConfig
+from realtime_asr import ASRError, AudioFormat, ModelConfig, Transcriber
+from realtime_asr.audio.conversion import AudioConverter
 
 
 def expect_error(code, call):
@@ -63,7 +64,7 @@ def main():
         )
     finally:
         converter.close()
-    recognizer = Recognizer(RecognizerConfig(model=args.model))
+    recognizer = Transcriber(ModelConfig(model=args.model))
     try:
         report["missing_soundfile"] = expect_error(
             "DEPENDENCY_MISSING", lambda: recognizer.transcribe_file("missing.wav")

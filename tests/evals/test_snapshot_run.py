@@ -9,7 +9,7 @@ from evals.p0.cancellation import CancellationSource
 from evals.p0.snapshot_run import run_snapshots
 from evals.p0.trial import Trial
 from evals.p0.whole_run import run_whole
-from realtime_asr.results import RecognitionResult
+from realtime_asr.results import Transcript
 
 
 class ReplayClock:
@@ -43,7 +43,7 @@ class SnapshotRunTests(unittest.TestCase):
     def test_short_audio_and_end_at_opportunity_have_only_complete_result(self):
         class Model:
             def transcribe(self, audio, **parameters):
-                return RecognitionResult(text=str(audio.size))
+                return Transcript(text=str(audio.size))
 
         # 短于一次快照与恰好结束于快照机会，分别验证两条结束规则。
         for count in (160, 3200):
@@ -74,7 +74,7 @@ class SnapshotRunTests(unittest.TestCase):
                     started.set()
                     if not release.wait(5):
                         raise RuntimeError("测试未释放模型调用")
-                return RecognitionResult(text=str(audio.size))
+                return Transcript(text=str(audio.size))
 
         def advance_replay():
             if clock.elapsed_ns < 200_000_000:
@@ -116,7 +116,7 @@ class SnapshotRunTests(unittest.TestCase):
         class Model:
             def transcribe(self, audio, **parameters):
                 cancel.set()
-                return RecognitionResult(text="迟到")
+                return Transcript(text="迟到")
 
         trial = run_whole(Model(), np.zeros(160), "zh", cancel=cancel)
         self.assertEqual(trial.status, "cancelled")

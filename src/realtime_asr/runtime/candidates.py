@@ -3,7 +3,7 @@
 from dataclasses import dataclass, replace
 from math import isfinite
 
-from realtime_asr.engines.local import RecognizerConfig
+from realtime_asr.engines.local import ModelConfig
 from realtime_asr.errors import ASRError
 
 
@@ -11,7 +11,7 @@ from realtime_asr.errors import ASRError
 class CandidateConfig:
     """显式开启候选，缺省共用主引擎；尾部长度使用秒。"""
 
-    model: RecognizerConfig | None = None
+    model: ModelConfig | None = None
     engine: object | None = None
     tail_seconds: float = 3.0
 
@@ -20,7 +20,7 @@ class CandidateConfig:
             self.model is not None
             and self.engine is not None
             or self.model is not None
-            and not isinstance(self.model, RecognizerConfig)
+            and not isinstance(self.model, ModelConfig)
             or isinstance(self.tail_seconds, bool)
             or not isinstance(self.tail_seconds, (int, float))
             or not isfinite(self.tail_seconds)

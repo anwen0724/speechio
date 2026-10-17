@@ -4,14 +4,15 @@ import argparse
 from contextlib import closing
 from pathlib import Path
 
-from realtime_asr import ASRRuntime, CandidateConfig, RecognizerConfig, SessionConfig
+from realtime_asr import CandidateConfig, ModelConfig, SessionConfig
 from realtime_asr.audio.files import audio_file_chunks
+from realtime_asr.runtime.asr import ASRRuntime
 
 
 def wait_for(session, kind):
     """示例遇到实际失败即退出，不把模型失败当作继续等待。"""
     while True:
-        event = session.get_event(timeout=60)
+        event = session.next_event(timeout=60)
         if event is None:
             raise TimeoutError(f"等待 {kind} 超时")
         if event.error:
@@ -25,7 +26,7 @@ def main():
     parser.add_argument("model", type=Path)
     parser.add_argument("audio", type=Path)
     args = parser.parse_args()
-    with ASRRuntime(RecognizerConfig(model=args.model), candidate=CandidateConfig()) as runtime:
+    with ASRRuntime(ModelConfig(model=args.model), candidate=CandidateConfig()) as runtime:
         with closing(audio_file_chunks(args.audio)) as blocks:
             format, first = next(blocks)
             session = runtime.create_session(
@@ -42,12 +43,12 @@ def main():
             session.request_candidate()
             event = wait_for(session, "candidate")
             print("整轮候选：", event.candidate.text)
-            session.finish()
+            session.end_turn()
             final = wait_for(session, "final")
             print(final.result.text)
             wait_for(session, "completed")
             session.request_correction(unit)
-            event = session.get_event(timeout=60)
+            event = session.next_event(timeout=60)
             print(event.kind, event.candidate.text)
             session.close()
 

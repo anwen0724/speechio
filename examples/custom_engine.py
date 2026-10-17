@@ -3,7 +3,7 @@
 import argparse
 from importlib import import_module
 
-from realtime_asr import Recognizer
+from realtime_asr import Transcriber
 
 
 def main():
@@ -15,7 +15,7 @@ def main():
     args = parser.parse_args()
     module_name, function_name = args.factory.split(":", 1)
     factory = getattr(import_module(module_name), function_name)
-    with Recognizer(engine=factory()) as recognizer:
+    with Transcriber(engine=factory()) as recognizer:
         result = recognizer.transcribe_file(args.file, language=args.language)
         print(result.text)
 

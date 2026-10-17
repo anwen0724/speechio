@@ -65,7 +65,7 @@ class RecordingSegment:
     pre_roll_reason: str
     pcm: bytearray = field(default_factory=bytearray)
     boundary: SegmentBoundary | None = None
-    unit: object = None
+    turn: object = None
     delivered_samples: int = 0
 
 

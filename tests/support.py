@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from realtime_asr import RecognizerConfig
+from realtime_asr import ModelConfig
 from realtime_asr.engines.whisper import WhisperEngine
 from realtime_asr.runtime.models.manifest import create_manifest
 
@@ -21,7 +21,7 @@ def whisper_engine():
         create_manifest(path, backend="whisper", model_id="tiny", source="test", revision="abc")
         model = SimpleNamespace(feature_extractor=SimpleNamespace(chunk_length=30))
         with patch("faster_whisper.WhisperModel", return_value=model):
-            engine = WhisperEngine(RecognizerConfig(model=path))
+            engine = WhisperEngine(ModelConfig(model=path))
             try:
                 yield engine
             finally:

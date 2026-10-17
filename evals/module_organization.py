@@ -10,25 +10,25 @@ import numpy as np
 
 from evals.p4.runner import read_audio
 from realtime_asr import (
-    ASRRuntime,
     AudioFormat,
+    ModelConfig,
     RealtimeConfig,
-    Recognizer,
-    RecognizerConfig,
     SegmentationConfig,
     SessionConfig,
+    Transcriber,
     VadConfig,
 )
+from realtime_asr.runtime.asr import ASRRuntime
 
 
 def replay(project):
     """覆盖实际三条路径、中英文及自动分句与实时联合运行。"""
-    cpu = RecognizerConfig(model=project / ".runtime/models/whisper-tiny")
-    gpu = RecognizerConfig(
+    cpu = ModelConfig(model=project / ".runtime/models/whisper-tiny")
+    gpu = ModelConfig(
         model=cpu.model,
         device="cuda",
     )
-    native = RecognizerConfig(model=project / ".runtime/models/nemotron", engine="nemotron")
+    native = ModelConfig(model=project / ".runtime/models/nemotron", engine="nemotron")
     reports = []
     for name, config, mode in (
         ("whisper-cpu", cpu, "snapshot"),
@@ -40,7 +40,7 @@ def replay(project):
         ) as runtime:
             for sample_id, language in (("C01-1", "zh-CN"), ("C07-1", "en")):
                 voice = read_audio(project / f"data/corpus/p0/{sample_id}.wav")
-                with Recognizer(config) as recognizer:
+                with Transcriber(config) as recognizer:
                     sync = recognizer.transcribe(voice, format=AudioFormat(), language=language)
                 audio = np.concatenate(
                     (
@@ -69,7 +69,7 @@ def replay(project):
                 }
 
                 def consume(timeout=0):
-                    event = session.get_event(timeout=timeout)
+                    event = session.next_event(timeout=timeout)
                     if event is None:
                         return False
                     if event.kind in ("failed", "realtime_failed", "cancelled"):
@@ -102,7 +102,7 @@ def replay(project):
                             pass
                         # 真实回放使用输入节奏，使结束前的快照能实际交付。
                         time.sleep(0.008)
-                    session.finish_input()
+                    session.end_input()
                     while session.pending_segments:
                         if not consume(timeout=30):
                             raise AssertionError("自动段回放超时")

@@ -2,7 +2,7 @@
 
 from threading import Lock
 
-from realtime_asr.runtime.recognizer import Recognizer
+from realtime_asr.runtime.transcriber import Transcriber
 
 
 class EngineResources:
@@ -18,7 +18,7 @@ class EngineResources:
             for owner, lock in self._owners:
                 if owner.engine is selected:
                     return owner, lock
-        owner = Recognizer(model, engine=engine)
+        owner = Transcriber(model, engine=engine)
         owned = owner, Lock()
         self._owners.append(owned)
         return owned

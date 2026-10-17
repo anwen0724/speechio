@@ -10,15 +10,15 @@ import numpy as np
 import psutil
 
 from realtime_asr import (
-    ASRRuntime,
     AudioFormat,
+    ModelConfig,
     RealtimeConfig,
-    Recognizer,
-    RecognizerConfig,
     SegmentationConfig,
     SessionConfig,
+    Transcriber,
     VadConfig,
 )
+from realtime_asr.runtime.asr import ASRRuntime
 
 
 def read_audio(path):
@@ -29,12 +29,12 @@ def read_audio(path):
 
 
 def run(project, model, output, *, configuration=None):
-    cpu = RecognizerConfig(model=project / ".runtime/models/whisper-tiny")
-    gpu = RecognizerConfig(
+    cpu = ModelConfig(model=project / ".runtime/models/whisper-tiny")
+    gpu = ModelConfig(
         model=cpu.model,
         device="cuda",
     )
-    native = RecognizerConfig(model=project / ".runtime/models/nemotron", engine="nemotron")
+    native = ModelConfig(model=project / ".runtime/models/nemotron", engine="nemotron")
     configs = {
         "whisper-cpu": (cpu, RealtimeConfig()),
         "whisper-cuda": (gpu, RealtimeConfig()),
@@ -122,7 +122,7 @@ def check_case(
     report["rss_before"] = psutil.Process().memory_info().rss
 
     def consume(timeout=0):
-        event = session.get_event(timeout=timeout)
+        event = session.next_event(timeout=timeout)
         if event is None:
             return False
         events.append(asdict(event))
@@ -149,7 +149,7 @@ def check_case(
             if paced:
                 # 仅真实评估建立输入节奏，不用于自动化竞态测试。
                 time.sleep(0.016)
-        session.finish_input()
+        session.end_input()
         while session.pending_segments:
             if not consume(timeout=30):
                 raise AssertionError("分句结果交付超时")
@@ -161,7 +161,7 @@ def check_case(
     finally:
         report["close"] = asdict(session.close())
     # 使用另一个真实模型实例对照固定范围，避免占用共享运行时模型。
-    with Recognizer(final_config) as recognizer:
+    with Transcriber(final_config) as recognizer:
         for final in finals:
             boundary = final["boundary"]
             pcm = audio[boundary["start_sample"] : boundary["end_sample"]]

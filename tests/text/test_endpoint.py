@@ -2,7 +2,7 @@
 
 import unittest
 
-from realtime_asr import RecognitionResult, WordTimestamp
+from realtime_asr import Transcript, WordTimestamp
 from realtime_asr.text.endpoint import SentenceBoundaryPolicy
 
 
@@ -16,7 +16,7 @@ class SentencePolicyTests(unittest.TestCase):
         self.assertIsNotNone(hint)
         self.assertEqual(hint.mark, "。")
         # 时间模型只负责提供左侧锚点位置，不需要再次输出标点或右侧词。
-        timed = RecognitionResult(
+        timed = Transcript(
             words=(WordTimestamp("今天", 0, 5000), WordTimestamp("天气好", 5000, 12345)),
             timestamp_status="reported",
         )
@@ -28,7 +28,7 @@ class SentencePolicyTests(unittest.TestCase):
         self.assertIsNone(policy.observe("今天天气好。我们继续说话", 32000))
         hint = policy.observe("今天天气好。我们继续说话", 40000)
         self.assertIsNotNone(hint)
-        result = RecognitionResult(
+        result = Transcript(
             text="今天天气好。我们继续说话",
             words=(
                 WordTimestamp("今天", 0, 5000),
@@ -38,11 +38,11 @@ class SentencePolicyTests(unittest.TestCase):
             timestamp_status="reported",
         )
         self.assertEqual(policy.locate(hint, result), 12345)
-        self.assertIsNone(policy.locate(hint, RecognitionResult(text=result.text)))
+        self.assertIsNone(policy.locate(hint, Transcript(text=result.text)))
         self.assertIsNone(
             policy.locate(
                 hint,
-                RecognitionResult(
+                Transcript(
                     words=(WordTimestamp("不同的结果。我们继续说话", 0, 16000),),
                     timestamp_status="reported",
                 ),

@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 class CandidateRequest:
     """公开接纳凭据，标准输入范围与继续边界分别记录。"""
 
-    unit: object
+    turn: object
     request_id: str
     kind: str
     hint: bool
@@ -50,7 +50,7 @@ class CandidateResult:
 class ResumeAck:
     """同轮继续的标准采样边界；字节位置由 PCM16 乘二取得。"""
 
-    unit: object
+    turn: object
     resume_epoch: int
     resume_id: str
     candidate_start_sample: int
@@ -67,7 +67,7 @@ class _Pending:
 class RetainedCorrection:
     """最近完成单元的受限修正上下文，音频与原任务关系不可混用。"""
 
-    unit: object
+    turn: object
     task_id: str
     pcm: bytes
     state: "CandidateState"
@@ -78,7 +78,7 @@ class CandidateState:
     """只保存每种候选的最新归属，音频副本由任务或封口上下文拥有。"""
 
     def __init__(self, unit, *, epoch=0, resume_id=None, start_sample=0):
-        self.unit = unit
+        self.turn = unit
         self.epoch = epoch
         self.resume_id = resume_id
         self.start_sample = start_sample
@@ -87,7 +87,7 @@ class CandidateState:
 
     def describe(self, kind, hint, start, end):
         return CandidateRequest(
-            self.unit,
+            self.turn,
             uuid4().hex,
             kind,
             hint,
@@ -169,4 +169,4 @@ class CandidateState:
         self.epoch += 1
         self.resume_id = uuid4().hex
         self.start_sample = samples
-        return ResumeAck(self.unit, self.epoch, self.resume_id, samples), invalidated
+        return ResumeAck(self.turn, self.epoch, self.resume_id, samples), invalidated

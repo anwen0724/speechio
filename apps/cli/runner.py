@@ -15,13 +15,12 @@ from apps.cli.output import Output
 from apps.cli.parser import parse_args
 from realtime_asr import (
     ASRError,
-    ASRRuntime,
     AudioFormat,
     EndpointConfig,
     MicrophoneConfig,
     MicrophoneInput,
+    ModelConfig,
     RealtimeMergeConfig,
-    RecognizerConfig,
     SegmentationConfig,
     SessionConfig,
     StabilizationConfig,
@@ -29,6 +28,7 @@ from realtime_asr import (
     list_input_devices,
 )
 from realtime_asr.audio.files import audio_file_chunks
+from realtime_asr.runtime.asr import ASRRuntime
 
 
 class _EventConsumer:
@@ -52,12 +52,12 @@ class _EventConsumer:
     def _run(self):
         try:
             while not self.stopping.is_set():
-                event = self.session.get_event(timeout=0.05)
+                event = self.session.next_event(timeout=0.05)
                 if event is not None:
                     self.output.event(event, input_index=self.index, source=self.source)
                     if event.kind == "final" and self.correct_after_final:
                         self.correction_pending = True
-                        self.session.request_correction(event.unit)
+                        self.session.request_correction(event.turn)
                     if event.kind in ("correction", "correction_failed"):
                         self.correction_pending = False
                     if event.kind in ("failed", "realtime_failed", "correction_failed"):
@@ -223,9 +223,9 @@ def _run_input(runtime, args, output, index, source, format, blocks, *, micropho
                 consumer.check()
                 session.feed_audio(pcm)
         if args.mode == "auto":
-            session.finish_input()
+            session.end_input()
         else:
-            session.finish()
+            session.end_turn()
         consumer.drain(args.drain_timeout)
     except KeyboardInterrupt:
         reason, code = "interrupt", 130
@@ -297,7 +297,7 @@ def _execute(args, stdin, output):
                 devices=[asdict(d) for d in list_input_devices(channels=args.channels)],
             )
             return 0
-        config = RecognizerConfig(
+        config = ModelConfig(
             model=args.model,
             engine=args.engine,
             device=args.device,

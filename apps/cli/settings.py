@@ -208,9 +208,9 @@ def parse_target(target, argv):
 def check_paths(args, target):
     """只核对选中入口的文件、目录与依赖；完整性及模型加载另行执行。"""
     modules = set()
-    from realtime_asr.engines.local import RecognizerConfig, resolve_config
+    from realtime_asr.engines.local import ModelConfig, resolve_config
 
-    model = RecognizerConfig(
+    model = ModelConfig(
         model=args.model,
         engine=args.engine,
         device=args.device,

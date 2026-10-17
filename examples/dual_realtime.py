@@ -5,13 +5,13 @@ from contextlib import closing
 
 from realtime_asr import (
     ASRError,
-    ASRRuntime,
+    ModelConfig,
     RealtimeConfig,
     RealtimeMergeConfig,
-    RecognizerConfig,
     SessionConfig,
 )
 from realtime_asr.audio.files import audio_file_chunks
+from realtime_asr.runtime.asr import ASRRuntime
 
 
 def show(event):
@@ -33,8 +33,8 @@ def main():
     parser.add_argument("--ultrafast-model", required=True)
     parser.add_argument("--language")
     args = parser.parse_args()
-    accurate = RecognizerConfig(model=args.accurate_model, engine="nemotron")
-    fast = RecognizerConfig(model=args.ultrafast_model, engine="nemotron")
+    accurate = ModelConfig(model=args.accurate_model, engine="nemotron")
+    fast = ModelConfig(model=args.ultrafast_model, engine="nemotron")
     with ASRRuntime(
         accurate,
         realtime=RealtimeConfig(mode="native"),
@@ -55,11 +55,11 @@ def main():
                 session.feed_audio(first)
                 for _, audio in chunks:
                     session.feed_audio(audio)
-                    while event := session.get_event():
+                    while event := session.next_event():
                         show(event)
-                session.finish()
+                session.end_turn()
                 while True:
-                    event = session.get_event(timeout=60)
+                    event = session.next_event(timeout=60)
                     if event is None:
                         raise TimeoutError("识别没有在等待期限内完成")
                     show(event)

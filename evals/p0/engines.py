@@ -24,18 +24,18 @@ class EnginePool:
 
     def _create(self, backend):
         """只在显式加载阶段导入后端；设备由声明决定。"""
-        from realtime_asr import RecognizerConfig
+        from realtime_asr import ModelConfig
 
         if backend == "nemotron":
             from realtime_asr.engines.nemotron import NemotronEngine
 
             return NemotronEngine(
-                RecognizerConfig(model=self.root / "models/nemotron", engine="nemotron")
+                ModelConfig(model=self.root / "models/nemotron", engine="nemotron")
             )
         from realtime_asr.engines.whisper import WhisperEngine
 
         return WhisperEngine(
-            RecognizerConfig(
+            ModelConfig(
                 model=self.root / "models/whisper-tiny",
                 device="cuda" if backend == "whisper-gpu" else "cpu",
                 compute_type="float16" if backend == "whisper-gpu" else "int8",

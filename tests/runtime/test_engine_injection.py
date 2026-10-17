@@ -7,12 +7,12 @@ import numpy as np
 
 from realtime_asr import (
     ASRError,
-    ASRRuntime,
     AudioFormat,
-    RecognitionResult,
-    Recognizer,
     SessionConfig,
+    Transcriber,
+    Transcript,
 )
+from realtime_asr.runtime.asr import ASRRuntime
 
 
 class RecordingEngine:
@@ -34,7 +34,7 @@ class RecordingEngine:
 
     def transcribe(self, audio, language=None, *, role="final", word_timestamps=False):
         self.inputs.append((audio.copy(), language, role, word_timestamps))
-        return RecognitionResult(text="收到完整音频", reported_language=language)
+        return Transcript(text="收到完整音频", reported_language=language)
 
     def close(self):
         self.closes += 1
@@ -43,7 +43,7 @@ class RecordingEngine:
 class EngineInjectionTests(unittest.TestCase):
     def test_custom_engine_receives_complete_audio_and_owns_one_lifecycle(self):
         engine = RecordingEngine()
-        recognizer = Recognizer(engine=engine)
+        recognizer = Transcriber(engine=engine)
         self.addCleanup(recognizer.close)
         source = np.arange(525, dtype=np.int16)
         result = recognizer.transcribe_chunks(
@@ -82,14 +82,14 @@ class EngineInjectionTests(unittest.TestCase):
             session.start()
             session.feed_audio(source[:512])
             session.feed_audio(source[512:])
-            session.finish()
+            session.end_turn()
         completed = 0
         drained = set()
         while completed < 2:
-            event = session.get_event(timeout=5)
+            event = session.next_event(timeout=5)
             self.assertIsNotNone(event)
             if event.kind == "realtime" and event.stream_finished:
-                drained.add(event.unit.unit_id)
+                drained.add(event.turn.turn_id)
             if event.kind == "completed":
                 completed += 1
         self.assertEqual(drained, {1, 2})
@@ -114,14 +114,14 @@ class EngineInjectionTests(unittest.TestCase):
         source = np.arange(1027, dtype=np.int16)
         session.start()
         session.feed_audio(source[:1024])
-        preview = session.get_event(timeout=5)
+        preview = session.next_event(timeout=5)
         self.assertEqual(
             (preview.kind, preview.source, preview.audio_samples), ("realtime", "snapshot", 1024)
         )
         session.feed_audio(source[1024:])
-        session.finish()
-        self.assertEqual(session.get_event(timeout=5).kind, "final")
-        self.assertEqual(session.get_event(timeout=5).kind, "completed")
+        session.end_turn()
+        self.assertEqual(session.next_event(timeout=5).kind, "final")
+        self.assertEqual(session.next_event(timeout=5).kind, "completed")
         self.assertEqual(engine.inputs[0][1:], ("zh-CN", "snapshot", False))
         np.testing.assert_array_equal(engine.inputs[0][0], source[:1024].astype(np.float32) / 32768)
         self.assertEqual(engine.inputs[-1][1:], ("zh-CN", "final", False))
@@ -148,9 +148,9 @@ class EngineInjectionTests(unittest.TestCase):
         session.start()
         source = np.arange(525, dtype=np.int16)
         session.feed_audio(source)
-        session.finish()
+        session.end_turn()
         while True:
-            event = session.get_event(timeout=5)
+            event = session.next_event(timeout=5)
             self.assertIsNotNone(event)
             if event.kind == "completed":
                 break
@@ -182,7 +182,7 @@ class EngineInjectionTests(unittest.TestCase):
         source = np.arange(525, dtype=np.int16)
         session.start()
         session.feed_audio(source)
-        session.finish()
+        session.end_turn()
         try:
             self.assertTrue(entered.wait(5))
             change = session.reset()
@@ -191,13 +191,13 @@ class EngineInjectionTests(unittest.TestCase):
             source.fill(999)
             session.start()
             session.feed_audio(np.full(525, 7000, np.int16))
-            session.finish()
+            session.end_turn()
             self.assertEqual(runtime.capacity.tasks, 2)
         finally:
             release.set()
-        events = [session.get_event(timeout=5), session.get_event(timeout=5)]
+        events = [session.next_event(timeout=5), session.next_event(timeout=5)]
         self.assertEqual([event.kind for event in events], ["final", "completed"])
-        self.assertTrue(all(event.unit.generation == 1 for event in events))
+        self.assertTrue(all(event.turn.generation == 1 for event in events))
         np.testing.assert_array_equal(engine.inputs[0][0], np.arange(525, dtype=np.float32) / 32768)
         np.testing.assert_array_equal(engine.inputs[1][0], np.full(525, 7000, np.float32) / 32768)
         self.assertEqual(runtime.close().status, "ok")
@@ -213,12 +213,12 @@ class EngineInjectionTests(unittest.TestCase):
         session = runtime.create_session()
         session.start()
         session.feed_audio(b"\x01\x00")
-        session.finish()
-        event = session.get_event(timeout=5)
+        session.end_turn()
+        event = session.next_event(timeout=5)
         self.assertEqual(event.kind, "failed")
         self.assertEqual(event.error.code, "BACKEND_INCOMPATIBLE")
         self.assertIsNone(event.result)
-        self.assertIsNone(session.get_event())
+        self.assertIsNone(session.next_event())
 
     def test_external_prepare_failure_closes_owner_and_preserves_cause(self):
         class FailedEngine(RecordingEngine):
@@ -250,11 +250,11 @@ class RecordingStream:
         pass
 
     def get_result(self):
-        return RecognitionResult(text="实时结果")
+        return Transcript(text="实时结果")
 
     def finish(self):
         self.finishes += 1
-        return RecognitionResult(text="完整实时结果")
+        return Transcript(text="完整实时结果")
 
     def close(self):
         self.closes += 1

@@ -6,12 +6,12 @@ import wave
 from dataclasses import asdict
 
 from realtime_asr import (
-    ASRRuntime,
+    ModelConfig,
     RealtimeConfig,
-    RecognizerConfig,
     SessionConfig,
     VadConfig,
 )
+from realtime_asr.runtime.asr import ASRRuntime
 
 
 def main():
@@ -23,7 +23,7 @@ def main():
     parser.add_argument("--language", default=None)
     parser.add_argument("--realtime", action="store_true")
     args = parser.parse_args()
-    model = RecognizerConfig(model=args.model, engine=args.backend)
+    model = ModelConfig(model=args.model, engine=args.backend)
     realtime = None
     if args.realtime:
         realtime = RealtimeConfig(mode=model.capabilities.realtime_mode)
@@ -34,7 +34,7 @@ def main():
         )
 
         def consume(timeout=0):
-            event = session.get_event(timeout=timeout)
+            event = session.next_event(timeout=timeout)
             if event is not None:
                 print(json.dumps(asdict(event), ensure_ascii=False))
             return event
@@ -50,7 +50,7 @@ def main():
                 session.feed_audio(chunk)
                 while consume() is not None:
                     pass
-        session.finish_input()
+        session.end_input()
         while session.pending_segments:
             if consume(timeout=30) is None:
                 raise TimeoutError("录音段结果尚未完成")

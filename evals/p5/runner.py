@@ -10,14 +10,14 @@ import numpy as np
 import soundfile as sf
 
 from evals.p4.runner import read_audio
-from realtime_asr import AudioFormat, Recognizer, RecognizerConfig, list_input_devices
+from realtime_asr import AudioFormat, ModelConfig, Transcriber, list_input_devices
 
 
 def run(project, folder):
     """三条模型路径分别覆盖文件、序列、stdin 与自动模式。"""
-    cpu = RecognizerConfig(model=project / ".runtime/models/whisper-tiny")
-    gpu = RecognizerConfig(model=cpu.model, device="cuda")
-    native = RecognizerConfig(model=project / ".runtime/models/nemotron", engine="nemotron")
+    cpu = ModelConfig(model=project / ".runtime/models/whisper-tiny")
+    gpu = ModelConfig(model=cpu.model, device="cuda")
+    native = ModelConfig(model=project / ".runtime/models/nemotron", engine="nemotron")
     chinese = project / "data/corpus/p0/C01-1.wav"
     stereo = folder / "C01-stereo-48k.wav"
     voice = read_audio(chinese)
@@ -35,7 +35,7 @@ def run(project, folder):
             "--output",
             "jsonl",
         ]
-        with Recognizer(config) as recognizer:
+        with Transcriber(config) as recognizer:
             for sample_id, language in (("C01-1", "zh-CN"), ("C07-1", "en")):
                 path = project / f"data/corpus/p0/{sample_id}.wav"
                 pcm = read_audio(path)

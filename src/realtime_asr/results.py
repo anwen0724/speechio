@@ -14,7 +14,7 @@ class WordTimestamp:
 
 
 @dataclass(frozen=True)
-class RecognitionResult:
+class Transcript:
     """保留原文、真实语言来源和可用分段，不伪造未知值。"""
 
     text: str = ""

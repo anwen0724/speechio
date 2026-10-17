@@ -5,6 +5,7 @@ import json
 import sys
 
 import realtime_asr
+from realtime_asr.runtime.asr import ASRRuntime
 
 report = {
     "package": realtime_asr.__file__,
@@ -14,7 +15,7 @@ report = {
         name: importlib.util.find_spec(name) is not None
         for name in ("onnxruntime", "webrtcvad", "soundfile", "soxr", "faster_whisper")
     },
-    "automatic_api": hasattr(realtime_asr.ASRRuntime, "create_auto_session"),
+    "automatic_api": hasattr(ASRRuntime, "create_auto_session"),
 }
 assert report["isolated"] and not report["vad_loaded_on_import"] and report["automatic_api"]
 assert not report["optional_dependencies"]["soundfile"]

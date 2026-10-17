@@ -59,7 +59,7 @@ src/realtime_asr/              # 库：只包含核心能力
 │   ├── nemotron.py            # Nemotron 识别器适配
 │   └── stream.py              # 原生流输入、解码、结束与关闭
 └── runtime/
-    ├── recognizer.py          # 同步 SDK 与模型生命周期
+    ├── transcriber.py          # 同步 SDK 与模型生命周期
     ├── asr.py                 # ASRRuntime、最终调度及容量
     ├── realtime.py            # 角色执行组、周期、容量与原生排空
     ├── tasks.py               # 固定音频、选项及任务归属
@@ -103,13 +103,13 @@ tests/
 
 `text` 只处理观察与文本策略，不持有模型或可变音频。辅助任务复用 `runtime/asr.py` 的最终模型、任务容量和工作线程；会话执行归属检查与左右切分。
 
-评估代码调用正式实现，再补充语料、测量和评分。`evals/p0/engines.py` 的 `EnginePool` 只用于评估，不作为产品运行时。库只包含 `src/realtime_asr/`；`apps/cli` 是本地命令行工具，不随库发布；`from realtime_asr import ...` 的公开导出与签名保持。
+评估代码调用正式实现，再补充语料、测量和评分。`evals/p0/engines.py` 的 `EnginePool` 只用于评估，不作为产品运行时。库只包含 `src/realtime_asr/`；`apps/cli` 是本地命令行工具，不随库发布；公开导入以 `src/realtime_asr/__init__.py` 的 `__all__` 为准，低层组件从子模块导入。
 
 ## 自定义引擎
 
-`Recognizer(engine=...)` 和 `ASRRuntime(engine=...)` 接受同一引擎契约。调用方可以实现本地模型或远程 API；引擎不需要提供本地路径。包内提供 Whisper、Nemotron 适配，不提供厂商云端适配器。
+`Transcriber(engine=...)` 和 `ASRRuntime(engine=...)` 接受同一引擎契约。调用方可以实现本地模型或远程 API；引擎不需要提供本地路径。包内提供 Whisper、Nemotron 适配，不提供厂商云端适配器。
 
-引擎继承 `BaseTranscriptionEngine` 或实现相同方法。`capabilities` 返回固定的 `EngineCapabilities`；`prepare()` 准备资源，`close()` 释放资源。整段方法 `transcribe(audio, language=None, *, role="final", word_timestamps=False)` 接收 16 kHz 单声道、PCM16 除以 32768 后的 float32，返回 `RecognitionResult`。语言提示原样传入，厂商映射由引擎完成。能力字段分别声明整段、完整快照、原生流式和词时间；核心按能力组装角色。
+引擎继承 `BaseTranscriptionEngine` 或实现相同方法。`capabilities` 返回固定的 `EngineCapabilities`；`prepare()` 准备资源，`close()` 释放资源。整段方法 `transcribe(audio, language=None, *, role="final", word_timestamps=False)` 接收 16 kHz 单声道、PCM16 除以 32768 后的 float32，返回 `Transcript`。语言提示原样传入，厂商映射由引擎完成。能力字段分别声明整段、完整快照、原生流式和词时间；核心按能力组装角色。
 
 流式引擎通过 `create_streaming_session(language=None)` 为每个音频单元创建独立流。流实现 `StreamingSession` 的 `accept_audio()`、`get_result()`、`finish()`，可按需实现 `decode()` 和 `close()`。输入只包含新增标准音频；结果是本单元累计文本。`finish()` 必须排空尾部并返回累计结果，不能把厂商的单句结束直接变成核心会话的完成事件。
 
@@ -136,11 +136,12 @@ prepare_nemotron("models/nemotron-80ms", variant="80ms", allow_download=True)
 
 ```python
 from realtime_asr import (
-    ASRRuntime, RealtimeConfig, RealtimeMergeConfig, RecognizerConfig, SessionConfig,
+    RealtimeConfig, RealtimeMergeConfig, ModelConfig, SessionConfig,
 )
+from realtime_asr.runtime.asr import ASRRuntime
 
-accurate = RecognizerConfig(model="models/nemotron-1120ms", engine="nemotron")
-fast = RecognizerConfig(model="models/nemotron-80ms", engine="nemotron")
+accurate = ModelConfig(model="models/nemotron-1120ms", engine="nemotron")
+fast = ModelConfig(model="models/nemotron-80ms", engine="nemotron")
 with ASRRuntime(
     accurate,
     realtime=RealtimeConfig(mode="native"),
@@ -152,9 +153,9 @@ with ASRRuntime(
     try:
         session.start()
         session.feed_audio(pcm16_bytes)  # 调用方已有的标准音频。
-        session.finish()
+        session.end_turn()
         while True:
-            event = session.get_event(timeout=60)
+            event = session.next_event(timeout=60)
             if event is None:
                 raise TimeoutError("识别等待超时")
             if event.error:
@@ -258,16 +259,33 @@ with MicrophoneInput(MicrophoneConfig()) as microphone:
 uv pip install "<wheel-path>"
 ```
 
-默认安装包含 Whisper 后端、音频转换和 SoundFile/SoXR。`model` 可以是模型名，也可以是已经准备好的目录；名字由所选引擎解释：
+默认安装包含 Whisper 后端、音频转换和 SoundFile/SoXR。最快的两种用法：
 
 ```python
-from realtime_asr import Recognizer, RecognizerConfig
+from realtime_asr import transcribe_audio, transcribe_stream
 
-with Recognizer() as recognizer:                      # 默认 Whisper tiny
-    print(recognizer.transcribe_file("samples/speech.wav", language="zh").text)
+# 转写一段已有音频，返回 Transcript
+text = transcribe_audio("samples/speech.wav", model="tiny", language="zh").text
 
-with Recognizer(RecognizerConfig(model="small.en")) as recognizer:
-    print(recognizer.transcribe_file("samples/speech.wav").text)
+# 持续读取麦克风，每段产出一个 Transcript
+for transcript in transcribe_stream(
+    model="tiny", vad_model="samples/silero-v6.onnx", language="zh"
+):
+    print(transcript.text)
+```
+
+`transcribe_stream` 需要本地 VAD 模型路径。需要复用模型或控制会话时，再用下面的类写法。
+
+`model` 可以是模型名，也可以是已经准备好的目录；名字由所选引擎解释：
+
+```python
+from realtime_asr import Transcriber, ModelConfig
+
+with Transcriber() as transcriber:                      # 默认 Whisper tiny
+    print(transcriber.transcribe_file("samples/speech.wav", language="zh").text)
+
+with Transcriber(ModelConfig(model="small.en")) as transcriber:
+    print(transcriber.transcribe_file("samples/speech.wav").text)
 ```
 
 模型名首次使用时由 faster-whisper 下载到 HuggingFace 缓存。`download_root` 指定缓存目录，`local_files_only=True` 禁止联网。模型名与引擎的对应关系见 [Whisper 引擎说明](docs/engines/whisper.md)。
@@ -279,26 +297,26 @@ asr-install-sherpa-models --root D:/models/sherpa-onnx --model 560ms
 ```
 
 ```python
-from realtime_asr import Recognizer, RecognizerConfig
+from realtime_asr import Transcriber, ModelConfig
 
-with Recognizer(
-    RecognizerConfig(
+with Transcriber(
+    ModelConfig(
         model="D:/models/sherpa-onnx/sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11",
         engine="nemotron",
     )
-) as recognizer:
+) as transcriber:
     ...
 ```
 
-宿主自己的模型实现 `BaseTranscriptionEngine` 后注入：`Recognizer(engine=MyEngine())`。SDK 只准备、调用和关闭该实例，不要求本地模型路径。
+宿主自己的模型实现 `BaseTranscriptionEngine` 后注入：`Transcriber(engine=MyEngine())`。SDK 只准备、调用和关闭该实例，不要求本地模型路径。
 
-完整 PCM16 字节使用 `recognizer.transcribe(pcm, format=AudioFormat(), language="zh")`。完整浮点数组声明真实采样率与声道，例如 `AudioFormat(48000, 2, "float32")`。
+完整 PCM16 字节使用 `transcriber.transcribe(pcm, format=AudioFormat(), language="zh")`。完整浮点数组声明真实采样率与声道，例如 `AudioFormat(48000, 2, "float32")`。
 
-有限音频块序列使用 `recognizer.transcribe_chunks(chunks, format=AudioFormat(), language="en")`。SDK 先读取和连续转换全部输入，再调用一次模型；这不是实时文本接口。输入块允许空块，迭代正常结束后刷新尾部。迭代失败不会返回前缀成功。
+有限音频块序列使用 `transcriber.transcribe_chunks(chunks, format=AudioFormat(), language="en")`。SDK 先读取和连续转换全部输入，再调用一次模型；这不是实时文本接口。输入块允许空块，迭代正常结束后刷新尾部。迭代失败不会返回前缀成功。
 
 需要单独转换时，可使用 `AudioConverter(format)` 的 `feed`、`finish` 和 `close`。`feed` 返回完整标准块，`finish` 返回滤波余量与短尾块；`AudioFrame` 的位置按 16 kHz 有效采样计数。`close` 丢弃余量，不代替 `finish`。
 
-同一 `Recognizer` 可顺序复用模型；并发准备、识别或关闭返回 `RUNTIME_BUSY`。错误通过 `ASRError.code`、`operation` 和 `message` 判断。关闭返回 `CloseResult`，重复关闭保留首次结论；`reference_drop` 不承诺显存回到加载前数值。
+同一 `Transcriber` 可顺序复用模型；并发准备、识别或关闭返回 `RUNTIME_BUSY`。错误通过 `ASRError.code`、`operation` 和 `message` 判断。关闭返回 `CloseResult`，重复关闭保留首次结论；`reference_drop` 不承诺显存回到加载前数值。
 
 Whisper 的 CUDA 推理由 CTranslate2 在当前进程查找 CUDA 和 cuDNN。使用 `device="cuda"` 前，应先按显卡驱动安装匹配的 CUDA 12 和 cuDNN 9，并让它们的库目录出现在系统搜索路径中；库不下载、不校验、不固定这些运行库的版本。`compute_type` 默认 `"default"`，由 faster-whisper 按设备选择，也可显式传 `"float16"`、`"int8_float16"` 等值。CPU 配置不涉及这些。
 
@@ -313,29 +331,30 @@ uv run --no-sync python -m evals.p1
 
 ## 连续会话 SDK
 
-运行时显式准备共享模型，创建会话后按单元输入。`finish()` 固定完整音频并提交后台任务，返回后可以开始下一单元；它不表示推理已经完成。
+运行时显式准备共享模型，创建会话后按单元输入。`end_turn()` 固定完整音频并提交后台任务，返回后可以开始下一单元；它不表示推理已经完成。
 
 ```python
-from realtime_asr import ASRRuntime, RecognizerConfig, SessionConfig
+from realtime_asr import ModelConfig, SessionConfig
+from realtime_asr.runtime.asr import ASRRuntime
 
-with ASRRuntime(RecognizerConfig(model="models/whisper-tiny")) as runtime:
+with ASRRuntime(ModelConfig(model="models/whisper-tiny")) as runtime:
     session = runtime.create_session(SessionConfig(language="zh"))
     for pcm in (first_pcm, second_pcm):  # 示例：两个完整 PCM16 音频单元
         session.start()
         session.feed_audio(pcm)
-        session.finish()
+        session.end_turn()
     for _ in range(4):
-        event = session.get_event(timeout=30)
+        event = session.next_event(timeout=30)
         if event is None:
             raise TimeoutError("等待事件超时")
         if event.kind == "final":
-            print(event.unit, event.result.text)
+            print(event.turn, event.result.text)
     session.close()
 ```
 
 正常任务依次交付 `final`、`completed`；失败只交付 `failed`，取消只交付 `cancelled`。实际程序应按这些终结类型消费，示例中的四次消费只演示两次正常成功。事件可以定位会话、代次、单元、任务和封口采样范围。
 
-`cancel()` 只取消活动单元；取消已提交任务应传入 `UnitRef`。`reset()` 取消该会话旧工作并增加代次。`Session.close()` 不隐含结束，也不关闭共享模型。重置和关闭直接返回取消记录，并清除未消费的旧事件。
+`cancel()` 只取消活动单元；取消已提交任务应传入 `TurnRef`。`reset()` 取消该会话旧工作并增加代次。`Session.close()` 不隐含结束，也不关闭共享模型。重置和关闭直接返回取消记录，并清除未消费的旧事件。
 
 运行时关闭默认等待 5 秒。`pending` 表示仍有后台资源未退出；运行任务结束后才清理模型，宿主可再次关闭并观察终态。取消不承诺中断本地模型调用。音频、任务和结果容量分别受限，提交容量不足时保留 `sealed` 音频供重试；完整规则见 [P2 Spec](docs/specs/continuous-sessions.md)。
 
@@ -348,24 +367,25 @@ uv run --no-sync python -m evals.p2
 
 ## 基本实时识别 SDK
 
-运行时通过 `RealtimeConfig` 配置实时角色，会话通过 `SessionConfig(realtime=True)` 启用。关闭实时的会话保留普通最终事件流程。默认 `mode="snapshot"` 使用 Whisper；`mode="native"` 使用 Nemotron CPU。`model=None` 共享最终模型，显式 `model=RecognizerConfig(...)` 创建独立实时模型实例。
+运行时通过 `RealtimeConfig` 配置实时角色，会话通过 `SessionConfig(realtime=True)` 启用。关闭实时的会话保留普通最终事件流程。默认 `mode="snapshot"` 使用 Whisper；`mode="native"` 使用 Nemotron CPU。`model=None` 共享最终模型，显式 `model=ModelConfig(...)` 创建独立实时模型实例。
 
 ```python
-from realtime_asr import ASRRuntime, RealtimeConfig, RecognizerConfig, SessionConfig
+from realtime_asr import RealtimeConfig, ModelConfig, SessionConfig
+from realtime_asr.runtime.asr import ASRRuntime
 
 with ASRRuntime(
-    RecognizerConfig(model="models/whisper-tiny"),
+    ModelConfig(model="models/whisper-tiny"),
     realtime=RealtimeConfig(),
 ) as runtime:
     session = runtime.create_session(SessionConfig(realtime=True, language="zh"))
     session.start()
     for chunk in pcm_chunks:  # 示例：调用方按音频来源节奏提供标准 PCM16
         session.feed_audio(chunk)
-        while event := session.get_event():
+        while event := session.next_event():
             print(event.kind, event.source, event.result)
-    session.finish()
+    session.end_turn()
     while True:
-        event = session.get_event(timeout=60)
+        event = session.next_event(timeout=60)
         if event is None:
             raise TimeoutError("等待识别事件超时")
         print(event.kind, event.source, event.result)
@@ -392,20 +412,21 @@ uv run --no-sync python -m evals.p3
 安装 `vad` 可选依赖，显式提供本地 Silero v6 ONNX 图。自动会话直接接收持续输入，不逐段调用 `start()`。一个输入代次使用同一个转换器，结束录音段不会重置重采样状态。
 
 ```python
-from realtime_asr import ASRRuntime, RecognizerConfig, SessionConfig, VadConfig
+from realtime_asr import ModelConfig, SessionConfig, VadConfig
+from realtime_asr.runtime.asr import ASRRuntime
 
-with ASRRuntime(RecognizerConfig(model=".runtime/models/whisper-tiny")) as runtime:
+with ASRRuntime(ModelConfig(model=".runtime/models/whisper-tiny")) as runtime:
     session = runtime.create_auto_session(
         vad=VadConfig(model_path=".runtime/models/vad/silero-v6.onnx"),
         config=SessionConfig(language="zh-CN"),
     )
     for chunk in audio_chunks:
         session.feed_audio(chunk)
-        while event := session.get_event():
+        while event := session.next_event():
             print(event.kind, event.boundary, event.result)
-    session.finish_input()
+    session.end_input()
     while session.pending_segments:
-        event = session.get_event(timeout=30)
+        event = session.next_event(timeout=30)
         if event is None:
             raise TimeoutError("等待自动录音段超时")
         print(event.kind, event.boundary, event.result)
@@ -451,7 +472,7 @@ def open_optimized_session(runtime):
     )
 ```
 
-`event.stabilization` 提供 `stable_text`、`unstable_text`、`stable_delta`、`display_text` 及接受／冲突诊断。`event.finalization` 提供最终前缀是否一致及差异原因。`AutomaticSession.optimization_status` 是本输入代次的诊断副本，不能通过修改返回值改变任务。
+`event.stabilization` 提供 `stable_text`、`unstable_text`、`stable_delta`、`display_text` 及接受／冲突诊断。`event.finalization` 提供最终前缀是否一致及差异原因。`LiveSession.optimization_status` 是本输入代次的诊断副本，不能通过修改返回值改变任务。
 
 `RealtimeConfig(acoustic_boundaries=True)` 在 Whisper 快照中启用声学触发和两次补识别。Nemotron 原生流继续按新增样本解码，不使用声学快照策略。Whisper 单次 SDK 调用也可传入 `word_timestamps=True`；结果中的 `words` 使用标准样本范围。Nemotron 当前明确返回 `timestamp_status="unavailable"`，不能开启依赖词时间的句末切段。
 
@@ -540,7 +561,7 @@ Spec、实施 Plan 与状态入口分别为 [P0 Spec](docs/specs/runtime-and-cor
 
 ## 候选与同轮继续
 
-宿主通过 `ASRRuntime(candidate=CandidateConfig())` 显式开启候选，默认复用主模型。独立模型使用 `CandidateConfig(model=...)` 或宿主注入的 `engine`。模型实例由运行时统一准备与关闭。会话的 `request_candidate(kind="tail"|"whole", hint=False)` 异步返回固定范围的请求，结果从 `get_event()` 消费。候选不会自动成为最终正文。
+宿主通过 `ASRRuntime(candidate=CandidateConfig())` 显式开启候选，默认复用主模型。独立模型使用 `CandidateConfig(model=...)` 或宿主注入的 `engine`。模型实例由运行时统一准备与关闭。会话的 `request_candidate(kind="tail"|"whole", hint=False)` 异步返回固定范围的请求，结果从 `next_event()` 消费。候选不会自动成为最终正文。
 
 手动接收期间调用 `resume()`，保留完整音频历史并更新继续代次；旧代次预览不再发布。`SessionConfig(completion_mode="candidate")` 让候选角色执行完成任务，只复用同版本有效整轮候选。默认 `final` 策略保持原来的最终模型。
 
@@ -558,7 +579,7 @@ Porcupine 安装 `wake-porcupine` extra，设置 `PICOVOICE_ACCESS_KEY`，选择
 
 本地 CLI 使用 `--wake`、`--wake-backend`、`--wake-keywords` 或 `--wake-models`、`--wake-feature-dir`，并可配置 `--wake-activation-delay`、`--wake-speech-timeout`、`--wake-trim-duration` 与 `--wake-followup-window`。默认继续窗口为零，独立唤醒词与正文之间有停顿时，应按实际使用配置有限窗口。
 
-公开 `Session.audio_snapshot()` 提供当前单元已经确定归属的标准音频副本及半开范围。自动模式不包含尚未确定归属的回溯尾部；观察不结束输入。可以通过 [录音保存示例](examples/save_audio.py)保存标准 WAV，或使用 [热键听写示例](examples/hotkey_dictation.py)在终端用 Space 开始／结束、Esc 取消并退出。热键不接管其他应用。
+公开 `Session.current_audio()` 提供当前单元已经确定归属的标准音频副本及半开范围。自动模式不包含尚未确定归属的回溯尾部；观察不结束输入。可以通过 [录音保存示例](examples/save_audio.py)保存标准 WAV，或使用 [热键听写示例](examples/hotkey_dictation.py)在终端用 Space 开始／结束、Esc 取消并退出。热键不接管其他应用。
 
 Porcupine 的正向实际检测仍需 AccessKey，人工口述、首词裁剪质量、终端热键与其他平台应分别验收。当前验证范围见 STATUS，不把受控检测当成人工设备验收。
 

@@ -5,7 +5,7 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
-from realtime_asr import Recognizer, RecognizerConfig
+from realtime_asr import ModelConfig, Transcriber
 
 
 def main():
@@ -17,8 +17,8 @@ def main():
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     parser.add_argument("--language")
     args = parser.parse_args()
-    config = RecognizerConfig(model=args.model, engine=args.backend, device=args.device)
-    with Recognizer(config) as recognizer:
+    config = ModelConfig(model=args.model, engine=args.backend, device=args.device)
+    with Transcriber(config) as recognizer:
         result = recognizer.transcribe_file(args.audio, language=args.language)
     print(
         json.dumps(

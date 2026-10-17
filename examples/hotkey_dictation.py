@@ -7,13 +7,13 @@ from pathlib import Path
 from time import sleep
 
 from realtime_asr import (
-    ASRRuntime,
     AudioFormat,
     MicrophoneConfig,
     MicrophoneInput,
-    RecognizerConfig,
+    ModelConfig,
     SessionConfig,
 )
+from realtime_asr.runtime.asr import ASRRuntime
 
 
 @contextmanager
@@ -44,7 +44,7 @@ def main():
     args = parser.parse_args()
     microphone = None
     with (
-        ASRRuntime(RecognizerConfig(model=args.model)) as runtime,
+        ASRRuntime(ModelConfig(model=args.model)) as runtime,
         terminal_keys() as read_key,
     ):
         session = runtime.create_session(SessionConfig(format=AudioFormat()))
@@ -53,7 +53,7 @@ def main():
             while True:
                 key = read_key()
                 if key == "\x1b":
-                    session.cancel()
+                    session.cancel_turn()
                     break
                 if key == " ":
                     if microphone is None:
@@ -71,7 +71,7 @@ def main():
                         while block := microphone.read_audio():
                             session.feed_audio(block)
                         microphone = None
-                        session.finish()
+                        session.end_turn()
                         print("已结束，等待识别")
                 if microphone is not None:
                     block = microphone.read_audio(timeout=0.05)
@@ -79,7 +79,7 @@ def main():
                         session.feed_audio(block)
                 else:
                     sleep(0.02)
-                while event := session.get_event():
+                while event := session.next_event():
                     if event.error:
                         raise RuntimeError(event.error.code)
                     if event.kind == "final":

@@ -6,14 +6,14 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from realtime_asr import ASRError, Recognizer, RecognizerConfig
+from realtime_asr import ASRError, ModelConfig, Transcriber
 from realtime_asr.engines.whisper import WhisperEngine
 from realtime_asr.runtime.models.manifest import create_manifest
 
 
 class ModelSourceTests(unittest.TestCase):
     def test_default_recognizer_uses_whisper_tiny(self):
-        recognizer = Recognizer()
+        recognizer = Transcriber()
         self.assertEqual(recognizer.config.model, "tiny")
         self.assertEqual(recognizer.config.engine, "whisper")
         self.assertEqual(recognizer.capabilities.engine, "whisper")
@@ -24,7 +24,7 @@ class ModelSourceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             with patch("faster_whisper.WhisperModel", return_value=model) as loader:
                 engine = WhisperEngine(
-                    RecognizerConfig(
+                    ModelConfig(
                         model="small.en",
                         compute_type="int8",
                         download_root=folder,
@@ -40,7 +40,7 @@ class ModelSourceTests(unittest.TestCase):
     def test_whisper_directory_without_manifest_is_rejected(self):
         with tempfile.TemporaryDirectory() as folder:
             with self.assertRaises(ASRError) as caught:
-                WhisperEngine(RecognizerConfig(model=folder))
+                WhisperEngine(ModelConfig(model=folder))
         self.assertEqual(caught.exception.code, "MODEL_INCOMPLETE")
 
     def test_prepared_whisper_directory_is_read_locally_without_download(self):
@@ -51,7 +51,7 @@ class ModelSourceTests(unittest.TestCase):
                 (path / name).write_bytes(b"test-model")
             create_manifest(path, backend="whisper", model_id="tiny", source="test", revision="abc")
             with patch("faster_whisper.WhisperModel", return_value=model) as loader:
-                engine = WhisperEngine(RecognizerConfig(model=path, compute_type="int8"))
+                engine = WhisperEngine(ModelConfig(model=path, compute_type="int8"))
                 engine.close()
         call = loader.call_args
         self.assertEqual(Path(call.args[0]), path.resolve())
@@ -60,8 +60,8 @@ class ModelSourceTests(unittest.TestCase):
     def test_engine_alias_is_normalized_before_loading(self):
         model = SimpleNamespace(feature_extractor=SimpleNamespace(chunk_length=30))
         with patch("faster_whisper.WhisperModel", return_value=model):
-            recognizer = Recognizer(
-                RecognizerConfig(model="tiny", engine="faster_whisper", compute_type="int8")
+            recognizer = Transcriber(
+                ModelConfig(model="tiny", engine="faster_whisper", compute_type="int8")
             )
             self.assertEqual(recognizer.config.engine, "whisper")
             recognizer.prepare()
@@ -69,12 +69,12 @@ class ModelSourceTests(unittest.TestCase):
 
     def test_unknown_engine_reports_available_names(self):
         with self.assertRaises(ASRError) as caught:
-            Recognizer(RecognizerConfig(model="tiny", engine="other"))
+            Transcriber(ModelConfig(model="tiny", engine="other"))
         self.assertIn("whisper", caught.exception.message)
         self.assertIn("nemotron", caught.exception.message)
 
     def test_nemotron_requires_a_prepared_directory(self):
-        recognizer = Recognizer(RecognizerConfig(model="nemotron", engine="nemotron"))
+        recognizer = Transcriber(ModelConfig(model="nemotron", engine="nemotron"))
         self.addCleanup(recognizer.close)
         with self.assertRaises(ASRError) as caught:
             recognizer.prepare()
@@ -83,7 +83,7 @@ class ModelSourceTests(unittest.TestCase):
 
     def test_engine_options_must_be_a_mapping(self):
         with self.assertRaises(ASRError) as caught:
-            Recognizer(RecognizerConfig(model="tiny", engine_options=["beam_size"]))
+            Transcriber(ModelConfig(model="tiny", engine_options=["beam_size"]))
         self.assertEqual(caught.exception.code, "INVALID_CONFIGURATION")
 
     def test_whisper_engine_options_override_beam_size(self):
@@ -91,7 +91,7 @@ class ModelSourceTests(unittest.TestCase):
         info = SimpleNamespace(language=None, language_probability=None)
         with patch("faster_whisper.WhisperModel", return_value=model):
             engine = WhisperEngine(
-                RecognizerConfig(model="tiny", compute_type="int8", engine_options={"beam_size": 2})
+                ModelConfig(model="tiny", compute_type="int8", engine_options={"beam_size": 2})
             )
         with patch(
             "faster_whisper.BatchedInferencePipeline.transcribe",
@@ -103,11 +103,11 @@ class ModelSourceTests(unittest.TestCase):
     def test_invalid_engine_option_is_rejected_before_loading(self):
         with self.assertRaises(ASRError) as caught:
             WhisperEngine(
-                RecognizerConfig(model="tiny", compute_type="int8", engine_options={"beam_size": 0})
+                ModelConfig(model="tiny", compute_type="int8", engine_options={"beam_size": 0})
             )
         self.assertEqual(caught.exception.code, "INVALID_CONFIGURATION")
-        recognizer = Recognizer(
-            RecognizerConfig(model="nemotron", engine="nemotron", engine_options={"num_threads": 0})
+        recognizer = Transcriber(
+            ModelConfig(model="nemotron", engine="nemotron", engine_options={"num_threads": 0})
         )
         self.addCleanup(recognizer.close)
         with self.assertRaises(ASRError):

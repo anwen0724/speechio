@@ -10,7 +10,8 @@ import wave
 from dataclasses import asdict
 from pathlib import Path
 
-from realtime_asr import ASRRuntime, RecognizerConfig, SessionConfig
+from realtime_asr import ModelConfig, SessionConfig
+from realtime_asr.runtime.asr import ASRRuntime
 
 
 def check_backend(name, project, baseline):
@@ -20,7 +21,7 @@ def check_backend(name, project, baseline):
     model_path = (
         project / ".runtime/models" / ("nemotron" if backend == "nemotron" else "whisper-tiny")
     )
-    config = RecognizerConfig(
+    config = ModelConfig(
         model=model_path,
         engine=backend,
         device="cuda" if gpu else "cpu",
@@ -52,18 +53,18 @@ def check_backend(name, project, baseline):
                 session.start()
                 for offset in range(0, len(pcm), 1001):
                     session.feed_audio(pcm[offset : offset + 1001])
-                task = session.finish()
-                if session.finish() is not task:
+                task = session.end_turn()
+                if session.end_turn() is not task:
                     raise AssertionError("重复结束创建了新任务")
                 tasks.append(task)
             cancelled = session.start()
             session.feed_audio(pcm[:1001])
-            if not session.cancel() or session.cancel(cancelled):
+            if not session.cancel_turn() or session.cancel_turn(cancelled):
                 raise AssertionError("活动取消未保持一次终结")
             for task in tasks:
                 consume_pair(session, task, baseline[(name, sample_id)], record)
-            event = session.get_event(timeout=30)
-            if event is None or event.kind != "cancelled" or event.unit != cancelled:
+            event = session.next_event(timeout=30)
+            if event is None or event.kind != "cancelled" or event.turn != cancelled:
                 raise AssertionError("活动取消事件归属错误")
             record["events"].append(asdict(event))
             change = session.reset()
@@ -71,12 +72,12 @@ def check_backend(name, project, baseline):
                 raise AssertionError("重置结果错误")
             session.start()
             session.feed_audio(pcm)
-            task = session.finish()
-            if task.unit.generation != 1:
+            task = session.end_turn()
+            if task.turn.generation != 1:
                 raise AssertionError("新工作未进入新代次")
             consume_pair(session, task, baseline[(name, sample_id)], record)
             sequences = [e["sequence"] for e in record["events"]]
-            if sequences != list(range(1, 8)) or session.get_event() is not None:
+            if sequences != list(range(1, 8)) or session.next_event() is not None:
                 raise AssertionError("事件顺序或一次消费错误")
             record["reset"] = asdict(change)
             record["close"] = asdict(session.close())
@@ -94,13 +95,13 @@ def check_backend(name, project, baseline):
 
 def consume_pair(session, task, expected_text, record):
     """只通过公开事件检查固定范围、正文和完成顺序。"""
-    final, completed = session.get_event(timeout=30), session.get_event(timeout=30)
+    final, completed = session.next_event(timeout=30), session.next_event(timeout=30)
     if final is None or completed is None:
         raise AssertionError("缺少最终事件")
     if (final.kind, completed.kind) != ("final", "completed"):
         raise AssertionError("最终与完成事件顺序错误")
     for event in (final, completed):
-        if event.unit != task.unit or event.task_id != task.task_id:
+        if event.turn != task.turn or event.task_id != task.task_id:
             raise AssertionError("任务归属错误")
         if (event.audio_samples, event.audio_version) != (task.audio_samples, task.audio_version):
             raise AssertionError("封口音频范围错误")

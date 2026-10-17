@@ -1,6 +1,7 @@
 """独立 ASR SDK；按音频、会话、分句、后端与运行时组织实现。"""
 
-from realtime_asr.audio.conversion import AudioConverter, AudioFormat, AudioFrame
+from realtime_asr.api import StreamTranscriber, transcribe_audio, transcribe_stream
+from realtime_asr.audio.conversion import AudioFormat, AudioFrame
 from realtime_asr.audio.microphone import (
     InputDevice,
     MicrophoneConfig,
@@ -13,91 +14,58 @@ from realtime_asr.engines.base import (
     StreamingSession,
 )
 from realtime_asr.errors import ASRError
-from realtime_asr.results import CloseResult, RecognitionResult, WordTimestamp
-from realtime_asr.runtime.asr import (
-    ASRRuntime,
-    RuntimeCapacity,
-    RuntimeCloseResult,
-    RuntimeLimits,
-)
+from realtime_asr.results import CloseResult, Transcript, WordTimestamp
+from realtime_asr.runtime.asr import RuntimeLimits
 from realtime_asr.runtime.candidates import CandidateConfig
 from realtime_asr.runtime.realtime import RealtimeConfig
-from realtime_asr.runtime.recognizer import Recognizer, RecognizerConfig
-from realtime_asr.segmentation.acoustic import AcousticBoundaryDetector
-from realtime_asr.segmentation.gate import SegmentationConfig, SegmentBoundary
-from realtime_asr.segmentation.vad import VadConfig, VoiceActivity, VoiceDetector
-from realtime_asr.segmentation.wakeword import WakeConfig, WakeDetector
-from realtime_asr.session.automatic import AutomaticSession
-from realtime_asr.session.candidates import CandidateRequest, CandidateResult, ResumeAck
+from realtime_asr.runtime.transcriber import ModelConfig, Transcriber
+from realtime_asr.segmentation.gate import SegmentationConfig
+from realtime_asr.segmentation.vad import VadConfig
+from realtime_asr.segmentation.wakeword import WakeConfig
+from realtime_asr.session.automatic import LiveSession
 from realtime_asr.session.session import (
     AudioSnapshot,
-    EventError,
-    FinalTask,
     Session,
-    SessionChange,
     SessionConfig,
     SessionEvent,
-    UnitRef,
+    TurnRef,
 )
 from realtime_asr.text.endpoint import EndpointConfig
-from realtime_asr.text.realtime_merge import (
-    RealtimeMergeConfig,
-    RealtimeMerger,
-    RealtimeMergeResult,
-)
-from realtime_asr.text.stabilizer import StabilizationConfig, TextObservation, TextStabilizer
-from realtime_asr.text.tail_repair import TailRepairResult, repair_tail
+from realtime_asr.text.realtime_merge import RealtimeMergeConfig
+from realtime_asr.text.stabilizer import StabilizationConfig
 
 __all__ = [
+    "transcribe_audio",
+    "transcribe_stream",
+    "Transcriber",
+    "StreamTranscriber",
+    "Session",
+    "LiveSession",
+    "ModelConfig",
+    "RealtimeConfig",
+    "SessionConfig",
+    "VadConfig",
+    "SegmentationConfig",
+    "EndpointConfig",
+    "StabilizationConfig",
+    "WakeConfig",
     "CandidateConfig",
-    "CandidateRequest",
-    "CandidateResult",
-    "ResumeAck",
-    "TailRepairResult",
-    "repair_tail",
     "RealtimeMergeConfig",
-    "RealtimeMergeResult",
-    "RealtimeMerger",
+    "RuntimeLimits",
+    "Transcript",
+    "WordTimestamp",
+    "CloseResult",
+    "SessionEvent",
+    "TurnRef",
+    "AudioSnapshot",
+    "AudioFormat",
+    "AudioFrame",
+    "MicrophoneConfig",
+    "MicrophoneInput",
+    "InputDevice",
+    "list_input_devices",
     "BaseTranscriptionEngine",
     "EngineCapabilities",
     "StreamingSession",
-    "VoiceActivity",
-    "VoiceDetector",
-    "EndpointConfig",
-    "AcousticBoundaryDetector",
-    "WordTimestamp",
-    "StabilizationConfig",
-    "TextObservation",
-    "TextStabilizer",
-    "InputDevice",
-    "MicrophoneConfig",
-    "MicrophoneInput",
-    "list_input_devices",
     "ASRError",
-    "ASRRuntime",
-    "AudioConverter",
-    "AudioFormat",
-    "AudioFrame",
-    "AutomaticSession",
-    "CloseResult",
-    "EventError",
-    "FinalTask",
-    "RecognitionResult",
-    "RealtimeConfig",
-    "Recognizer",
-    "RecognizerConfig",
-    "RuntimeCapacity",
-    "RuntimeCloseResult",
-    "RuntimeLimits",
-    "Session",
-    "SegmentBoundary",
-    "SegmentationConfig",
-    "SessionChange",
-    "SessionConfig",
-    "SessionEvent",
-    "UnitRef",
-    "VadConfig",
-    "WakeConfig",
-    "WakeDetector",
-    "AudioSnapshot",
 ]

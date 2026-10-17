@@ -7,7 +7,7 @@ from pathlib import Path
 
 from realtime_asr.audio.conversion import as_audio
 from realtime_asr.errors import ASRError
-from realtime_asr.results import RecognitionResult, WordTimestamp
+from realtime_asr.results import Transcript, WordTimestamp
 from realtime_asr.runtime.models.manifest import verify_manifest
 from realtime_asr.runtime.models.stages import preparation_step
 
@@ -146,7 +146,7 @@ class WhisperEngine:
                         )
                         for word in reported
                     )
-            return RecognitionResult(
+            return Transcript(
                 text=" ".join(item.text for item in complete).strip(),
                 requested_language=language,
                 reported_language=info.language,

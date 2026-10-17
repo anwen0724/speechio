@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from realtime_asr.audio.conversion import as_audio, validate_sample_rate
 from realtime_asr.errors import ASRError, error_record
-from realtime_asr.results import RecognitionResult
+from realtime_asr.results import Transcript
 
 LANGUAGE_TAG = re.compile(r"^\s*<(?P<language>[a-zA-Z]{2,3}(?:-[a-zA-Z]{2,4})?)>\s*")
 
@@ -19,7 +19,7 @@ def native_result(raw_text, language):
         text = text[match.end() :].strip()
     reported = detected or (language if text and language != "auto" else None)
     source = "detected" if detected else ("hint" if reported else "unavailable")
-    return RecognitionResult(
+    return Transcript(
         text=text,
         requested_language=language,
         reported_language=reported,
@@ -42,7 +42,7 @@ class NativeStream:
         self.accepted_samples = 0
         self.stream_id = ""
         self._native = None
-        self._cache = RecognitionResult(requested_language=self.language)
+        self._cache = Transcript(requested_language=self.language)
         self.cleanup = {
             "method": "reference_drop",
             "status": "ok",
@@ -147,7 +147,7 @@ class NativeStream:
         self.accepted_samples = 0
         self.has_final_result = False
         self.state = "open"
-        self._cache = RecognitionResult(requested_language=self.language)
+        self._cache = Transcript(requested_language=self.language)
 
     def _release(self):
         """按运行库公开能力释放；清理异常保留，引用清除不代表显存回收。"""

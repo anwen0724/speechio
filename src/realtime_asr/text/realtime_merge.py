@@ -28,7 +28,7 @@ class RealtimeMergeConfig:
 class RealtimeMergeResult:
     """可独立恢复的合并快照；两路序号和音频覆盖不互相替代。"""
 
-    unit: object
+    turn: object
     text: str = ""
     accurate_text: str = ""
     ultrafast_text: str = ""
@@ -199,7 +199,7 @@ class RealtimeMerger:
     """一个单元的两路状态；隐藏对齐、保留及准确内容代次。"""
 
     def __init__(self, unit, config=None):
-        self.unit = unit
+        self.turn = unit
         self.config = config if config is not None else RealtimeMergeConfig()
         if not isinstance(self.config, RealtimeMergeConfig):
             raise ASRError("INVALID_CONFIGURATION", "configure_merge", "需要 RealtimeMergeConfig")
@@ -223,7 +223,7 @@ class RealtimeMerger:
             raise ASRError("INVALID_CONFIGURATION", "merge", "实时角色应为 accurate 或 ultrafast")
         previous = self._observations[role]
         reason = None
-        if observation.unit != self.unit:
+        if observation.turn != self.turn:
             reason = "unit_mismatch"
         elif observation.sequence <= (previous.sequence if previous else 0):
             reason = "sequence_stale"
@@ -348,7 +348,7 @@ class RealtimeMerger:
         origin = self._suffix_observation
         suffix = _render(self._tail)
         return RealtimeMergeResult(
-            unit=self.unit,
+            turn=self.turn,
             text=_append_text(self._accurate, suffix),
             accurate_text=self._accurate,
             ultrafast_text=fast.text if fast else "",

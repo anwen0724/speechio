@@ -11,23 +11,23 @@ import psutil
 
 from realtime_asr import (
     ASRError,
-    ASRRuntime,
     AudioFormat,
+    ModelConfig,
     RealtimeConfig,
-    Recognizer,
-    RecognizerConfig,
     SessionConfig,
+    Transcriber,
 )
+from realtime_asr.runtime.asr import ASRRuntime
 
 
 def configurations(project):
     """显式本地路径；覆盖两条路径、共享实例与独立角色。"""
-    cpu = RecognizerConfig(model=project / ".runtime/models/whisper-tiny")
-    gpu = RecognizerConfig(
+    cpu = ModelConfig(model=project / ".runtime/models/whisper-tiny")
+    gpu = ModelConfig(
         model=cpu.model,
         device="cuda",
     )
-    native = RecognizerConfig(model=project / ".runtime/models/nemotron", engine="nemotron")
+    native = ModelConfig(model=project / ".runtime/models/nemotron", engine="nemotron")
     return {
         "shared-whisper-cpu": (cpu, RealtimeConfig(), "whisper"),
         "shared-whisper-cuda": (gpu, RealtimeConfig(), "whisper-gpu"),
@@ -58,7 +58,7 @@ def check_configuration(name, config, realtime, baseline_name, project, baseline
     long_pcm = np.resize(
         np.frombuffer(sources[0][2], dtype="<i2"), int(long_seconds * 16000)
     ).tobytes()
-    with Recognizer(config) as recognizer:
+    with Transcriber(config) as recognizer:
         long_expected = recognizer.transcribe(long_pcm, format=AudioFormat(), language="zh-CN").text
     report = {
         "configuration": name,
@@ -100,7 +100,7 @@ def check_configuration(name, config, realtime, baseline_name, project, baseline
         event = None
         # 每个会话单独维护消费序号，轮转消费避免一个会话屏蔽另一个。
         for current in sessions.values():
-            event = current.get_event()
+            event = current.next_event()
             if event is not None:
                 break
         if event is None and timeout:
@@ -112,7 +112,7 @@ def check_configuration(name, config, realtime, baseline_name, project, baseline
                     for key, entry in tasks.items()
                 )
             )
-            event = pending.get_event(timeout=timeout)
+            event = pending.next_event(timeout=timeout)
         if event is None:
             return False
         received_at = time.monotonic()
@@ -122,7 +122,7 @@ def check_configuration(name, config, realtime, baseline_name, project, baseline
         if event.kind in ("failed", "realtime_failed", "cancelled"):
             raise AssertionError(f"真实识别失败：{event}")
         if event.kind == "final":
-            entry = tasks[(event.unit.session_id, event.unit.unit_id)]
+            entry = tasks[(event.turn.session_id, event.turn.turn_id)]
             if (
                 event.result.text != entry["expected_text"]
                 or event.audio_samples != entry["samples"]
@@ -131,7 +131,7 @@ def check_configuration(name, config, realtime, baseline_name, project, baseline
             entry["same_baseline_text"] = True
             entry["final_wait_seconds"] = received_at - entry["finish_started_at"]
         elif event.kind == "completed":
-            tasks[(event.unit.session_id, event.unit.unit_id)]["completed"] = True
+            tasks[(event.turn.session_id, event.turn.turn_id)]["completed"] = True
         return True
 
     try:
@@ -149,7 +149,7 @@ def check_configuration(name, config, realtime, baseline_name, project, baseline
                 "start_at_monotonic": time.monotonic(),
             }
             report["inputs"].append(entry)
-            tasks[(unit.session_id, unit.unit_id)] = entry
+            tasks[(unit.session_id, unit.turn_id)] = entry
             for offset in range(0, len(pcm), 6400):
                 session.feed_audio(pcm[offset : offset + 6400])
                 report["capacity_samples"].append(asdict(runtime.capacity))
@@ -167,7 +167,7 @@ def check_configuration(name, config, realtime, baseline_name, project, baseline
                 else:
                     raise AssertionError("长输入超过配置仍被接纳")
             entry["finish_started_at"] = time.monotonic()
-            entry["task"] = asdict(session.finish())
+            entry["task"] = asdict(session.end_turn())
             # 不等待最终返回，直接开始下一单元。
         while sum(e["kind"] == "completed" for e in report["events"]) < len(tasks):
             if not consume(timeout=60):

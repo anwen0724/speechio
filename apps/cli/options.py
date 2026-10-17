@@ -631,7 +631,7 @@ def wake_role(args):
 
 def _local_role_model(args, role, primary):
     """统一角色的路径、设备继承和 GPU 运行库复用，不加载模型。"""
-    from realtime_asr import ASRError, RecognizerConfig
+    from realtime_asr import ASRError, ModelConfig
 
     path = getattr(args, role + "_model")
     engine = getattr(args, role + "_engine")
@@ -641,7 +641,7 @@ def _local_role_model(args, role, primary):
             raise ASRError("INVALID_CONFIGURATION", "configure_cli", "角色引擎或设备需要模型路径")
         return None
     selected_device = device or primary.device
-    return RecognizerConfig(
+    return ModelConfig(
         model=path,
         engine=engine or primary.engine,
         device=selected_device,

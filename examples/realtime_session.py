@@ -7,7 +7,8 @@ import wave
 from dataclasses import asdict
 from pathlib import Path
 
-from realtime_asr import ASRRuntime, RealtimeConfig, RecognizerConfig, SessionConfig
+from realtime_asr import ModelConfig, RealtimeConfig, SessionConfig
+from realtime_asr.runtime.asr import ASRRuntime
 
 
 def main():
@@ -17,7 +18,7 @@ def main():
     parser.add_argument("--backend", choices=("whisper", "nemotron"), default="whisper")
     parser.add_argument("--language")
     args = parser.parse_args()
-    model = RecognizerConfig(model=args.model, engine=args.backend)
+    model = ModelConfig(model=args.model, engine=args.backend)
     mode = model.capabilities.realtime_mode
     with ASRRuntime(
         model,
@@ -28,7 +29,7 @@ def main():
 
         def consume(timeout=0):
             nonlocal completed
-            event = session.get_event(timeout=timeout)
+            event = session.next_event(timeout=timeout)
             if event is None:
                 return False
             print(json.dumps(asdict(event), ensure_ascii=False), flush=True)
@@ -52,7 +53,7 @@ def main():
                     while consume():
                         pass
                     time.sleep(max(0, started + samples / 16000 - time.monotonic()))
-                session.finish()
+                session.end_turn()
         while completed < len(args.audio):
             if not consume(timeout=60):
                 raise TimeoutError("等待识别事件超时")

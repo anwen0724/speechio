@@ -61,7 +61,7 @@ class StabilizationConfig:
 class TextObservation:
     """一个模型观察；序号独立于消费顺序，终点为单元内标准样本。"""
 
-    unit: object
+    turn: object
     sequence: int
     text: str
     audio_end_sample: int
@@ -138,7 +138,7 @@ class TextStabilizer:
     """隔离一个单元的证据，隐藏规范化、突变与原文前缀提交。"""
 
     def __init__(self, unit, config=None):
-        self.unit = unit
+        self.turn = unit
         self.config = config if config is not None else StabilizationConfig()
         if not isinstance(self.config, StabilizationConfig):
             raise ASRError("INVALID_CONFIGURATION", "configure", "需要 StabilizationConfig")
@@ -158,7 +158,7 @@ class TextStabilizer:
 
     def observe(self, observation: TextObservation) -> StabilizationResult:
         """只有当前归属和新序号能进入证据；重复音频仍可更新尾部。"""
-        if observation.unit != self.unit:
+        if observation.turn != self.turn:
             return self._result(False, "wrong-unit", observation.text)
         if self._finalized:
             return self._result(False, "finalized", observation.text)

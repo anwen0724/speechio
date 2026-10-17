@@ -6,13 +6,13 @@ from unittest.mock import patch
 
 import numpy as np
 
-from realtime_asr import AudioFormat, Recognizer, RecognizerConfig
-from tests.runtime import test_recognizer
+from realtime_asr import AudioFormat, ModelConfig, Transcriber
+from tests.runtime import test_transcriber
 
 
 class TimestampTests(unittest.TestCase):
     def setUp(self):
-        test_recognizer.RecognizerTests.setUp(self)
+        test_transcriber.RecognizerTests.setUp(self)
 
     def test_reported_word_samples_and_disabled_default(self):
         word = SimpleNamespace(word="你好", start=0.125, end=0.5, probability=0.8)
@@ -22,7 +22,7 @@ class TimestampTests(unittest.TestCase):
             "faster_whisper.BatchedInferencePipeline.transcribe",
             return_value=(iter([segment]), info),
         ):
-            with Recognizer(RecognizerConfig(model=self.path)) as recognizer:
+            with Transcriber(ModelConfig(model=self.path)) as recognizer:
                 result = recognizer.transcribe(
                     np.ones(16000, np.int16), format=AudioFormat(), word_timestamps=True
                 )
@@ -40,7 +40,7 @@ class TimestampTests(unittest.TestCase):
                 info,
             ),
         ):
-            with Recognizer(RecognizerConfig(model=self.path)) as recognizer:
+            with Transcriber(ModelConfig(model=self.path)) as recognizer:
                 result = recognizer.transcribe(
                     np.ones(16000, np.int16), format=AudioFormat(), word_timestamps=True
                 )

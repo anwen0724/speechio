@@ -6,6 +6,7 @@ from threading import Event
 import numpy as np
 
 import realtime_asr as sdk
+from realtime_asr.runtime.asr import ASRRuntime
 from tests.runtime.test_engine_injection import RecordingEngine
 
 
@@ -27,48 +28,48 @@ class BlockingEngine(RecordingEngine):
 
 class CandidateTests(unittest.TestCase):
     def test_public_audio_snapshot_includes_short_tail_and_is_independent(self):
-        with sdk.ASRRuntime(engine=RecordingEngine()) as runtime:
+        with ASRRuntime(engine=RecordingEngine()) as runtime:
             session = runtime.create_session()
             unit = session.start()
             source = np.arange(525, dtype=np.int16)
             session.feed_audio(source)
-            snapshot = session.audio_snapshot()
+            snapshot = session.current_audio()
             self.assertEqual(
-                (snapshot.unit, snapshot.start_sample, snapshot.end_sample), (unit, 0, 525)
+                (snapshot.turn, snapshot.start_sample, snapshot.end_sample), (unit, 0, 525)
             )
             self.assertEqual(snapshot.sample_rate, 16000)
             self.assertEqual(snapshot.pcm, source.astype("<i2").tobytes())
             source.fill(0)
             session.feed_audio(np.ones(13, dtype=np.int16))
-            self.assertEqual(session.audio_snapshot().end_sample, 538)
+            self.assertEqual(session.current_audio().end_sample, 538)
             self.assertEqual(np.frombuffer(snapshot.pcm, dtype="<i2")[-1], 524)
 
     def test_empty_correction_preserves_original_final(self):
         class EmptyCorrection(RecordingEngine):
             def transcribe(self, audio, language=None, *, role="final", word_timestamps=False):
                 super().transcribe(audio, language, role=role, word_timestamps=word_timestamps)
-                return sdk.RecognitionResult(text="原正文" if role == "final" else "")
+                return sdk.Transcript(text="原正文" if role == "final" else "")
 
         engine = EmptyCorrection()
-        with sdk.ASRRuntime(engine=engine, candidate=sdk.CandidateConfig()) as runtime:
+        with ASRRuntime(engine=engine, candidate=sdk.CandidateConfig()) as runtime:
             session = runtime.create_session(sdk.SessionConfig(retain_for_correction=True))
             unit = session.start()
             session.feed_audio(np.arange(525, dtype=np.int16))
-            session.finish()
-            final = session.get_event(timeout=5)
+            session.end_turn()
+            final = session.next_event(timeout=5)
             self.assertEqual(final.result.text, "原正文")
-            self.assertEqual(session.get_event(timeout=5).kind, "completed")
+            self.assertEqual(session.next_event(timeout=5).kind, "completed")
             session.request_correction(unit)
-            event = session.get_event(timeout=5)
+            event = session.next_event(timeout=5)
             self.assertEqual(event.kind, "correction_failed")
             self.assertEqual(event.error.code, "CANDIDATE_EMPTY")
             self.assertEqual(event.candidate.replaces_task_id, final.task_id)
             self.assertEqual(event.candidate.attempts, 2)
-            self.assertIsNone(session.get_event())
+            self.assertIsNone(session.next_event())
 
     def test_rejected_new_request_does_not_invalidate_running_candidate(self):
         engine = BlockingEngine()
-        with sdk.ASRRuntime(
+        with ASRRuntime(
             engine=engine, candidate=sdk.CandidateConfig(), limits=sdk.RuntimeLimits(max_tasks=1)
         ) as runtime:
             session = runtime.create_session()
@@ -83,13 +84,13 @@ class CandidateTests(unittest.TestCase):
                 self.assertEqual(caught.exception.code, "CANDIDATE_CAPACITY_EXCEEDED")
             finally:
                 engine.release.set()
-            event = session.get_event(timeout=5)
+            event = session.next_event(timeout=5)
             self.assertEqual(event.candidate.request, original)
             self.assertFalse(event.candidate.current)
 
     def test_reset_and_close_keep_running_candidate_capacity_until_return(self):
         engine = BlockingEngine()
-        runtime = sdk.ASRRuntime(engine=engine, candidate=sdk.CandidateConfig())
+        runtime = ASRRuntime(engine=engine, candidate=sdk.CandidateConfig())
         self.addCleanup(runtime.close)
         runtime.prepare()
         session = runtime.create_session()
@@ -105,17 +106,17 @@ class CandidateTests(unittest.TestCase):
         finally:
             engine.release.set()
         self.assertEqual(runtime.close(timeout=5).status, "ok")
-        self.assertIsNone(session.get_event())
+        self.assertIsNone(session.next_event())
         self.assertEqual(engine.closes, 1)
 
     def test_resume_fences_snapshot_claimed_before_ack(self):
         class SnapshotEngine(BlockingEngine):
             def transcribe(self, audio, language=None, *, role="final", word_timestamps=False):
                 super().transcribe(audio, language, role=role, word_timestamps=word_timestamps)
-                return sdk.RecognitionResult(text="旧观察" if len(self.inputs) == 1 else "新观察")
+                return sdk.Transcript(text="旧观察" if len(self.inputs) == 1 else "新观察")
 
         engine = SnapshotEngine()
-        with sdk.ASRRuntime(
+        with ASRRuntime(
             engine=engine,
             candidate=sdk.CandidateConfig(),
             realtime=sdk.RealtimeConfig(initial_delay=0, interval=0.01, min_snapshot_samples=512),
@@ -129,7 +130,7 @@ class CandidateTests(unittest.TestCase):
                 session.feed_audio(np.arange(512, dtype=np.int16))
             finally:
                 engine.release.set()
-            event = session.get_event(timeout=5)
+            event = session.next_event(timeout=5)
             self.assertEqual((event.kind, event.result.text), ("realtime", "新观察"))
             self.assertEqual(
                 (event.resume_epoch, event.resume_id), (ack.resume_epoch, ack.resume_id)
@@ -142,19 +143,19 @@ class CandidateTests(unittest.TestCase):
                 result = super().transcribe(
                     audio, language, role=role, word_timestamps=word_timestamps
                 )
-                return sdk.RecognitionResult(text="修正完成") if role == "candidate" else result
+                return sdk.Transcript(text="修正完成") if role == "candidate" else result
 
         engine = CorrectingEngine()
-        with sdk.ASRRuntime(engine=engine, candidate=sdk.CandidateConfig()) as runtime:
+        with ASRRuntime(engine=engine, candidate=sdk.CandidateConfig()) as runtime:
             session = runtime.create_session(sdk.SessionConfig(retain_for_correction=True))
             unit = session.start()
             source = np.arange(525, dtype=np.int16)
             session.feed_audio(source)
-            original = session.finish()
-            self.assertEqual(session.get_event(timeout=5).kind, "final")
-            self.assertEqual(session.get_event(timeout=5).kind, "completed")
+            original = session.end_turn()
+            self.assertEqual(session.next_event(timeout=5).kind, "final")
+            self.assertEqual(session.next_event(timeout=5).kind, "completed")
             correction = session.request_correction(unit)
-            event = session.get_event(timeout=5)
+            event = session.next_event(timeout=5)
             self.assertEqual((event.kind, event.candidate.text), ("correction", "修正完成"))
             self.assertEqual(event.candidate.request, correction)
             self.assertEqual(event.candidate.replaces_task_id, original.task_id)
@@ -168,15 +169,15 @@ class CandidateTests(unittest.TestCase):
 
     def test_candidate_only_runtime_requires_no_final_model(self):
         engine = RecordingEngine()
-        with sdk.ASRRuntime(
+        with ASRRuntime(
             candidate=sdk.CandidateConfig(engine=engine), final_enabled=False
         ) as runtime:
             self.assertFalse(runtime.final_enabled)
             session = runtime.create_session(sdk.SessionConfig(completion_mode="candidate"))
             session.start()
             session.feed_audio(np.arange(513, dtype=np.int16))
-            session.finish()
-            final, done = session.get_event(timeout=5), session.get_event(timeout=5)
+            session.end_turn()
+            final, done = session.next_event(timeout=5), session.next_event(timeout=5)
             self.assertEqual(
                 (final.kind, final.source, done.kind), ("final", "candidate-final", "completed")
             )
@@ -187,42 +188,40 @@ class CandidateTests(unittest.TestCase):
         for append in (False, True):
             with self.subTest(append=append):
                 engine = RecordingEngine()
-                with sdk.ASRRuntime(engine=engine, candidate=sdk.CandidateConfig()) as runtime:
+                with ASRRuntime(engine=engine, candidate=sdk.CandidateConfig()) as runtime:
                     session = runtime.create_session(sdk.SessionConfig(completion_mode="candidate"))
                     session.start()
                     session.feed_audio(np.arange(525, dtype=np.int16))
                     session.request_candidate()
-                    self.assertEqual(session.get_event(timeout=5).kind, "candidate")
+                    self.assertEqual(session.next_event(timeout=5).kind, "candidate")
                     if append:
                         session.feed_audio(np.arange(13, dtype=np.int16))
-                    session.finish()
-                    final, completed = session.get_event(timeout=5), session.get_event(timeout=5)
+                    session.end_turn()
+                    final, completed = session.next_event(timeout=5), session.next_event(timeout=5)
                     self.assertEqual((final.kind, completed.kind), ("final", "completed"))
                     self.assertEqual(final.source, "candidate-final")
                     self.assertEqual(final.optimization["candidate_reused"], not append)
                     self.assertEqual(
                         [entry[2] for entry in engine.inputs], ["candidate"] * (2 if append else 1)
                     )
-                    self.assertIsNone(session.get_event())
+                    self.assertIsNone(session.next_event())
 
     def test_normal_empty_candidate_has_one_flush_retry_but_hint_has_none(self):
         class EmptyFirst(RecordingEngine):
             def transcribe(self, audio, language=None, *, role="final", word_timestamps=False):
                 super().transcribe(audio, language, role=role, word_timestamps=word_timestamps)
-                return sdk.RecognitionResult(
-                    text="" if len(self.inputs) == 1 else "complete snapshot"
-                )
+                return sdk.Transcript(text="" if len(self.inputs) == 1 else "complete snapshot")
 
         source = np.arange(525, dtype=np.int16)
         for hint in (False, True):
             with self.subTest(hint=hint):
                 engine = EmptyFirst()
-                with sdk.ASRRuntime(engine=engine, candidate=sdk.CandidateConfig()) as runtime:
+                with ASRRuntime(engine=engine, candidate=sdk.CandidateConfig()) as runtime:
                     session = runtime.create_session()
                     session.start()
                     session.feed_audio(source)
                     session.request_candidate(hint=hint)
-                    event = session.get_event(timeout=5)
+                    event = session.next_event(timeout=5)
                     self.assertEqual(event.kind, "candidate")
                     self.assertEqual(event.candidate.attempts, 1 if hint else 2)
                     self.assertEqual(event.candidate.status, "empty" if hint else "whole")
@@ -252,7 +251,7 @@ class CandidateTests(unittest.TestCase):
                 return result
 
         engine = BlockingFirst()
-        runtime = sdk.ASRRuntime(engine=engine, candidate=sdk.CandidateConfig())
+        runtime = ASRRuntime(engine=engine, candidate=sdk.CandidateConfig())
         self.addCleanup(runtime.close)
         runtime.prepare()
         session = runtime.create_session()
@@ -267,7 +266,7 @@ class CandidateTests(unittest.TestCase):
             self.assertEqual(caught.exception.code, "RESUME_BOUNDARY_MISMATCH")
             ack = session.resume(expected_audio_samples=525)
             self.assertEqual(
-                (ack.unit, ack.resume_epoch, ack.candidate_start_sample), (unit, 1, 525)
+                (ack.turn, ack.resume_epoch, ack.candidate_start_sample), (unit, 1, 525)
             )
             session.feed_audio(second)
             current = session.request_candidate()
@@ -276,14 +275,14 @@ class CandidateTests(unittest.TestCase):
             self.assertEqual(runtime.capacity.tasks, 2)
         finally:
             engine.release.set()
-        event = session.get_event(timeout=5)
+        event = session.next_event(timeout=5)
         self.assertEqual(event.candidate.request, current)
         self.assertNotEqual(event.task_id, old.request_id)
         np.testing.assert_array_equal(
             engine.inputs[1][0], np.concatenate((first, second)).astype(np.float32) / 32768
         )
-        session.finish()
-        while session.get_event(timeout=5).kind != "completed":
+        session.end_turn()
+        while session.next_event(timeout=5).kind != "completed":
             pass
 
     def test_tail_snapshot_includes_short_samples_and_does_not_block_input(self):
@@ -303,7 +302,7 @@ class CandidateTests(unittest.TestCase):
                 return result
 
         engine = BlockingCandidate()
-        runtime = sdk.ASRRuntime(engine=engine, candidate=sdk.CandidateConfig(tail_seconds=0.02))
+        runtime = ASRRuntime(engine=engine, candidate=sdk.CandidateConfig(tail_seconds=0.02))
         self.addCleanup(runtime.close)
         runtime.prepare()
         session = runtime.create_session()
@@ -318,7 +317,7 @@ class CandidateTests(unittest.TestCase):
             self.assertEqual(runtime.capacity.tasks, 1)
         finally:
             engine.release.set()
-        candidate = session.get_event(timeout=5)
+        candidate = session.next_event(timeout=5)
         self.assertEqual(candidate.kind, "candidate")
         self.assertEqual(candidate.candidate.request, request)
         self.assertEqual(
@@ -326,8 +325,8 @@ class CandidateTests(unittest.TestCase):
         )
         np.testing.assert_array_equal(engine.inputs[0][0], source[205:].astype(np.float32) / 32768)
         self.assertEqual(engine.inputs[0][2], "candidate")
-        session.finish()
-        while session.get_event(timeout=5).kind != "completed":
+        session.end_turn()
+        while session.next_event(timeout=5).kind != "completed":
             pass
         self.assertEqual(runtime.close().status, "ok")
         self.assertEqual((engine.preparations, engine.closes), (1, 1))
