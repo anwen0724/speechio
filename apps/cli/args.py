@@ -184,8 +184,6 @@ def parse_args(argv=None, *, diagnostic=False):
     )
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("config", help="创建、检查和显示本机配置")
-    commands.add_parser("serve", help="运行共享 HTTP / WebSocket 服务（需要 server 依赖）")
-    commands.add_parser("remote", help="接入远程服务（需要 client 依赖）")
     commands.add_parser("models", help="显式准备与校验模型，不启动识别")
     commands.add_parser("gpu-runtime", help="显式准备与校验 GPU 原生库")
     devices = commands.add_parser("devices", help="列出输入设备，不加载模型")

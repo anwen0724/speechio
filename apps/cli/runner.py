@@ -263,14 +263,6 @@ def main(argv=None, *, stdin=None, stdout=None, stderr=None):
         from apps.cli.resources import main as resources
 
         return resources(argv[1:], gpu=argv[0] == "gpu-runtime", stdout=stdout)
-    if argv and argv[0] == "serve":
-        from apps.server.__main__ import main as serve
-
-        return serve(forward_config(argv[1:], selected))
-    if argv and argv[0] == "remote":
-        from apps.client.__main__ import main as remote
-
-        return remote(forward_config(argv[1:], selected), stdin=stdin, stdout=stdout, stderr=stderr)
     args = parse_args(forward_config(argv, selected))
     stdin = sys.stdin if stdin is None else stdin
     output = Output(

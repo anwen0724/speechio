@@ -33,7 +33,7 @@ channels = 1
 sample_type = "int16"
 
 [realtime]
-# enabled = true # 不填写则保留 mic／file／remote 各自默认值
+# enabled = true # 不填写则保留 mic／file 各自默认值
 stable_text = false
 # interval = 0.2 # 本地及服务角色更新间隔，单位秒
 # initial_delay = 0.2
@@ -99,42 +99,11 @@ speech_timeout = 5.0
 trim_duration = 0.1
 followup_window = 0.0
 
-[server]
-host = "127.0.0.1"
-port = 8000
-token_env = "REALTIME_ASR_TOKEN"
-# ssl_certfile = "secrets/server.crt"
-# ssl_keyfile = "secrets/server.key"
-# allowed_origins = ["https://asr.example.com"]
-# proxy_tls = false
-# trusted_proxy_ips = "127.0.0.1"
-# 需要调整容量／超时才填写：
-# max_sessions = 16
-# max_tasks = 32
-# max_task_audio_samples = 9600000
-# max_audio_seconds = 30.0
-# max_pending_units = 8
-# max_http_bytes = 16777216
-# max_packet_bytes = 1048576
-# max_metadata_bytes = 65536
-# max_pending_messages = 256
-# open_timeout = 10.0
-# idle_timeout = 300.0
-# body_timeout = 30.0
-# drain_timeout = 30.0
-# send_timeout = 5.0
-# close_timeout = 5.0
-
-[remote]
-url = "http://127.0.0.1:8000"
-token_env = "REALTIME_ASR_TOKEN"
-timeout = 30.0
-
 [output]
 format = "text" # text 或 jsonl；不会自动保存正文，保存仍用重定向
 
 [limits]
-# 本地输入的容量与等待时间，服务对应参数写在 server 中。
+# 本地输入的容量与等待时间。
 max_audio_seconds = 30.0
 drain_timeout = 30.0
 close_timeout = 5.0

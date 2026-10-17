@@ -11,9 +11,7 @@ from pathlib import Path
 from realtime_asr import ASRError
 
 LOCAL = ("mic", "file", "stdin")
-REMOTE = ("remote-mic", "remote-file", "remote-stdin")
-HOST = (*LOCAL, "serve")
-INPUT = (*LOCAL, *REMOTE)
+TARGETS = (*LOCAL, "devices")
 
 # 字段只定义映射、类型和适用入口；具体默认值与取值校验继续由原解析器负责。
 FIELDS = {
@@ -107,46 +105,6 @@ FIELDS = {
         "trim_duration": ("wake_trim_duration", float),
         "followup_window": ("wake_followup_window", float),
     },
-    "server": {
-        "host": ("host", str),
-        "port": ("port", int),
-        "token_env": ("token_env", str),
-        "ssl_certfile": ("ssl_certfile", Path),
-        "ssl_keyfile": ("ssl_keyfile", Path),
-        "proxy_tls": ("proxy_tls", bool),
-        "trusted_proxy_ips": ("trusted_proxy_ips", str),
-        "allowed_origins": ("allowed_origin", list),
-        **{
-            name: (name, int)
-            for name in (
-                "max_sessions",
-                "max_tasks",
-                "max_task_audio_samples",
-                "max_pending_units",
-                "max_http_bytes",
-                "max_packet_bytes",
-                "max_metadata_bytes",
-                "max_pending_messages",
-            )
-        },
-        **{
-            name: (name, float)
-            for name in (
-                "max_audio_seconds",
-                "open_timeout",
-                "idle_timeout",
-                "body_timeout",
-                "drain_timeout",
-                "send_timeout",
-                "close_timeout",
-            )
-        },
-    },
-    "remote": {
-        "url": ("url", str),
-        "token_env": ("token_env", str),
-        "timeout": ("timeout", float),
-    },
     "output": {"format": ("output", str)},
     "limits": {
         "max_audio_seconds": ("max_audio_seconds", float),
@@ -155,65 +113,29 @@ FIELDS = {
     },
 }
 SCOPES = {
-    "model": HOST,
-    "gpu": HOST,
-    "recognition": INPUT,
-    "microphone": ("mic", "remote-mic", "devices"),
-    "input": ("stdin", "remote-stdin"),
-    "realtime": (*HOST, *REMOTE),
-    "ultrafast": HOST,
-    "vad": HOST,
+    "model": LOCAL,
+    "gpu": LOCAL,
+    "recognition": LOCAL,
+    "microphone": ("mic", "devices"),
+    "input": ("stdin",),
+    "realtime": LOCAL,
+    "ultrafast": LOCAL,
+    "vad": LOCAL,
     "segmentation": LOCAL,
-    "endpoint": INPUT,
-    "candidate": (*HOST, *REMOTE),
-    "wake": (*HOST, *REMOTE),
-    "server": ("serve",),
-    "remote": REMOTE,
-    "output": (*INPUT, "devices"),
+    "endpoint": LOCAL,
+    "candidate": LOCAL,
+    "wake": LOCAL,
+    "output": TARGETS,
     "limits": LOCAL,
 }
+# 只有麦克风命令独有的字段需要从可选目标里再收窄。
 OVERRIDES = {
-    ("microphone", "device_index"): ("mic", "remote-mic"),
-    ("microphone", "sample_rate"): ("mic", "remote-mic"),
+    ("microphone", "device_index"): ("mic",),
+    ("microphone", "sample_rate"): ("mic",),
     ("microphone", "chunk_frames"): ("mic",),
     ("microphone", "queue_seconds"): ("mic",),
-    ("microphone", "duration"): ("mic", "remote-mic"),
-    **{
-        ("realtime", key): HOST
-        for key in (
-            "model_path",
-            "backend",
-            "device",
-            "interval",
-            "initial_delay",
-        )
-    },
-    ("realtime", "stable_text"): INPUT,
-    ("realtime", "dual_realtime"): INPUT,
-    ("realtime", "acoustic_boundaries"): HOST,
-    **{
-        ("vad", key): LOCAL
-        for key in (
-            "webrtc_mode",
-            "silero_sensitivity",
-            "silero_end_detection",
-        )
-    },
-    **{("candidate", key): HOST for key in ("model_path", "backend", "device", "only")},
-    **{
-        ("candidate", key): INPUT
-        for key in (
-            "kind",
-            "every",
-            "hint",
-            "completion_mode",
-            "retain_for_correction",
-            "correct_after_final",
-        )
-    },
-    **{("wake", key): HOST for key in FIELDS["wake"] if key != "enabled"},
+    ("microphone", "duration"): ("mic",),
 }
-REMOTE_GLOBAL = {"url", "token_env", "timeout", "language", "output", "word_timestamps"}
 
 
 def split_config(argv):
@@ -226,35 +148,6 @@ def split_config(argv):
 
 def forward_config(argv, path):
     return [*argv, "--config", str(path)] if path is not None else argv
-
-
-def remote_source(argv):
-    """跳过远程全局选项的值，定位来源子命令，不把值误认为命令。"""
-    index = 0
-    while index < len(argv):
-        token = argv[index]
-        name = token.split("=", 1)[0].removeprefix("--").replace("-", "_")
-        if name not in REMOTE_GLOBAL and name != "no_word_timestamps":
-            return token, index
-        index += 1 if "=" in token or name in ("word_timestamps", "no_word_timestamps") else 2
-    return None, index
-
-
-def order_remote_arguments(arguments):
-    """全局选项回到来源命令之前，保持有无配置文件时的覆盖语法一致。"""
-    global_options, remaining = [], []
-    index = 0
-    while index < len(arguments):
-        token = arguments[index]
-        option = token.split("=", 1)[0].removeprefix("--").removeprefix("no-").replace("-", "_")
-        if token.startswith("--") and option in REMOTE_GLOBAL:
-            size = 1 if "=" in token or option == "word_timestamps" else 2
-            global_options.extend(arguments[index : index + size])
-            index += size
-        else:
-            remaining.append(token)
-            index += 1
-    return [*global_options, *remaining]
 
 
 @dataclass
@@ -282,8 +175,6 @@ class ConfigArguments:
 def configure(argv, target):
     """配置转为既有命令参数；显式参数整项覆盖，最终仍使用原参数校验。"""
     selected, original = split_config(list(argv))
-    if target in REMOTE:
-        original = order_remote_arguments(original)
     invocation = ConfigArguments(original)
     if "--help" in original or "-h" in original:
         return invocation
@@ -305,7 +196,7 @@ def configure(argv, target):
         ) from exc
     invocation.path = path
     explicit = invocation.explicit
-    configured, global_remote = [], []
+    configured = []
     for section, values in data.items():
         if section not in FIELDS or not isinstance(values, dict):
             raise ASRError("INVALID_CONFIGURATION", "load_config", f"未知配置分组：{section}")
@@ -342,10 +233,7 @@ def configure(argv, target):
                 )
             else:
                 arguments = [flag, str(value)]
-            destination = (
-                global_remote if target in REMOTE and option in REMOTE_GLOBAL else configured
-            )
-            destination.extend(arguments)
+            configured.extend(arguments)
             invocation.sources[option] = f"config:{section}.{key}"
     # CPU 模式忽略文件中的 GPU 路径；命令行显式不兼容参数仍由原契约拒绝。
     device = data.get("model", {}).get("device", "cpu")
@@ -354,27 +242,19 @@ def configure(argv, target):
             device = original[index + 1]
         elif token.startswith("--device="):
             device = token.partition("=")[2]
-    if target in HOST and device != "cuda":
+    if target in LOCAL and device != "cuda":
         for option in ("cudnn_folder", "cuda_directory"):
             if option in invocation.sources:
                 flag = "--" + option.replace("_", "-")
                 index = configured.index(flag)
                 del configured[index : index + 2]
                 del invocation.sources[option]
-    invocation.argv = [*global_remote, *original, *configured]
+    invocation.argv = [*original, *configured]
     return invocation
 
 
 def parse_target(target, argv):
     """管理命令复用实际启动解析，不维护第二套默认值或功能规则。"""
-    if target == "serve":
-        from apps.server.__main__ import parse_options
-
-        return parse_options(argv)
-    if target in REMOTE:
-        from apps.client.__main__ import parse_options
-
-        return parse_options([target.removeprefix("remote-"), *argv], diagnostic=True)
     from apps.cli.args import parse_args
 
     return parse_args([target, *argv], diagnostic=True)
@@ -383,102 +263,78 @@ def parse_target(target, argv):
 def check_paths(args, target):
     """只核对选中入口的文件、目录与依赖；完整性及模型加载另行执行。"""
     modules = set()
-    if target in REMOTE:
-        from urllib.parse import urlsplit
+    from realtime_asr.engines.local import RecognizerConfig, resolve_config
 
-        parts = urlsplit(args.url)
-        if parts.scheme not in ("http", "https") or not parts.netloc:
-            raise ASRError("INVALID_CONFIGURATION", "check_config", "remote.url 需要 HTTP(S) 地址")
-        modules.update(("httpx", "websocket"))
-    else:
-        from realtime_asr.engines.local import RecognizerConfig, resolve_config
+    model = RecognizerConfig(
+        model=args.model,
+        engine=args.backend,
+        device=args.device,
+        device_index=args.device_index,
+        cudnn_folder=args.cudnn_folder,
+        cuda_directory=args.cuda_directory,
+    )
+    from apps.cli.args import candidate_role, realtime_roles, wake_role
 
-        model = RecognizerConfig(
-            model=args.model,
-            engine=args.backend,
-            device=args.device,
-            device_index=args.device_index,
-            cudnn_folder=args.cudnn_folder,
-            cuda_directory=args.cuda_directory,
+    resolve_config(model)
+    realtime, ultrafast = realtime_roles(args, model)
+    candidate = candidate_role(args, model)
+    selected_models = [model]
+    for role in (realtime, ultrafast, candidate):
+        if role is not None and role.model is not None:
+            resolve_config(role.model)
+            selected_models.append(role.model)
+    for selected in selected_models:
+        modules.add("faster_whisper" if selected.engine == "whisper" else "sherpa_onnx")
+    if args.mode == "auto":
+        from realtime_asr import EndpointConfig, SegmentationConfig, VadConfig
+
+        VadConfig(
+            model_path=args.vad_model,
+            webrtc_mode=args.webrtc_mode,
+            silero_sensitivity=args.silero_sensitivity,
+            silero_end_detection=args.silero_end_detection,
         )
-        from apps.cli.args import candidate_role, realtime_roles, wake_role
-
-        resolve_config(model)
-        realtime, ultrafast = realtime_roles(args, model)
-        candidate = candidate_role(args, model)
-        selected_models = [model]
-        for role in (realtime, ultrafast, candidate):
-            if role is not None and role.model is not None:
-                resolve_config(role.model)
-                selected_models.append(role.model)
-        for selected in selected_models:
-            modules.add("faster_whisper" if selected.engine == "whisper" else "sherpa_onnx")
-        if target in LOCAL and args.mode == "auto":
-            from realtime_asr import EndpointConfig, SegmentationConfig, VadConfig
-
-            VadConfig(
-                model_path=args.vad_model,
-                webrtc_mode=args.webrtc_mode,
-                silero_sensitivity=args.silero_sensitivity,
-                silero_end_detection=args.silero_end_detection,
-            )
-            SegmentationConfig(
-                silence_confirmation=args.silence_confirmation,
-                post_speech_silence=args.post_speech_silence,
-                min_recording_duration=args.min_recording_duration,
-                min_gap=args.min_gap,
-                pre_roll_duration=args.pre_roll_duration,
-                trim_pre_roll=args.trim_pre_roll,
-                backdate_duration=args.backdate_seconds,
-            )
-            EndpointConfig(
-                early_transcription_silence=args.early_transcription_silence,
-                dynamic_silence=args.dynamic_silence,
-                punctuation_split=args.punctuation_split,
-            )
-        if args.wake:
-            wake_role(args)
-        for name in (
-            "model",
-            "realtime_model",
-            "ultrafast_model",
-            "candidate_model",
-            "cudnn_folder",
-            "cuda_directory",
-        ):
-            value = getattr(args, name, None)
-            if value and not Path(value).is_dir():
-                raise ASRError(
-                    "INVALID_CONFIGURATION", "check_config", f"目录不存在：{name}={value}"
-                )
-        if target == "serve":
-            for name in ("ssl_certfile", "ssl_keyfile"):
-                value = getattr(args, name)
-                if value and not Path(value).is_file():
-                    raise ASRError(
-                        "INVALID_CONFIGURATION", "check_config", f"TLS 文件不存在：{value}"
-                    )
-            from apps.server.__main__ import build_config
-
-            build_config(args)
-            modules.update(("fastapi", "uvicorn", "websockets"))
-        if target == "serve" or args.mode == "auto":
-            if args.vad_model:
-                modules.update(("webrtcvad", "onnxruntime"))
-                if not Path(args.vad_model).is_file():
-                    raise ASRError("INVALID_CONFIGURATION", "check_config", "VAD 文件不存在")
-        if args.wake:
-            modules.add("pvporcupine" if args.wake_backend == "porcupine" else "openwakeword")
-            for value in (*args.wake_models, args.wake_parameter_model):
-                if value and not Path(value).is_file():
-                    raise ASRError(
-                        "INVALID_CONFIGURATION", "check_config", f"唤醒文件不存在：{value}"
-                    )
-            if args.wake_feature_dir and not Path(args.wake_feature_dir).is_dir():
-                raise ASRError("INVALID_CONFIGURATION", "check_config", "唤醒特征目录不存在")
-    if target in ("mic", "remote-mic"):
+        SegmentationConfig(
+            silence_confirmation=args.silence_confirmation,
+            post_speech_silence=args.post_speech_silence,
+            min_recording_duration=args.min_recording_duration,
+            min_gap=args.min_gap,
+            pre_roll_duration=args.pre_roll_duration,
+            trim_pre_roll=args.trim_pre_roll,
+            backdate_duration=args.backdate_seconds,
+        )
+        EndpointConfig(
+            early_transcription_silence=args.early_transcription_silence,
+            dynamic_silence=args.dynamic_silence,
+            punctuation_split=args.punctuation_split,
+        )
+    if args.wake:
+        wake_role(args)
+    for name in (
+        "model",
+        "realtime_model",
+        "ultrafast_model",
+        "candidate_model",
+        "cudnn_folder",
+        "cuda_directory",
+    ):
+        value = getattr(args, name, None)
+        if value and not Path(value).is_dir():
+            raise ASRError("INVALID_CONFIGURATION", "check_config", f"目录不存在：{name}={value}")
+    if args.mode == "auto" and args.vad_model:
+        modules.update(("webrtcvad", "onnxruntime"))
+        if not Path(args.vad_model).is_file():
+            raise ASRError("INVALID_CONFIGURATION", "check_config", "VAD 文件不存在")
+    if args.wake:
+        modules.add("pvporcupine" if args.wake_backend == "porcupine" else "openwakeword")
+        for value in (*args.wake_models, args.wake_parameter_model):
+            if value and not Path(value).is_file():
+                raise ASRError("INVALID_CONFIGURATION", "check_config", f"唤醒文件不存在：{value}")
+        if args.wake_feature_dir and not Path(args.wake_feature_dir).is_dir():
+            raise ASRError("INVALID_CONFIGURATION", "check_config", "唤醒特征目录不存在")
+    if target == "mic":
         modules.add("pyaudio")
-    if target in ("file", "remote-file"):
+    if target == "file":
         modules.update(("soundfile", "soxr"))
     missing = [name for name in sorted(modules) if importlib.util.find_spec(name) is None]
     if missing:
@@ -495,7 +351,7 @@ def main(argv, *, path=None, stdout=None, stderr=None):
     commands.add_parser("init", help="生成本机 config.toml，不覆盖已有文件")
     for name in ("check", "show"):
         command = commands.add_parser(name)
-        command.add_argument("target", nargs="?", default="mic", choices=(*LOCAL, "serve", *REMOTE))
+        command.add_argument("target", nargs="?", default="mic", choices=TARGETS)
     options, overrides = parser.parse_known_args(argv)
     try:
         if options.action == "init":

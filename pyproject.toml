@@ -30,13 +30,6 @@ dev = [
     "psutil>=7,<8",
     "scipy>=1.15,<2",
     "ruff>=0.12",
-    # server/client 是仓库内的应用层参考实现，依赖只用于开发和验证，不随库安装。
-    "fastapi>=0.115,<1",
-    "pydantic>=2.11,<3",
-    "uvicorn>=0.35,<1",
-    "websockets>=15,<17",
-    "httpx>=0.28,<1",
-    "websocket-client>=1.8,<2",
 ]
 
 [tool.setuptools.packages.find]

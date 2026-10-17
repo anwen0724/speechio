@@ -165,7 +165,7 @@ def run(project, folder):
 def invoke(project, args, input_bytes=None):
     """标准输入按原字节递交，stdout 只解析正式 CLI 的 JSONL。"""
     process = subprocess.run(
-        [sys.executable, "-m", "realtime_asr", *args],
+        [sys.executable, "-m", "apps.cli", *args],
         cwd=project,
         input=input_bytes,
         capture_output=True,
@@ -193,7 +193,7 @@ def check_broken_pipe(project, *, idle_stdin=False):
         [
             sys.executable,
             "-m",
-            "realtime_asr",
+            "apps.cli",
             *(
                 ["stdin", "--realtime"]
                 if idle_stdin

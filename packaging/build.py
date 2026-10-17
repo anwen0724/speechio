@@ -1,6 +1,5 @@
 """从当前源码构建 wheel，清理旧缓存并核对全部包成员。"""
 
-import argparse
 import os
 import shutil
 import subprocess
@@ -9,9 +8,6 @@ from pathlib import Path
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--install-web-deps", action="store_true")
-    args = parser.parse_args()
     project = Path(__file__).resolve().parents[1]
     build = project / "build"
     if build.exists():
@@ -21,12 +17,9 @@ def main():
     env = os.environ.copy()
     env["UV_CACHE_DIR"] = str(project / ".runtime/uv-cache")
     env["UV_LINK_MODE"] = "copy"
-    npm, uv = shutil.which("npm"), shutil.which("uv")
-    if npm is None or uv is None:
-        raise RuntimeError("构建需要 Node/npm 和 uv")
-    if args.install_web_deps:
-        subprocess.run([npm, "ci"], cwd=project / "apps/web", env=env, check=True)
-    subprocess.run([npm, "run", "build"], cwd=project / "apps/web", env=env, check=True)
+    uv = shutil.which("uv")
+    if uv is None:
+        raise RuntimeError("构建需要 uv")
     subprocess.run([uv, "build", "--wheel"], cwd=project, env=env, check=True)
     expected = {
         path.relative_to(project / "src").as_posix(): path.read_bytes()
