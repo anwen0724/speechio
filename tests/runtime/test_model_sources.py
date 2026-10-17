@@ -80,3 +80,35 @@ class ModelSourceTests(unittest.TestCase):
             recognizer.prepare()
         self.assertEqual(caught.exception.code, "MODEL_INCOMPLETE")
         self.assertIn("install_models", caught.exception.message)
+
+    def test_engine_options_must_be_a_mapping(self):
+        with self.assertRaises(ASRError) as caught:
+            Recognizer(RecognizerConfig(model="tiny", engine_options=["beam_size"]))
+        self.assertEqual(caught.exception.code, "INVALID_CONFIGURATION")
+
+    def test_whisper_engine_options_override_beam_size(self):
+        model = SimpleNamespace(feature_extractor=SimpleNamespace(chunk_length=30))
+        info = SimpleNamespace(language=None, language_probability=None)
+        with patch("faster_whisper.WhisperModel", return_value=model):
+            engine = WhisperEngine(
+                RecognizerConfig(model="tiny", compute_type="int8", engine_options={"beam_size": 2})
+            )
+        with patch(
+            "faster_whisper.BatchedInferencePipeline.transcribe",
+            return_value=(iter([]), info),
+        ) as run:
+            engine.transcribe([0.1])
+        self.assertEqual(run.call_args.kwargs["beam_size"], 2)
+
+    def test_invalid_engine_option_is_rejected_before_loading(self):
+        with self.assertRaises(ASRError) as caught:
+            WhisperEngine(
+                RecognizerConfig(model="tiny", compute_type="int8", engine_options={"beam_size": 0})
+            )
+        self.assertEqual(caught.exception.code, "INVALID_CONFIGURATION")
+        recognizer = Recognizer(
+            RecognizerConfig(model="nemotron", engine="nemotron", engine_options={"num_threads": 0})
+        )
+        self.addCleanup(recognizer.close)
+        with self.assertRaises(ASRError):
+            recognizer.prepare()

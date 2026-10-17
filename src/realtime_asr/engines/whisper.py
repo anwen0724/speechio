@@ -43,6 +43,13 @@ class WhisperEngine:
         self.device = config.device
         self.compute_type = config.compute_type
         self.device_index = config.device_index
+        options = config.engine_options or {}
+        beam_size = options.get("beam_size")
+        if beam_size is not None and (type(beam_size) is not int or beam_size <= 0):
+            raise ASRError(
+                "INVALID_CONFIGURATION", "configure_engine", "engine_options.beam_size 应为正整数"
+            )
+        self.beam_size = beam_size
         try:
             with preparation_step(self.preparation_steps, "load"):
                 self._model = WhisperModel(
@@ -108,7 +115,7 @@ class WhisperEngine:
             segments, info = self._pipeline.transcribe(
                 array,
                 language=language,
-                beam_size=3 if role == "snapshot" else 5,
+                beam_size=self.beam_size or (3 if role == "snapshot" else 5),
                 batch_size=16,
                 vad_filter=True,
                 initial_prompt=None,

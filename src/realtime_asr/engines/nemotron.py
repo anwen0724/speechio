@@ -16,6 +16,13 @@ class NemotronEngine:
 
     def __init__(self, config):
         self.preparation_steps = []
+        options = config.engine_options or {}
+        num_threads = options.get("num_threads", 1)
+        if type(num_threads) is not int or num_threads <= 0:
+            raise ASRError(
+                "INVALID_CONFIGURATION", "configure_engine", "engine_options.num_threads 应为正整数"
+            )
+        self.num_threads = num_threads
         model_path = Path(config.model)
         if not model_path.is_dir():
             raise ASRError(
@@ -52,7 +59,7 @@ class NemotronEngine:
                 "encoder": str(folder / "encoder.int8.onnx"),
                 "decoder": str(folder / "decoder.int8.onnx"),
                 "joiner": str(folder / "joiner.int8.onnx"),
-                "num_threads": 1,
+                "num_threads": self.num_threads,
                 "sample_rate": 16000,
                 "feature_dim": 128,
                 "enable_endpoint_detection": False,

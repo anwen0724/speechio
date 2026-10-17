@@ -1,6 +1,7 @@
 """本地模型的组装与生命周期；GPU、路径和语言映射不进入通用调度。"""
 
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from os import PathLike
 from pathlib import Path
@@ -25,6 +26,7 @@ class RecognizerConfig:
     device_index: int = 0
     download_root: str | PathLike | None = None
     local_files_only: bool = False
+    engine_options: Mapping[str, object] | None = None
     cudnn_folder: str | PathLike | None = None
     cuda_directory: str | PathLike | None = None
 
@@ -77,6 +79,8 @@ def resolve_config(config):
         raise ASRError("INVALID_CONFIGURATION", "configure", "CUDA 需要显式 cuDNN 目录")
     if not isinstance(config.model, (str, PathLike)):
         raise ASRError("INVALID_CONFIGURATION", "configure", "模型应为名字或目录")
+    if config.engine_options is not None and not isinstance(config.engine_options, Mapping):
+        raise ASRError("INVALID_CONFIGURATION", "configure", "engine_options 应为映射")
     try:
         model = str(config.model)
         if Path(model).is_dir():
@@ -88,11 +92,13 @@ def resolve_config(config):
         download_root = (
             Path(config.download_root).resolve() if config.download_root is not None else None
         )
+        engine_options = dict(config.engine_options) if config.engine_options is not None else None
         return replace(
             config,
             engine=engine,
             model=model,
             download_root=download_root,
+            engine_options=engine_options,
             compute_type=compute_type,
             cudnn_folder=cudnn_folder,
             cuda_directory=cuda_directory,
