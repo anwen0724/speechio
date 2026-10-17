@@ -7,8 +7,8 @@ import wave
 from pathlib import Path
 
 from evals.p0.corpus.manifest import load_corpus
-from realtime_asr.core.errors import ASRError
-from realtime_asr.core.runtime.models.manifest import sha256_file
+from realtime_asr.errors import ASRError
+from realtime_asr.runtime.models.manifest import sha256_file
 
 
 class CorpusTests(unittest.TestCase):

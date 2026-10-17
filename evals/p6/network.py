@@ -8,7 +8,7 @@ from time import monotonic, sleep
 import httpx
 import uvicorn
 
-from realtime_asr.server import create_app
+from apps.server import create_app
 
 
 @contextmanager

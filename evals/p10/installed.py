@@ -9,15 +9,15 @@ from pathlib import Path
 
 import httpx
 
+from apps.client import RemoteClient
 from evals.p8.installed_check import PROBE
-from realtime_asr.client import RemoteClient
 
 IMPORT_PROBE = """
 import json
 import sys
 import realtime_asr
-import realtime_asr.server
-import realtime_asr.client
+import apps.server
+import apps.client
 optional = ('faster_whisper', 'sherpa_onnx', 'onnxruntime', 'pyaudio',
             'openwakeword', 'pvporcupine', 'fastapi', 'httpx')
 print(json.dumps({'package': realtime_asr.__file__,
@@ -89,7 +89,7 @@ SERVER_PROBE = """
 import json, socket, sys, threading, time, uvicorn
 from pathlib import Path
 from realtime_asr import RecognizerConfig, CandidateConfig, WakeConfig
-from realtime_asr.server import ServerConfig, create_app
+from apps.server import ServerConfig, create_app
 
 root = Path(sys.argv[1])
 listener = socket.socket()
@@ -322,7 +322,7 @@ def main():
                 str(environments / "client/Scripts/python.exe"),
                 "-I",
                 "-m",
-                "realtime_asr.client",
+                "apps.client",
                 "--url",
                 url,
                 "--output",

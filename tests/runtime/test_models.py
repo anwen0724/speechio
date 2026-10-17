@@ -5,8 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from realtime_asr.core.errors import ASRError
-from realtime_asr.core.runtime.models.manifest import create_manifest, verify_manifest
+from realtime_asr.errors import ASRError
+from realtime_asr.runtime.models.manifest import create_manifest, verify_manifest
 
 
 class ModelTests(unittest.TestCase):

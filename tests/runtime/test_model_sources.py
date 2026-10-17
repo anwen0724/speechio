@@ -7,8 +7,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from realtime_asr import ASRError, Recognizer, RecognizerConfig
-from realtime_asr.core.engines.whisper import WhisperEngine
-from realtime_asr.core.runtime.models.manifest import create_manifest
+from realtime_asr.engines.whisper import WhisperEngine
+from realtime_asr.runtime.models.manifest import create_manifest
 
 
 class ModelSourceTests(unittest.TestCase):

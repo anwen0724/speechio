@@ -6,8 +6,8 @@ from time import monotonic
 import numpy as np
 from fastapi.testclient import TestClient
 
+from apps.server import ServerConfig, create_app
 from realtime_asr import EngineCapabilities, RecognitionResult, WordTimestamp
-from realtime_asr.server import ServerConfig, create_app
 from tests.runtime.test_engine_injection import RecordingEngine
 
 

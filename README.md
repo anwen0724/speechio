@@ -6,86 +6,86 @@
 
 ## 日常启动
 
-当前入口统一为 `asr`，本机参数保存在项目根目录的 `config.toml`。分发包名仍为 realtime-asr，Python 导入名仍为 realtime_asr。
+当前入口统一为 `python -m apps.cli`，本机参数保存在项目根目录的 `config.toml`。分发包名仍为 realtime-asr，Python 导入名仍为 realtime_asr。
 
 本机已创建配置后，打开 PowerShell：
 
 ```powershell
 Set-Location C:/all/work/practice/realtime-asr
 . .venv/Scripts/Activate.ps1
-asr config check
-asr mic
+python -m apps.cli config check
+python -m apps.cli mic
 ```
 
-浏览器方式使用 `asr serve`，保持终端运行，等待 `[ready]` 后打开 http://127.0.0.1:8000。文件方式使用 `asr file recording.wav`。服务、麦克风与 stdin 会持续运行，Ctrl+C 停止；文件识别完成后退出。
+浏览器方式使用 `python -m apps.cli serve`，保持终端运行，等待 `[ready]` 后打开 http://127.0.0.1:8000。文件方式使用 `python -m apps.cli file recording.wav`。服务、麦克风与 stdin 会持续运行，Ctrl+C 停止；文件识别完成后退出。
 
-首次使用且没有配置文件时运行 `asr config init`；已有文件不会被覆盖。编辑并保存配置后重新启动命令生效。`asr config show` 显示 mic 的实际配置与来源；`asr config show serve`、`asr config check remote-mic` 可选择其他入口。未激活环境时统一使用 `uv run --no-sync asr ...`。
+首次使用且没有配置文件时运行 `python -m apps.cli config init`；已有文件不会被覆盖。编辑并保存配置后重新启动命令生效。`python -m apps.cli config show` 显示 mic 的实际配置与来源；`python -m apps.cli config show serve`、`python -m apps.cli config check remote-mic` 可选择其他入口。未激活环境时统一使用 `uv run --no-sync python -m apps.cli ...`。
 
-配置中的相对路径以配置文件目录为准，待转写文件路径和命令行路径仍以调用目录为准。临时参数优先于配置且不会改写文件，例如 `asr file recording.wav --device cuda`，或 `asr serve --port 8001`。布尔开关支持 --no-*，如 `asr mic --no-realtime`。其他目录使用 `asr --config C:/all/work/practice/realtime-asr/config.toml serve`。
+配置中的相对路径以配置文件目录为准，待转写文件路径和命令行路径仍以调用目录为准。临时参数优先于配置且不会改写文件，例如 `python -m apps.cli file recording.wav --device cuda`，或 `python -m apps.cli serve --port 8001`。布尔开关支持 --no-*，如 `python -m apps.cli mic --no-realtime`。其他目录使用 `python -m apps.cli --config C:/all/work/practice/realtime-asr/config.toml serve`。
 
-完整字段与适用入口见[配置模板](src/realtime_asr/cli/config.example.toml)。本机 config.toml 不提交 Git；密钥使用环境变量。config check 不加载模型或占用设备，成功不代表实际推理或识别质量验收通过。正文默认仍不自动保存，命令行可重定向最终输出。
+完整字段与适用入口见[配置模板](apps/cli/config.example.toml)。本机 config.toml 不提交 Git；密钥使用环境变量。config check 不加载模型或占用设备，成功不代表实际推理或识别质量验收通过。正文默认仍不自动保存，命令行可重定向最终输出。
 
 ## 代码结构
 
-正式实现位于 `src/realtime_asr/`。核心库在 `src/realtime_asr/core/`，按音频、会话、分句、文本、识别引擎和运行时组织，不依赖 `cli`、`server`、`client`；接入层在外层。公共错误与结果各保留一个小文件；核心模块不依赖 evals、测试或示例。
+库位于 `src/realtime_asr/`，按音频、会话、分句、文本、识别引擎和运行时组织，不依赖 `apps/`。`apps/` 下是 CLI、服务端和远程客户端参考实现。公共错误与结果各保留一个小文件；库不依赖 evals、测试或示例。
 
 ```text
-src/realtime_asr/
-├── __init__.py              # 稳定的公开 SDK 导出
-├── __main__.py              # python -m realtime_asr
-├── protocol.py              # 共享二进制音频包编码，不依赖网络框架
-├── core/                    # 核心库：不依赖 cli、server、client
-│   ├── __init__.py
-│   ├── errors.py            # 公共错误与错误记录
-│   ├── results.py           # 识别与关闭结果
-│   ├── model_manifests.py   # 固定权重发布包的不可变描述
-│   ├── install_sherpa_models.py # 把固定 Nemotron 权重安装到显式目录
-│   ├── audio/
-│   │   ├── conversion.py    # 格式、连续转换、凑帧与标准样本位置
-│   │   ├── files.py         # 标准 WAV 与通用文件有限块解码
-│   │   └── microphone.py    # 输入设备、实际源格式与独立采集
-│   ├── session/
-│   │   ├── session.py       # 单元归属、控制、任务与有序事件
-│   │   └── automatic.py     # 持续源输入与待递交自动段
-│   ├── segmentation/
-│   │   ├── gate.py          # 前置保护、静音确认、裁剪与切点
-│   │   ├── acoustic.py      # 有界能量包络与声学触发信号
-│   │   └── vad.py           # WebRTC、Silero 与独立检测状态
-│   ├── text/
-│   │   ├── stabilizer.py    # 原文投影、稳定证据与最终差异
-│   │   ├── endpoint.py      # 动态等待与句末锚点策略
-│   │   └── realtime_merge.py # 双路观察、锚点、内容代次与有限尾部
-│   ├── engines/
-│   │   ├── base.py          # 通用整段、流式与能力契约
-│   │   ├── factory.py       # 引擎名到适配器的注册表
-│   │   ├── local.py         # 本地配置、GPU 与模型组装
-│   │   ├── whisper.py       # Whisper 整段与快照适配
-│   │   ├── nemotron.py      # Nemotron 识别器适配
-│   │   └── stream.py        # 原生流输入、解码、结束与关闭
-│   └── runtime/
-│       ├── recognizer.py    # 同步 SDK 与模型生命周期
-│       ├── asr.py           # ASRRuntime、最终调度及容量
-│       ├── realtime.py      # 角色执行组、周期、容量与原生排空
-│       ├── tasks.py         # 固定音频、选项及任务归属
-│       ├── models/          # 显式准备、身份校验及准备阶段记录
-│       └── native/          # GPU 资源与原生运行库加载
+src/realtime_asr/              # 库：只包含核心能力
+├── __init__.py                # 稳定的公开 SDK 导出
+├── errors.py                  # 公共错误与错误记录
+├── results.py                 # 识别与关闭结果
+├── model_manifests.py         # 固定权重发布包的不可变描述
+├── install_sherpa_models.py   # 把固定 Nemotron 权重安装到显式目录
+├── audio/
+│   ├── conversion.py          # 格式、连续转换、凑帧与标准样本位置
+│   ├── files.py               # 标准 WAV 与通用文件有限块解码
+│   └── microphone.py          # 输入设备、实际源格式与独立采集
+├── session/
+│   ├── session.py             # 单元归属、控制、任务与有序事件
+│   └── automatic.py           # 持续源输入与待递交自动段
+├── segmentation/
+│   ├── gate.py                # 前置保护、静音确认、裁剪与切点
+│   ├── acoustic.py            # 有界能量包络与声学触发信号
+│   └── vad.py                 # WebRTC、Silero 与独立检测状态
+├── text/
+│   ├── stabilizer.py          # 原文投影、稳定证据与最终差异
+│   ├── endpoint.py            # 动态等待与句末锚点策略
+│   └── realtime_merge.py      # 双路观察、锚点、内容代次与有限尾部
+├── engines/
+│   ├── base.py                # 通用整段、流式与能力契约
+│   ├── factory.py             # 引擎名到适配器的注册表
+│   ├── local.py               # 本地配置、GPU 与模型组装
+│   ├── whisper.py             # Whisper 整段与快照适配
+│   ├── nemotron.py            # Nemotron 识别器适配
+│   └── stream.py              # 原生流输入、解码、结束与关闭
+└── runtime/
+    ├── recognizer.py          # 同步 SDK 与模型生命周期
+    ├── asr.py                 # ASRRuntime、最终调度及容量
+    ├── realtime.py            # 角色执行组、周期、容量与原生排空
+    ├── tasks.py               # 固定音频、选项及任务归属
+    ├── models/                # 显式准备、身份校验及准备阶段记录
+    └── native/                # GPU 资源与原生运行库加载
+
+apps/                          # 应用层参考实现，不随库发布
+├── protocol.py                # 共享二进制音频包编码
 ├── cli/
-│   ├── config.py            # TOML、路径、覆盖、来源与配置管理
-│   ├── config.example.toml  # 安装包内的中文配置模板
-│   ├── args.py              # 命令与参数
-│   ├── input.py             # raw stdin 与可停止管道读取
-│   ├── output.py            # 文本与 JSONL 出口
-│   └── runner.py            # 公开 SDK 接入与自有资源关闭
+│   ├── config.py              # TOML、路径、覆盖、来源与配置管理
+│   ├── config.example.toml    # 中文配置模板
+│   ├── args.py                # 命令与参数
+│   ├── input.py               # raw stdin 与可停止管道读取
+│   ├── output.py              # 文本与 JSONL 出口
+│   ├── runner.py              # 公开 SDK 接入与自有资源关闭
+│   └── __main__.py            # python -m apps.cli
 ├── server/
-│   ├── app.py               # HTTP / WebSocket 与 ASGI 生命周期
-│   ├── config.py            # 启动、容量、TLS 与运行配置
-│   ├── schemas.py           # 外部协议严格校验
-│   ├── service.py           # 共享运行时与自有会话
-│   ├── connection.py        # 连接控制、有界发送与排空
-│   └── __main__.py          # 正式服务启动器
+│   ├── app.py                 # HTTP / WebSocket 与 ASGI 生命周期
+│   ├── config.py              # 启动、容量、TLS 与运行配置
+│   ├── schemas.py             # 外部协议严格校验
+│   ├── service.py             # 共享运行时与自有会话
+│   ├── connection.py          # 连接控制、有界发送与排空
+│   └── __main__.py            # 正式服务启动器
 └── client/
-    ├── connection.py        # RemoteClient / RemoteSession
-    └── __main__.py          # remote 文件、stdin 与客户端麦克风
+    ├── connection.py          # RemoteClient / RemoteSession
+    └── __main__.py            # remote 文件、stdin 与客户端麦克风
 
 evals/p0/                    # 语料、评分与基线验证
 evals/p1/                    # 同步 SDK 真实验收
@@ -115,11 +115,11 @@ tests/
 
 `audio` 提供标准音频与位置；`segmentation` 提供检测记录和切点；`session` 决定段归属、封口、取消和事件有效性。`runtime` 管理模型与推理调度，`engines` 处理模型专有调用和原生流。分句模块不提交 ASR 任务，引擎不读取会话缓冲。
 
-`core/runtime/models` 与 `core/runtime/native` 是资源支持模块，可以被运行时和引擎使用；这些模块不反向依赖会话、引擎或执行器。会话在显式协调条件内提交固定任务，并通过完成方法接收结果。队列不持有可变音频单元；实时执行器持有流和排空状态。
+`runtime/models` 与 `runtime/native` 是资源支持模块，可以被运行时和引擎使用；这些模块不反向依赖会话、引擎或执行器。会话在显式协调条件内提交固定任务，并通过完成方法接收结果。队列不持有可变音频单元；实时执行器持有流和排空状态。
 
-`text` 只处理观察与文本策略，不持有模型或可变音频。辅助任务复用 `core/runtime/asr.py` 的最终模型、任务容量和工作线程；会话执行归属检查与左右切分。
+`text` 只处理观察与文本策略，不持有模型或可变音频。辅助任务复用 `runtime/asr.py` 的最终模型、任务容量和工作线程；会话执行归属检查与左右切分。
 
-评估代码调用正式实现，再补充语料、测量和评分。`evals/p0/engines.py` 的 `EnginePool` 只用于评估，不作为产品运行时。内部模块统一位于 `core/`，`cli`、`server`、`client` 是接入层；`from realtime_asr import ...` 的公开导出与签名保持。
+评估代码调用正式实现，再补充语料、测量和评分。`evals/p0/engines.py` 的 `EnginePool` 只用于评估，不作为产品运行时。库只包含 `src/realtime_asr/`；`apps/` 下的 `cli`、`server`、`client` 是应用层参考实现，不随库发布；`from realtime_asr import ...` 的公开导出与签名保持。
 
 ## 自定义引擎
 
@@ -142,7 +142,7 @@ tests/
 准备函数只在明确调用时下载；推理保持离线。已准备目录只校验，不把另一块长重标为目标变体。基础包之外需要 `nemotron` 依赖。
 
 ```python
-from realtime_asr.core.runtime.models.prepare import prepare_nemotron
+from realtime_asr.runtime.models.prepare import prepare_nemotron
 
 prepare_nemotron("models/nemotron-1120ms", variant="1120ms", allow_download=True)
 prepare_nemotron("models/nemotron-80ms", variant="80ms", allow_download=True)
@@ -187,9 +187,9 @@ with ASRRuntime(
 本地 CLI 的实际参数：
 
 ```powershell
-asr stdin --model models/nemotron-1120ms --backend nemotron --ultrafast-model models/nemotron-80ms --realtime --dual-realtime --output jsonl
-asr serve --model models/nemotron-1120ms --backend nemotron --ultrafast-model models/nemotron-80ms
-asr remote --url http://127.0.0.1:8000 --output jsonl stdin --realtime --dual-realtime
+python -m apps.cli stdin --model models/nemotron-1120ms --backend nemotron --ultrafast-model models/nemotron-80ms --realtime --dual-realtime --output jsonl
+python -m apps.cli serve --model models/nemotron-1120ms --backend nemotron --ultrafast-model models/nemotron-80ms
+python -m apps.cli remote --url http://127.0.0.1:8000 --output jsonl stdin --realtime --dual-realtime
 ```
 
 独立准确模型使用 `--realtime-model`。两路 backend 和 device 可独立指定，缺省沿用最终配置；服务角色在启动时固定，客户端只能选择已提供能力。浏览器连接前勾选“双实时合并”，实时区域显示准确正文、极速原文及合并状态。HTTP 仍用于完整转写。
@@ -198,7 +198,7 @@ asr remote --url http://127.0.0.1:8000 --output jsonl stdin --realtime --dual-re
 
 ## 环境与安装
 
-`server` 和 `client` 不属于库，不随 wheel 安装，也没有对应的 extras。它们是仓库内的应用层参考实现：服务端由使用者按公开 API 自行编写，这里的实现只用于开发和验证，依赖放在开发组。
+`cli`、`server` 和 `client` 不属于库，不随 wheel 安装，也没有对应的 extras。它们位于 `apps/`，是仓库内的应用层参考实现：服务端由使用者按公开 API 自行编写，这里的实现只用于开发和验证，依赖放在开发组。
 
 使用 uv 和 64 位 CPython 3.12。开发解释器由 `.python-version` 固定为已安装的 3.12.14，Python 依赖由 `uv.lock` 锁定。以下命令在项目根目录执行：
 
@@ -213,22 +213,22 @@ uv 建立根目录 `.venv`，不向 Anaconda 或其他项目环境安装依赖�
 
 ## 本地命令行与麦克风
 
-安装包提供 `asr` 和 `python -m realtime_asr`。帮助不枚举设备或加载模型。麦克风使用 `microphone`，自动分句额外使用 `vad`；文件使用 `audio`。各命令均通过已有会话 SDK 识别，模型路径由调用方指定。
+仓库内提供 CLI：`python -m apps.cli`；库安装不提供命令行。帮助不枚举设备或加载模型。麦克风使用 `microphone`，自动分句额外使用 `vad`；文件使用 `soundfile`／`soxr`。各命令均通过已有会话 SDK 识别，模型路径由调用方指定。
 
 以下示例在已经按上文同步环境、准备本地模型后运行：
 
 ```powershell
-uv run --no-sync asr --help
-uv run --no-sync asr devices
+uv run --no-sync python -m apps.cli --help
+uv run --no-sync python -m apps.cli devices
 
 # 默认自动分句和基本实时；Ctrl+C 停止，也可指定 --duration。
-uv run --no-sync asr mic --model .runtime/models/whisper-tiny --vad-model .runtime/models/vad/silero-v6.onnx --duration 10
+uv run --no-sync python -m apps.cli mic --model .runtime/models/whisper-tiny --vad-model .runtime/models/vad/silero-v6.onnx --duration 10
 
 # 手动模式将本次采集作为一个完整单元；不要求 VAD。
-uv run --no-sync asr mic --model .runtime/models/whisper-tiny --mode manual --duration 5 --output jsonl
+uv run --no-sync python -m apps.cli mic --model .runtime/models/whisper-tiny --mode manual --duration 5 --output jsonl
 
 # 按文件顺序识别，各文件使用自己的实际格式。
-uv run --no-sync asr file first.wav second.wav --model .runtime/models/whisper-tiny --language zh-CN
+uv run --no-sync python -m apps.cli file first.wav second.wav --model .runtime/models/whisper-tiny --language zh-CN
 ```
 
 `--input-device` 是 devices 显示的 PortAudio 索引，`--device cpu|cuda` 是模型计算设备。默认采用系统输入设备，自动格式优先 16 kHz，再探测设备支持格式；显式索引或采样率无效时失败，不静默换设备。默认采集块为 1024 个源帧，缓冲预算为 5 秒；溢出和容量满明确报错。
@@ -241,7 +241,7 @@ stdin 接收原始小端 PCM16，默认 16 kHz 单声道；float32、其他采�
 import subprocess
 
 completed = subprocess.run(
-    ["asr", "stdin", "--model", "models/whisper-tiny", "--output", "jsonl"],
+    ["python", "-m", "apps.cli", "stdin", "--model", "models/whisper-tiny", "--output", "jsonl"],
     input=pcm16_bytes,  # 调用方已有的原始音频字节。
     capture_output=True,
 )
@@ -274,27 +274,27 @@ with MicrophoneInput(MicrophoneConfig()) as microphone:
 
 ```powershell
 uv sync --locked --extra vad --extra microphone
-uv run --no-sync asr serve --model .runtime/models/whisper-tiny --vad-model .runtime/models/vad/silero-v6.onnx
+uv run --no-sync python -m apps.cli serve --model .runtime/models/whisper-tiny --vad-model .runtime/models/vad/silero-v6.onnx
 ```
 
-`asr serve` 和 `python -m realtime_asr.server` 使用同一启动器，只在仓库内可用；wheel 不包含 server 和 client。默认监听 `127.0.0.1:8000`，一个 worker 共享一个 ASRRuntime。存活接口是 `/api/v1/live`；模型准备中 `/api/v1/ready` 返回 503，准备成功后返回 200。容量满与模型未就绪分别报告。
+`python -m apps.cli serve` 和 `python -m apps.server` 使用同一启动器，只在仓库内可用；wheel 不包含 server 和 client。默认监听 `127.0.0.1:8000`，一个 worker 共享一个 ASRRuntime。存活接口是 `/api/v1/live`；模型准备中 `/api/v1/ready` 返回 503，准备成功后返回 200。容量满与模型未就绪分别报告。
 
 HTTP 的 `POST /api/v1/transcribe` 接收 `application/octet-stream` 原始小端音频。用 sample_rate、channels、sample_type 和可选 language 声明输入，默认 16 kHz、单声道、int16；不提交 WAV 文件头或服务器路径。WebSocket 使用 `/api/v1/ws`，第一条 open 取得新会话；音频包和控制都绑定这个会话及代次。完整字段与错误见 [P6 Spec](docs/specs/network-service.md)。
 
 远程客户端不需要本地识别模型。文件命令先解码再用 HTTP 递交；stdin 和麦克风用 WebSocket。全局参数放在输入子命令之前：
 
 ```powershell
-uv run --no-sync asr remote --url http://127.0.0.1:8000 --language zh-CN file first.wav second.wav
-uv run --no-sync asr remote --url http://127.0.0.1:8000 --output jsonl stdin --sample-rate 48000 --channels 2
-uv run --no-sync asr remote --url http://127.0.0.1:8000 mic --mode auto --realtime --duration 10
+uv run --no-sync python -m apps.cli remote --url http://127.0.0.1:8000 --language zh-CN file first.wav second.wav
+uv run --no-sync python -m apps.cli remote --url http://127.0.0.1:8000 --output jsonl stdin --sample-rate 48000 --channels 2
+uv run --no-sync python -m apps.cli remote --url http://127.0.0.1:8000 mic --mode auto --realtime --duration 10
 ```
 
-`asr remote` 与 `python -m realtime_asr.client` 使用同一客户端入口。stdin 是原始声明格式，麦克风是客户端所在电脑的设备。text 只把最终正文写到 stdout；JSONL 保留 ready、应答、核心事件、错误和 closed。输入读取与结果输出独立，标准流不主动关闭。
+`python -m apps.cli remote` 与 `python -m apps.client` 使用同一客户端入口。stdin 是原始声明格式，麦克风是客户端所在电脑的设备。text 只把最终正文写到 stdout；JSONL 保留 ready、应答、核心事件、错误和 closed。输入读取与结果输出独立，标准流不主动关闭。
 
-Python 接入使用 `realtime_asr.client.RemoteClient`。以下示例中的 pcm 是调用方已有的完整 PCM16 字节：
+Python 接入使用 `apps.client.RemoteClient`。以下示例中的 pcm 是调用方已有的完整 PCM16 字节：
 
 ```python
-from realtime_asr.client import RemoteClient
+from apps.client import RemoteClient
 
 with RemoteClient("http://127.0.0.1:8000") as client:
     response = client.transcribe(pcm, language="zh-CN")
@@ -331,7 +331,7 @@ npm --prefix web run build
 uv build
 ```
 
-静态资源构建到 `src/realtime_asr/server/static/`，随 wheel 交付；已构建的安装包不需要 Node.js。node_modules 与静态生成目录不进入 Git。若使用 Vite 开发服务器，`npm --prefix web run dev` 通过 `/api` 代理到本地 8000 服务。
+静态资源构建到 `apps/server/static/`，供仓库内服务端使用，不随库 wheel 交付。node_modules 与静态生成目录不进入 Git。若使用 Vite 开发服务器，`npm --prefix web run dev` 通过 `/api` 代理到本地 8000 服务。
 
 页面只保留当前内存中的 Token。打开失败、输入失败或连接断开时释放自有设备流和音频图；正常停止先递交短尾再释放采集资源，连接继续交付该输入的结果。实时失败是可观察错误，不能冒充最终，也不结束其他有效任务。最小入口不包含后续稳定、候选或完整时间线。
 
@@ -543,7 +543,7 @@ def open_optimized_session(runtime):
 动态等待按最近接受的实时正文选择句末、未知和续说等待，继续经过原来的门控。句末策略只支持句末标点，使用真实词时间固定左侧并保留右侧。提前结果只有在封口音频与快照完全相同时才复用；后续静音也会使版本不同。提前推理会增加成本，启用前应检查对应设备上的测量。
 
 ```powershell
-uv run --no-sync asr mic --model .runtime/models/whisper-tiny --vad-model .runtime/models/vad/silero-v6.onnx --stable-text --word-timestamps --dynamic-silence --punctuation-split --duration 10 --output jsonl
+uv run --no-sync python -m apps.cli mic --model .runtime/models/whisper-tiny --vad-model .runtime/models/vad/silero-v6.onnx --stable-text --word-timestamps --dynamic-silence --punctuation-split --duration 10 --output jsonl
 ```
 
 HTTP 支持 `word_timestamps=true`。远程 SDK 的 `transcribe_file(..., word_timestamps=True)` 读取完整词结果；`connect(mode="auto", realtime=True, stable_text=True, dynamic_silence=True, punctuation_split=True)` 选择会话策略。`early_transcription_silence` 是另一个可选 open 字段。服务需要已配置 VAD，声学策略由 `serve --acoustic-boundaries` 在启动时选择。最小浏览器提供“稳定文本”开关及稳定／待定展示。
@@ -662,10 +662,10 @@ Porcupine 的正向实际检测仍需 AccessKey，人工口述、首词裁剪质
 正式资源命令不加载识别模型，默认离线。显式准备与校验示例：
 
 ```powershell
-uv run --no-sync asr models list
-uv run --no-sync asr models prepare --kind whisper --path .runtime/models/whisper-tiny --download
-uv run --no-sync asr models verify --path .runtime/models/whisper-tiny
-uv run --no-sync asr gpu-runtime verify --path .runtime/cudnn/9.16.0.29
+uv run --no-sync python -m apps.cli models list
+uv run --no-sync python -m apps.cli models prepare --kind whisper --path .runtime/models/whisper-tiny --download
+uv run --no-sync python -m apps.cli models verify --path .runtime/models/whisper-tiny
+uv run --no-sync python -m apps.cli gpu-runtime verify --path .runtime/cudnn/9.16.0.29
 ```
 
 模型工具支持 Whisper tiny、Nemotron 的 560ms／1120ms／80ms、固定 Silero v6 和 OpenWakeWord Alexa ONNX 资源。Porcupine 自定义文件和 AccessKey 由使用者提供。下载必须明确 --download；损坏或冲突文件不会被重写为成功缓存。

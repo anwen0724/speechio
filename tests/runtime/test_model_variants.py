@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from realtime_asr import ASRError
-from realtime_asr.core.runtime.models.prepare import prepare_nemotron
+from realtime_asr.runtime.models.prepare import prepare_nemotron
 
 
 class NemotronVariantTests(unittest.TestCase):

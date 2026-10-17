@@ -11,7 +11,7 @@ from pathlib import Path
 import httpx
 import soundfile as sf
 
-from realtime_asr.client import RemoteClient
+from apps.client import RemoteClient
 
 PACKAGES_PROBE = """
 import json

@@ -16,8 +16,8 @@ from realtime_asr import (
     RuntimeLimits,
     SessionConfig,
 )
-from realtime_asr.core.runtime.models.manifest import create_manifest
-from realtime_asr.core.runtime.models.pinned import NEMOTRON_FILES
+from realtime_asr.runtime.models.manifest import create_manifest
+from realtime_asr.runtime.models.pinned import NEMOTRON_FILES
 from tests.engines.test_stream import RuntimeRecognizer, RuntimeStream
 from tests.runtime import test_recognizer
 
@@ -298,7 +298,7 @@ class RealtimeTests(unittest.TestCase):
         clock = [0.0]
         native = (iter([]), SimpleNamespace(language=None, language_probability=None))
         with (
-            patch("realtime_asr.core.runtime.realtime.monotonic", side_effect=lambda: clock[0]),
+            patch("realtime_asr.runtime.realtime.monotonic", side_effect=lambda: clock[0]),
             patch(
                 "faster_whisper.BatchedInferencePipeline.transcribe",
                 side_effect=lambda *a, **k: (iter([]), native[1]),

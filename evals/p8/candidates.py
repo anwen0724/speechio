@@ -11,11 +11,11 @@ from time import perf_counter
 import numpy as np
 import soundfile as sf
 
+from apps.client import RemoteClient
+from apps.server import ServerConfig
 from evals.p6.network import running_server
 from evals.p8.dual import MeasuredEngine
 from realtime_asr import ASRRuntime, CandidateConfig, RecognizerConfig, SessionConfig
-from realtime_asr.client import RemoteClient
-from realtime_asr.server import ServerConfig
 
 OUTPUT = Path("artifacts/p8-candidates")
 
@@ -121,7 +121,7 @@ def network_case(pcm, filename):
         command = [
             sys.executable,
             "-m",
-            "realtime_asr.client",
+            "apps.client",
             "--url",
             url,
             "--output",

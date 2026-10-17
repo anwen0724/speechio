@@ -6,8 +6,8 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
+from apps.server import ServerConfig, create_app
 from realtime_asr import RecognizerConfig
-from realtime_asr.server import ServerConfig, create_app
 from tests.runtime import test_recognizer
 from tests.server.test_service import wait_ready
 

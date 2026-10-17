@@ -5,8 +5,8 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from realtime_asr.core.engines.stream import NativeStream
-from realtime_asr.core.errors import ASRError
+from realtime_asr.engines.stream import NativeStream
+from realtime_asr.errors import ASRError
 
 
 class RuntimeStream:

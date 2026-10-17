@@ -13,6 +13,8 @@ import uvicorn
 import websocket
 from fastapi import FastAPI, Request, WebSocket
 
+from apps.client import RemoteClient
+from apps.server import ServerConfig
 from evals.p6.network import running_server
 from realtime_asr import (
     ASRError,
@@ -24,8 +26,6 @@ from realtime_asr import (
     SessionConfig,
     StreamingSession,
 )
-from realtime_asr.client import RemoteClient
-from realtime_asr.server import ServerConfig
 
 
 def audio_record(pcm):

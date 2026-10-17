@@ -10,6 +10,8 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
+from apps.client import RemoteClient
+from apps.server import ServerConfig
 from evals.p6.network import running_server
 from realtime_asr import (
     ASRError,
@@ -19,9 +21,7 @@ from realtime_asr import (
     VadConfig,
     WakeConfig,
 )
-from realtime_asr.client import RemoteClient
-from realtime_asr.core.segmentation.wakeword import LocalWakeDetector
-from realtime_asr.server import ServerConfig
+from realtime_asr.segmentation.wakeword import LocalWakeDetector
 
 OUTPUT = Path("artifacts/p9")
 MODELS = Path(".runtime/models/wake").resolve()
@@ -156,7 +156,7 @@ def main():
             [
                 sys.executable,
                 "-m",
-                "realtime_asr.client",
+                "apps.client",
                 "--url",
                 url,
                 "--output",

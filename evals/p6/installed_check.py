@@ -14,7 +14,7 @@ import httpx
 SERVER_PROGRAM = """import json,socket,sys,threading,time
 import uvicorn
 from realtime_asr import RecognizerConfig
-from realtime_asr.server import ServerConfig,create_app
+from apps.server import ServerConfig,create_app
 listener=socket.socket()
 listener.bind(("127.0.0.1",0))
 listener.listen(32)
@@ -36,7 +36,7 @@ finally:
 """
 
 CLIENT_PROGRAM = """import json,sys
-from realtime_asr.client import RemoteClient
+from apps.client import RemoteClient
 with RemoteClient(sys.argv[1]) as client:
     with client.connect(realtime=False) as session:
         session.start()
@@ -73,7 +73,7 @@ def run(project, environments, outside):
                 "-I",
                 "-c",
                 "import json,sys,importlib.util,realtime_asr; "
-                "import realtime_asr.client,realtime_asr.server; "
+                "import apps.client,apps.server; "
                 "print(json.dumps({'package':realtime_asr.__file__,"
                 "'loaded':[m for m in ('faster_whisper','sherpa_onnx','onnxruntime','pyaudio',"
                 "'soundfile','fastapi','httpx') if m in sys.modules],"

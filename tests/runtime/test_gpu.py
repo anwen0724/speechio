@@ -6,8 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from realtime_asr.core.errors import ASRError
-from realtime_asr.core.runtime.native.gpu import GPUContext
+from realtime_asr.errors import ASRError
+from realtime_asr.runtime.native.gpu import GPUContext
 
 
 class GPUFailureTests(unittest.TestCase):

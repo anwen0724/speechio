@@ -15,7 +15,7 @@ import soundfile as sf
 import soxr
 
 from realtime_asr import ASRError, AudioConverter, AudioFormat, Recognizer, RecognizerConfig
-from realtime_asr.core.runtime.native.gpu import CUDNN_VERSION
+from realtime_asr.runtime.native.gpu import CUDNN_VERSION
 
 
 def saved_baselines(path):

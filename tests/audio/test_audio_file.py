@@ -8,8 +8,8 @@ from unittest.mock import patch
 import numpy as np
 import soundfile as sf
 
-from realtime_asr.core.audio.files import read_audio_file
-from realtime_asr.core.errors import ASRError
+from realtime_asr.audio.files import read_audio_file
+from realtime_asr.errors import ASRError
 
 
 class AudioFileTests(unittest.TestCase):

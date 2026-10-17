@@ -14,6 +14,8 @@ import numpy as np
 import psutil
 import soundfile as sf
 
+from apps.client import RemoteClient
+from apps.server import ServerConfig
 from evals.p6.network import running_server
 from realtime_asr import (
     ASRRuntime,
@@ -26,10 +28,8 @@ from realtime_asr import (
     StabilizationConfig,
     VadConfig,
 )
-from realtime_asr.client import RemoteClient
-from realtime_asr.core.engines.local import LocalEngine
-from realtime_asr.core.runtime.models.prepare import prepare_nemotron
-from realtime_asr.server import ServerConfig
+from realtime_asr.engines.local import LocalEngine
+from realtime_asr.runtime.models.prepare import prepare_nemotron
 
 OUTPUT = Path("artifacts/p8-1")
 

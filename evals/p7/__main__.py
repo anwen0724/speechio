@@ -17,6 +17,8 @@ from unittest.mock import patch
 import numpy as np
 import soundfile as sf
 
+from apps.client import RemoteClient
+from apps.server import ServerConfig
 from evals.p6.network import running_server
 from realtime_asr import (
     ASRRuntime,
@@ -29,8 +31,6 @@ from realtime_asr import (
     StabilizationConfig,
     VadConfig,
 )
-from realtime_asr.client import RemoteClient
-from realtime_asr.server import ServerConfig
 
 
 def digest(audio):

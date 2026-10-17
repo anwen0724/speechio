@@ -8,7 +8,7 @@ from threading import Event, Thread
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from realtime_asr.cli.runner import main
+from apps.cli.runner import main
 from tests.runtime import test_recognizer
 
 

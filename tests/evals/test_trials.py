@@ -7,7 +7,7 @@ import numpy as np
 
 from evals.p0.stream_run import run_stream
 from evals.p0.whole_run import run_whole
-from realtime_asr.core.engines.stream import NativeStream
+from realtime_asr.engines.stream import NativeStream
 from tests.engines.test_stream import RuntimeRecognizer, RuntimeStream
 
 

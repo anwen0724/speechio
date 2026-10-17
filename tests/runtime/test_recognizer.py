@@ -13,7 +13,7 @@ import numpy as np
 import soundfile as sf
 
 from realtime_asr import ASRError, AudioFormat, Recognizer, RecognizerConfig
-from realtime_asr.core.runtime.models.manifest import create_manifest
+from realtime_asr.runtime.models.manifest import create_manifest
 
 
 class RecognizerTests(unittest.TestCase):

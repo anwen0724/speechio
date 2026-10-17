@@ -6,8 +6,8 @@ from unittest.mock import patch
 import numpy as np
 import soxr
 
-from realtime_asr.core.audio.conversion import AudioConverter, AudioFormat
-from realtime_asr.core.errors import ASRError
+from realtime_asr.audio.conversion import AudioConverter, AudioFormat
+from realtime_asr.errors import ASRError
 
 
 class ConversionTests(unittest.TestCase):

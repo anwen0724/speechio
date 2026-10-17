@@ -5,7 +5,7 @@ import unittest
 from fastapi.testclient import TestClient
 
 import realtime_asr as sdk
-from realtime_asr.server import ServerConfig, create_app
+from apps.server import ServerConfig, create_app
 from tests.runtime.test_engine_injection import RecordingEngine
 from tests.server.test_service import wait_ready
 from tests.session.test_wakeword import WakeDetector
