@@ -22,17 +22,25 @@ uv pip install --python C:/asr-env/Scripts/python.exe "C:/path/realtime_asr-0.1.
 
 基础 SDK 只需要 NumPy。远程客户端安装 client，读取文件再安装 audio；本地识别按后端安装 whisper 或 nemotron；设备输入另装 microphone。按用途安装，不复制其他项目的 site-packages。Linux／Python 3.12 的 OpenWakeWord ONNX 安装使用 `--excludes packaging/wake-onnx-excludes.txt`，排除该路线不使用的 TFLite 依赖；项目源码 uv 配置已有针对 0.6.0 的同等约束。
 
+## 本机启动配置
+
+安装当前 wheel 后使用 asr。运行 `asr config init` 生成当前目录的 config.toml，编辑一次后使用 `asr mic`、`asr file recording.wav` 和 `asr serve`。配置默认 CPU；GPU 路径只有选择 CUDA 时生效。模板位于安装包的 realtime_asr/cli/config.example.toml。
+
+配置选择使用 --config，显式参数优先，不回写配置；check／show 可选择 mic、file、stdin、serve 或 remote-*。输入文件路径仍相对调用目录，配置内路径相对配置文件目录。本机配置忽略 Git，凭据不写入其中。旧的三个 console script 由 asr 及其子命令取代，分发包与 Python 模块名称保持。
+
+Docker 使用 asr serve 入口，继续显式挂载模型与 TLS。镜像不会自动读取宿主的 config.toml；需要配置文件时只读挂载，并通过 --config 指定容器内路径。
+
 ## 正式资源命令
 
 下面的 uv run 使用当前已同步环境，不在每次调用时删除已选择 extras。
 
 ```powershell
-uv run --no-sync realtime-asr models list
-uv run --no-sync realtime-asr models prepare --kind whisper --path .runtime/models/whisper-tiny --download
-uv run --no-sync realtime-asr models prepare --kind nemotron --variant 560ms --path .runtime/models/nemotron --download
-uv run --no-sync realtime-asr models prepare --kind vad --path .runtime/models/vad --download
-uv run --no-sync realtime-asr models prepare --kind openwakeword --path .runtime/models/wake --download
-uv run --no-sync realtime-asr models verify --path .runtime/models/whisper-tiny
+uv run --no-sync asr models list
+uv run --no-sync asr models prepare --kind whisper --path .runtime/models/whisper-tiny --download
+uv run --no-sync asr models prepare --kind nemotron --variant 560ms --path .runtime/models/nemotron --download
+uv run --no-sync asr models prepare --kind vad --path .runtime/models/vad --download
+uv run --no-sync asr models prepare --kind openwakeword --path .runtime/models/wake --download
+uv run --no-sync asr models verify --path .runtime/models/whisper-tiny
 ```
 
 联网只在明确 --download 时发生。Whisper 可通过 --local-snapshot 复用固定修订；VAD／OpenWakeWord 可通过 --local-source 复制固定文件。缓存身份或内容不符时明确失败，不重写清单掩盖损坏，不覆盖冲突模型。Nemotron 1120ms 和 80ms 变体需要分别准备到不同目录。
@@ -42,8 +50,8 @@ Porcupine 内置词由可选包提供，自定义 .ppn／非英语 .pv 由操作
 Windows GPU 原生库单独准备：
 
 ```powershell
-uv run --no-sync realtime-asr gpu-runtime prepare --root .runtime --download
-uv run --no-sync realtime-asr gpu-runtime verify --path .runtime/cudnn/9.16.0.29
+uv run --no-sync asr gpu-runtime prepare --root .runtime --download
+uv run --no-sync asr gpu-runtime verify --path .runtime/cudnn/9.16.0.29
 ```
 
 cuDNN 留在项目指定目录，CUDA 12.8 bin 可以显式复用系统目录。工具不修改系统驱动或 PATH。verify 只证明文件一致，实际 GPU 推理另行验证。当前 DLL 加载器只验证 Windows，本 CPU 镜像不提供 Linux GPU。

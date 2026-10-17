@@ -131,30 +131,37 @@ class MessageConsumer:
         self.check()
 
 
-def parser():
-    command = argparse.ArgumentParser(prog="realtime-asr remote", description="接入远程 ASR 服务")
+def parser(*, diagnostic=False):
+    command = argparse.ArgumentParser(prog="asr remote", description="接入远程 ASR 服务")
+    command.add_argument(
+        "--config", default=argparse.SUPPRESS, help="指定 config.toml，默认读取当前目录"
+    )
     command.add_argument("--url", required=True)
     command.add_argument("--token-env", default="REALTIME_ASR_TOKEN")
     command.add_argument("--language")
     command.add_argument("--output", choices=("text", "jsonl"), default="text")
-    command.add_argument("--word-timestamps", action="store_true")
+    command.add_argument("--word-timestamps", action=argparse.BooleanOptionalAction, default=False)
     command.add_argument("--timeout", type=_positive_seconds, default=30)
     commands = command.add_subparsers(dest="input", required=True)
     file = commands.add_parser("file")
-    file.add_argument("paths", nargs="+")
+    file.add_argument("paths", nargs="*" if diagnostic else "+")
     for name in ("file", "stdin", "mic"):
         source = file if name == "file" else commands.add_parser(name)
-        source.add_argument("--candidates", action="store_true")
+        source.add_argument("--candidates", action=argparse.BooleanOptionalAction, default=False)
         add_candidate_request_args(source)
-        source.add_argument("--wake", action="store_true")
+        source.add_argument("--wake", action=argparse.BooleanOptionalAction, default=False)
         source.add_argument(
             "--mode", choices=("auto", "manual"), default="auto" if name == "mic" else "manual"
         )
         source.add_argument("--realtime", action=argparse.BooleanOptionalAction, default=False)
-        source.add_argument("--stable-text", action="store_true")
-        source.add_argument("--dual-realtime", action="store_true")
-        source.add_argument("--dynamic-silence", action="store_true")
-        source.add_argument("--punctuation-split", action="store_true")
+        source.add_argument("--stable-text", action=argparse.BooleanOptionalAction, default=False)
+        source.add_argument("--dual-realtime", action=argparse.BooleanOptionalAction, default=False)
+        source.add_argument(
+            "--dynamic-silence", action=argparse.BooleanOptionalAction, default=False
+        )
+        source.add_argument(
+            "--punctuation-split", action=argparse.BooleanOptionalAction, default=False
+        )
         source.add_argument("--early-transcription-silence", type=_seconds, default=0)
         if name != "file":
             source.add_argument(
@@ -271,13 +278,20 @@ def streaming(client, args, output, stdin, *, file_input=None):
             consumer.close(abort=True)
 
 
-def main(argv=None, *, stdin=None, stdout=None, stderr=None):
-    """标准流借用调用方对象；不实例化本地识别器。"""
-    for stream in (sys.stdout, sys.stderr):
-        if hasattr(stream, "reconfigure"):
-            stream.reconfigure(encoding="utf-8")
-    command = parser()
-    args = command.parse_args(argv)
+def parse_options(argv=None, *, diagnostic=False):
+    """远程配置只影响协议参数，不构造本地模型。"""
+    from realtime_asr.cli.config import configure, remote_source, split_config
+
+    selected = list(sys.argv[1:] if argv is None else argv)
+    _, cleaned = split_config(selected)
+    source, _ = remote_source(cleaned)
+    command = parser(diagnostic=diagnostic)
+    try:
+        invocation = configure(selected, "remote-" + str(source))
+    except ASRError as exc:
+        command.error(exc.message)
+    args = command.parse_args(invocation.argv)
+    args.launch_config = invocation
     args.completion_mode = args.completion_mode or "final"
     if args.wake and args.mode != "auto":
         command.error("唤醒只支持自动输入")
@@ -287,6 +301,15 @@ def main(argv=None, *, stdin=None, stdout=None, stderr=None):
             command.error("结束后修正只支持手动输入")
     if args.dual_realtime and not args.realtime:
         command.error("双实时要求 --realtime")
+    return args
+
+
+def main(argv=None, *, stdin=None, stdout=None, stderr=None):
+    """标准流借用调用方对象；不实例化本地识别器。"""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
+    args = parse_options(argv)
     output = RemoteOutput(args.output, stdout or sys.stdout, stderr or sys.stderr)
     try:
         with RemoteClient(

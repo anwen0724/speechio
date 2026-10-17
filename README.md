@@ -4,6 +4,27 @@
 
 同步 SDK 分块入口在全部输入结束后返回完整结果。连续会话可在上一单元推理期间接收下一单元，通过实时与最终事件消费结果。基本实时支持 Whisper 完整快照和 Nemotron 原生增量。自动会话通过双 VAD 确认录音段，提供前置保护与统一回溯。可选策略提供声学触发、提前推理、动态等待及有词时间证据的句末切段。双实时可分别配置准确与极速角色，保留原文并按锚点合并有限尾部。候选支持固定尾部／整轮快照、手动同轮继续、候选完成和最近整轮修正。SDK、CLI、服务与浏览器使用相同核心接口；可选本地唤醒和工作台的音量、运行状态、时间线、复制及清除已接通。产品范围见 [PRD](docs/PRD.md)，系统设计见 [Architecture](docs/ARCHITECTURE.md)，实际验收见 [STATUS](docs/STATUS.md)。
 
+## 日常启动
+
+当前入口统一为 `asr`，本机参数保存在项目根目录的 `config.toml`。分发包名仍为 realtime-asr，Python 导入名仍为 realtime_asr。
+
+本机已创建配置后，打开 PowerShell：
+
+```powershell
+Set-Location C:/all/work/practice/realtime-asr
+. .venv/Scripts/Activate.ps1
+asr config check
+asr mic
+```
+
+浏览器方式使用 `asr serve`，保持终端运行，等待 `[ready]` 后打开 http://127.0.0.1:8000。文件方式使用 `asr file recording.wav`。服务、麦克风与 stdin 会持续运行，Ctrl+C 停止；文件识别完成后退出。
+
+首次使用且没有配置文件时运行 `asr config init`；已有文件不会被覆盖。编辑并保存配置后重新启动命令生效。`asr config show` 显示 mic 的实际配置与来源；`asr config show serve`、`asr config check remote-mic` 可选择其他入口。未激活环境时统一使用 `uv run --no-sync asr ...`。
+
+配置中的相对路径以配置文件目录为准，待转写文件路径和命令行路径仍以调用目录为准。临时参数优先于配置且不会改写文件，例如 `asr file recording.wav --device cuda`，或 `asr serve --port 8001`。布尔开关支持 --no-*，如 `asr mic --no-realtime`。其他目录使用 `asr --config C:/all/work/practice/realtime-asr/config.toml serve`。
+
+完整字段与适用入口见[配置模板](src/realtime_asr/cli/config.example.toml)。本机 config.toml 不提交 Git；密钥使用环境变量。config check 不加载模型或占用设备，成功不代表实际推理或识别质量验收通过。正文默认仍不自动保存，命令行可重定向最终输出。
+
 ## 代码结构
 
 正式实现位于 `src/realtime_asr/`，按音频、会话、分句、文本、识别后端和运行时组织。公共错误与结果各保留一个小文件；核心模块不依赖 evals、测试或示例。
@@ -20,6 +41,8 @@ src/realtime_asr/
 │   ├── files.py             # 标准 WAV 与通用文件有限块解码
 │   └── microphone.py        # 输入设备、实际源格式与独立采集
 ├── cli/
+│   ├── config.py            # TOML、路径、覆盖、来源与配置管理
+│   ├── config.example.toml  # 安装包内的中文配置模板
 │   ├── args.py              # 命令与参数
 │   ├── input.py             # raw stdin 与可停止管道读取
 │   ├── output.py            # 文本与 JSONL 出口
@@ -159,9 +182,9 @@ with ASRRuntime(
 本地 CLI 的实际参数：
 
 ```powershell
-realtime-asr stdin --model models/nemotron-1120ms --backend nemotron --ultrafast-model models/nemotron-80ms --realtime --dual-realtime --output jsonl
-realtime-asr serve --model models/nemotron-1120ms --backend nemotron --ultrafast-model models/nemotron-80ms
-realtime-asr remote --url http://127.0.0.1:8000 --output jsonl stdin --realtime --dual-realtime
+asr stdin --model models/nemotron-1120ms --backend nemotron --ultrafast-model models/nemotron-80ms --realtime --dual-realtime --output jsonl
+asr serve --model models/nemotron-1120ms --backend nemotron --ultrafast-model models/nemotron-80ms
+asr remote --url http://127.0.0.1:8000 --output jsonl stdin --realtime --dual-realtime
 ```
 
 独立准确模型使用 `--realtime-model`。两路 backend 和 device 可独立指定，缺省沿用最终配置；服务角色在启动时固定，客户端只能选择已提供能力。浏览器连接前勾选“双实时合并”，实时区域显示准确正文、极速原文及合并状态。HTTP 仍用于完整转写。
@@ -185,22 +208,22 @@ uv 建立根目录 `.venv`，不向 Anaconda 或其他项目环境安装依赖�
 
 ## 本地命令行与麦克风
 
-安装包提供 `realtime-asr` 和 `python -m realtime_asr`。帮助不枚举设备或加载模型。麦克风使用 `microphone`，自动分句额外使用 `vad`；文件使用 `audio`。各命令均通过已有会话 SDK 识别，模型路径由调用方指定。
+安装包提供 `asr` 和 `python -m realtime_asr`。帮助不枚举设备或加载模型。麦克风使用 `microphone`，自动分句额外使用 `vad`；文件使用 `audio`。各命令均通过已有会话 SDK 识别，模型路径由调用方指定。
 
 以下示例在已经按上文同步环境、准备本地模型后运行：
 
 ```powershell
-uv run --no-sync realtime-asr --help
-uv run --no-sync realtime-asr devices
+uv run --no-sync asr --help
+uv run --no-sync asr devices
 
 # 默认自动分句和基本实时；Ctrl+C 停止，也可指定 --duration。
-uv run --no-sync realtime-asr mic --model .runtime/models/whisper-tiny --vad-model .runtime/models/vad/silero-v6.onnx --duration 10
+uv run --no-sync asr mic --model .runtime/models/whisper-tiny --vad-model .runtime/models/vad/silero-v6.onnx --duration 10
 
 # 手动模式将本次采集作为一个完整单元；不要求 VAD。
-uv run --no-sync realtime-asr mic --model .runtime/models/whisper-tiny --mode manual --duration 5 --output jsonl
+uv run --no-sync asr mic --model .runtime/models/whisper-tiny --mode manual --duration 5 --output jsonl
 
 # 按文件顺序识别，各文件使用自己的实际格式。
-uv run --no-sync realtime-asr file first.wav second.wav --model .runtime/models/whisper-tiny --language zh-CN
+uv run --no-sync asr file first.wav second.wav --model .runtime/models/whisper-tiny --language zh-CN
 ```
 
 `--input-device` 是 devices 显示的 PortAudio 索引，`--device cpu|cuda` 是模型计算设备。默认采用系统输入设备，自动格式优先 16 kHz，再探测设备支持格式；显式索引或采样率无效时失败，不静默换设备。默认采集块为 1024 个源帧，缓冲预算为 5 秒；溢出和容量满明确报错。
@@ -213,7 +236,7 @@ stdin 接收原始小端 PCM16，默认 16 kHz 单声道；float32、其他采�
 import subprocess
 
 completed = subprocess.run(
-    ["realtime-asr", "stdin", "--model", "models/whisper-tiny", "--output", "jsonl"],
+    ["asr", "stdin", "--model", "models/whisper-tiny", "--output", "jsonl"],
     input=pcm16_bytes,  # 调用方已有的原始音频字节。
     capture_output=True,
 )
@@ -246,22 +269,22 @@ with MicrophoneInput(MicrophoneConfig()) as microphone:
 
 ```powershell
 uv sync --locked --extra whisper --extra vad --extra server --extra client --extra audio --extra microphone
-uv run --no-sync realtime-asr serve --model .runtime/models/whisper-tiny --vad-model .runtime/models/vad/silero-v6.onnx
+uv run --no-sync asr serve --model .runtime/models/whisper-tiny --vad-model .runtime/models/vad/silero-v6.onnx
 ```
 
-`realtime-asr-server` 和 `python -m realtime_asr.server` 使用同一启动器。默认监听 `127.0.0.1:8000`，一个 worker 共享一个 ASRRuntime。存活接口是 `/api/v1/live`；模型准备中 `/api/v1/ready` 返回 503，准备成功后返回 200。容量满与模型未就绪分别报告。
+`asr serve` 和 `python -m realtime_asr.server` 使用同一启动器。默认监听 `127.0.0.1:8000`，一个 worker 共享一个 ASRRuntime。存活接口是 `/api/v1/live`；模型准备中 `/api/v1/ready` 返回 503，准备成功后返回 200。容量满与模型未就绪分别报告。
 
 HTTP 的 `POST /api/v1/transcribe` 接收 `application/octet-stream` 原始小端音频。用 sample_rate、channels、sample_type 和可选 language 声明输入，默认 16 kHz、单声道、int16；不提交 WAV 文件头或服务器路径。WebSocket 使用 `/api/v1/ws`，第一条 open 取得新会话；音频包和控制都绑定这个会话及代次。完整字段与错误见 [P6 Spec](docs/specs/network-service.md)。
 
 远程客户端不需要本地识别模型。文件命令先解码再用 HTTP 递交；stdin 和麦克风用 WebSocket。全局参数放在输入子命令之前：
 
 ```powershell
-uv run --no-sync realtime-asr remote --url http://127.0.0.1:8000 --language zh-CN file first.wav second.wav
-uv run --no-sync realtime-asr remote --url http://127.0.0.1:8000 --output jsonl stdin --sample-rate 48000 --channels 2
-uv run --no-sync realtime-asr remote --url http://127.0.0.1:8000 mic --mode auto --realtime --duration 10
+uv run --no-sync asr remote --url http://127.0.0.1:8000 --language zh-CN file first.wav second.wav
+uv run --no-sync asr remote --url http://127.0.0.1:8000 --output jsonl stdin --sample-rate 48000 --channels 2
+uv run --no-sync asr remote --url http://127.0.0.1:8000 mic --mode auto --realtime --duration 10
 ```
 
-`realtime-asr-remote` 与 `python -m realtime_asr.client` 使用同一客户端入口。stdin 是原始声明格式，麦克风是客户端所在电脑的设备。text 只把最终正文写到 stdout；JSONL 保留 ready、应答、核心事件、错误和 closed。输入读取与结果输出独立，标准流不主动关闭。
+`asr remote` 与 `python -m realtime_asr.client` 使用同一客户端入口。stdin 是原始声明格式，麦克风是客户端所在电脑的设备。text 只把最终正文写到 stdout；JSONL 保留 ready、应答、核心事件、错误和 closed。输入读取与结果输出独立，标准流不主动关闭。
 
 Python 接入使用 `realtime_asr.client.RemoteClient`。以下示例中的 pcm 是调用方已有的完整 PCM16 字节：
 
@@ -495,7 +518,7 @@ def open_optimized_session(runtime):
 动态等待按最近接受的实时正文选择句末、未知和续说等待，继续经过原来的门控。句末策略只支持句末标点，使用真实词时间固定左侧并保留右侧。提前结果只有在封口音频与快照完全相同时才复用；后续静音也会使版本不同。提前推理会增加成本，启用前应检查对应设备上的测量。
 
 ```powershell
-uv run --no-sync realtime-asr mic --model .runtime/models/whisper-tiny --vad-model .runtime/models/vad/silero-v6.onnx --stable-text --word-timestamps --dynamic-silence --punctuation-split --duration 10 --output jsonl
+uv run --no-sync asr mic --model .runtime/models/whisper-tiny --vad-model .runtime/models/vad/silero-v6.onnx --stable-text --word-timestamps --dynamic-silence --punctuation-split --duration 10 --output jsonl
 ```
 
 HTTP 支持 `word_timestamps=true`。远程 SDK 的 `transcribe_file(..., word_timestamps=True)` 读取完整词结果；`connect(mode="auto", realtime=True, stable_text=True, dynamic_silence=True, punctuation_split=True)` 选择会话策略。`early_transcription_silence` 是另一个可选 open 字段。服务需要已配置 VAD，声学策略由 `serve --acoustic-boundaries` 在启动时选择。最小浏览器提供“稳定文本”开关及稳定／待定展示。
@@ -614,10 +637,10 @@ Porcupine 的正向实际检测仍需 AccessKey，人工口述、首词裁剪质
 正式资源命令不加载识别模型，默认离线。显式准备与校验示例：
 
 ```powershell
-uv run --no-sync realtime-asr models list
-uv run --no-sync realtime-asr models prepare --kind whisper --path .runtime/models/whisper-tiny --download
-uv run --no-sync realtime-asr models verify --path .runtime/models/whisper-tiny
-uv run --no-sync realtime-asr gpu-runtime verify --path .runtime/cudnn/9.16.0.29
+uv run --no-sync asr models list
+uv run --no-sync asr models prepare --kind whisper --path .runtime/models/whisper-tiny --download
+uv run --no-sync asr models verify --path .runtime/models/whisper-tiny
+uv run --no-sync asr gpu-runtime verify --path .runtime/cudnn/9.16.0.29
 ```
 
 模型工具支持 Whisper tiny、Nemotron 的 560ms／1120ms／80ms、固定 Silero v6 和 OpenWakeWord Alexa ONNX 资源。Porcupine 自定义文件和 AccessKey 由使用者提供。下载必须明确 --download；损坏或冲突文件不会被重写为成功缓存。

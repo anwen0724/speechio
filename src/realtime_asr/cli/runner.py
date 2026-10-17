@@ -121,9 +121,15 @@ def _session(runtime, args, format):
             vad=VadConfig(
                 model_path=args.vad_model,
                 webrtc_mode=args.webrtc_mode,
+                silero_sensitivity=args.silero_sensitivity,
                 silero_end_detection=args.silero_end_detection,
             ),
             segmentation=SegmentationConfig(
+                silence_confirmation=args.silence_confirmation,
+                post_speech_silence=args.post_speech_silence,
+                min_recording_duration=args.min_recording_duration,
+                min_gap=args.min_gap,
+                pre_roll_duration=args.pre_roll_duration,
                 trim_pre_roll=args.trim_pre_roll,
                 backdate_duration=args.backdate_seconds,
                 max_buffer_samples=max(1920000, samples + 17024),
@@ -242,7 +248,17 @@ def _run_input(runtime, args, output, index, source, format, blocks, *, micropho
 
 def main(argv=None, *, stdin=None, stdout=None, stderr=None):
     """安装入口与模块入口共用同一流程；标准流由进程拥有。"""
-    argv = sys.argv[1:] if argv is None else argv
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
+    argv = list(sys.argv[1:] if argv is None else argv)
+    from realtime_asr.cli.config import forward_config, split_config
+
+    selected, argv = split_config(argv)
+    if argv and argv[0] == "config":
+        from realtime_asr.cli.config import main as configuration
+
+        return configuration(argv[1:], path=selected, stdout=stdout, stderr=stderr)
     if argv and argv[0] in ("models", "gpu-runtime"):
         from realtime_asr.cli.resources import main as resources
 
@@ -250,15 +266,12 @@ def main(argv=None, *, stdin=None, stdout=None, stderr=None):
     if argv and argv[0] == "serve":
         from realtime_asr.server.__main__ import main as serve
 
-        return serve(argv[1:])
+        return serve(forward_config(argv[1:], selected))
     if argv and argv[0] == "remote":
         from realtime_asr.client.__main__ import main as remote
 
-        return remote(argv[1:], stdin=stdin, stdout=stdout, stderr=stderr)
-    for stream in (sys.stdout, sys.stderr):
-        if hasattr(stream, "reconfigure"):
-            stream.reconfigure(encoding="utf-8")
-    args = parse_args(argv)
+        return remote(forward_config(argv[1:], selected), stdin=stdin, stdout=stdout, stderr=stderr)
+    args = parse_args(forward_config(argv, selected))
     stdin = sys.stdin if stdin is None else stdin
     output = Output(
         args.output,
@@ -295,6 +308,7 @@ def _execute(args, stdin, output):
             model_path=args.model,
             backend=args.backend,
             device=args.device,
+            device_index=args.device_index,
             cudnn_folder=args.cudnn_folder,
             cuda_directory=args.cuda_directory,
         )

@@ -26,5 +26,5 @@ ENV PATH="/opt/venv/bin:$PATH" PYTHONUNBUFFERED=1 HF_HUB_OFFLINE=1 TRANSFORMERS_
 USER asr
 EXPOSE 8000
 HEALTHCHECK --interval=10s --timeout=5s --start-period=60s --retries=3 CMD ["python", "/app/healthcheck.py"]
-ENTRYPOINT ["realtime-asr", "serve"]
+ENTRYPOINT ["asr", "serve"]
 CMD ["--model", "/models/whisper-tiny", "--vad-model", "/models/vad/silero-v6.onnx", "--host", "0.0.0.0", "--ssl-certfile", "/run/asr-tls/server.crt", "--ssl-keyfile", "/run/asr-tls/server.key"]

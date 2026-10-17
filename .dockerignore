@@ -18,3 +18,6 @@ src/realtime_asr/server/static
 **/__pycache__
 **/*.pyc
 **/*.egg-info
+
+# 本机配置不进入镜像构建上下文。
+/config.toml

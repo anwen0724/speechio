@@ -1,7 +1,10 @@
 """命令语法与使用前可判断的配置，不创建模型或设备。"""
 
 import argparse
+import sys
 from math import isfinite
+
+from realtime_asr import ASRError
 
 
 def _positive_int(value):
@@ -25,6 +28,24 @@ def _positive_seconds(value):
     return number
 
 
+def add_realtime_timing_args(parser):
+    """本地和服务使用同一角色周期，默认值来自现有实时配置。"""
+    parser.add_argument("--realtime-interval", type=_positive_seconds, default=0.2)
+    parser.add_argument("--realtime-initial-delay", type=_seconds, default=0.2)
+
+
+def add_segmentation_args(parser):
+    """本地高级时间沿用分句默认；全部以秒为单位。"""
+    for name, default in (
+        ("silence-confirmation", 0.16),
+        ("post-speech-silence", 0.6),
+        ("min-recording-duration", 0.5),
+        ("min-gap", 0),
+        ("pre-roll-duration", 1),
+    ):
+        parser.add_argument("--" + name, type=_seconds, default=default)
+
+
 def add_realtime_model_args(parser):
     """本地与服务启动器共用角色参数，外部语法只在 CLI 层维护。"""
     for role in ("realtime", "ultrafast"):
@@ -35,26 +56,30 @@ def add_realtime_model_args(parser):
 
 def add_candidate_model_args(parser):
     """模型角色只由本地与服务宿主选择，远程客户端不接收模型路径。"""
-    parser.add_argument("--candidates", action="store_true")
+    parser.add_argument("--candidates", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--candidate-model")
     parser.add_argument("--candidate-backend", choices=("whisper", "nemotron"))
     parser.add_argument("--candidate-device", choices=("cpu", "cuda"))
-    parser.add_argument("--candidate-only", action="store_true")
+    parser.add_argument("--candidate-only", action=argparse.BooleanOptionalAction, default=False)
 
 
 def add_candidate_request_args(parser):
     """本地与远程共用候选请求选项，不包含模型组装字段。"""
     parser.add_argument("--candidate-kind", choices=("tail", "whole"), default="whole")
     parser.add_argument("--candidate-every", type=_positive_seconds, default=2.0)
-    parser.add_argument("--candidate-hint", action="store_true")
+    parser.add_argument("--candidate-hint", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--completion-mode", choices=("final", "candidate"))
-    parser.add_argument("--retain-for-correction", action="store_true")
-    parser.add_argument("--correct-after-final", action="store_true")
+    parser.add_argument(
+        "--retain-for-correction", action=argparse.BooleanOptionalAction, default=False
+    )
+    parser.add_argument(
+        "--correct-after-final", action=argparse.BooleanOptionalAction, default=False
+    )
 
 
 def add_wake_args(parser):
     """本地与服务宿主使用同一唤醒语法，密钥不通过命令行递交。"""
-    parser.add_argument("--wake", action="store_true")
+    parser.add_argument("--wake", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument(
         "--wake-backend", choices=("porcupine", "openwakeword"), default="openwakeword"
     )
@@ -107,6 +132,7 @@ def _local_role_model(args, role, primary):
         model_path=path,
         backend=backend or primary.backend,
         device=selected_device,
+        device_index=primary.device_index if selected_device == "cuda" else 0,
         cudnn_folder=primary.cudnn_folder if selected_device == "cuda" else None,
         cuda_directory=primary.cuda_directory if selected_device == "cuda" else None,
     )
@@ -144,14 +170,20 @@ def realtime_roles(args, final):
             mode=selected.capabilities.realtime_mode,
             model=model,
             acoustic_boundaries=args.acoustic_boundaries if role == "realtime" else False,
+            interval=args.realtime_interval,
+            initial_delay=args.realtime_initial_delay,
         )
     return roles["realtime"], roles["ultrafast"]
 
 
-def parse_args(argv=None):
+def parse_args(argv=None, *, diagnostic=False):
     """子命令分别声明源格式，避免麦克风设备与 ASR 设备混用。"""
-    parser = argparse.ArgumentParser(prog="realtime-asr", description="本地实时音频识别")
+    parser = argparse.ArgumentParser(prog="asr", description="本地实时音频识别")
+    parser.add_argument(
+        "--config", default=argparse.SUPPRESS, help="指定 config.toml，默认读取当前目录"
+    )
     commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("config", help="创建、检查和显示本机配置")
     commands.add_parser("serve", help="运行共享 HTTP / WebSocket 服务（需要 server 依赖）")
     commands.add_parser("remote", help="接入远程服务（需要 client 依赖）")
     commands.add_parser("models", help="显式准备与校验模型，不启动识别")
@@ -164,9 +196,11 @@ def parse_args(argv=None):
         command.add_argument("--model", required=True)
         command.add_argument("--backend", choices=("whisper", "nemotron"), default="whisper")
         command.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
+        command.add_argument("--device-index", type=int, default=0)
         command.add_argument("--cudnn-folder")
         command.add_argument("--cuda-directory")
         add_realtime_model_args(command)
+        add_realtime_timing_args(command)
         add_candidate_model_args(command)
         add_candidate_request_args(command)
         add_wake_args(command)
@@ -178,20 +212,36 @@ def parse_args(argv=None):
             "--realtime", action=argparse.BooleanOptionalAction, default=name == "mic"
         )
         command.add_argument("--output", choices=("text", "jsonl"), default="text")
-        command.add_argument("--stable-text", action="store_true")
-        command.add_argument("--dual-realtime", action="store_true")
-        command.add_argument("--word-timestamps", action="store_true")
-        command.add_argument("--acoustic-boundaries", action="store_true")
+        command.add_argument("--stable-text", action=argparse.BooleanOptionalAction, default=False)
+        command.add_argument(
+            "--dual-realtime", action=argparse.BooleanOptionalAction, default=False
+        )
+        command.add_argument(
+            "--word-timestamps", action=argparse.BooleanOptionalAction, default=False
+        )
+        command.add_argument(
+            "--acoustic-boundaries", action=argparse.BooleanOptionalAction, default=False
+        )
         command.add_argument("--early-transcription-silence", type=_seconds, default=0)
-        command.add_argument("--dynamic-silence", action="store_true")
-        command.add_argument("--punctuation-split", action="store_true")
+        command.add_argument(
+            "--dynamic-silence", action=argparse.BooleanOptionalAction, default=False
+        )
+        command.add_argument(
+            "--punctuation-split", action=argparse.BooleanOptionalAction, default=False
+        )
         command.add_argument("--max-audio-seconds", type=_positive_seconds, default=30)
         command.add_argument("--drain-timeout", type=_seconds, default=30)
         command.add_argument("--close-timeout", type=_seconds, default=5)
         command.add_argument("--vad-model")
         command.add_argument("--webrtc-mode", type=int, choices=range(4), default=3)
-        command.add_argument("--silero-end-detection", action="store_true")
-        command.add_argument("--trim-pre-roll", action="store_true")
+        command.add_argument("--silero-sensitivity", type=float, default=0.4)
+        add_segmentation_args(command)
+        command.add_argument(
+            "--silero-end-detection", action=argparse.BooleanOptionalAction, default=False
+        )
+        command.add_argument(
+            "--trim-pre-roll", action=argparse.BooleanOptionalAction, default=False
+        )
         command.add_argument("--backdate-seconds", type=_seconds, default=0)
         if name in ("mic", "stdin"):
             command.add_argument(
@@ -204,10 +254,20 @@ def parse_args(argv=None):
             command.add_argument("--queue-seconds", type=_positive_seconds, default=5)
             command.add_argument("--duration", type=_positive_seconds)
         elif name == "file":
-            command.add_argument("paths", nargs="+")
+            command.add_argument("paths", nargs="*" if diagnostic else "+")
         else:
             command.add_argument("--sample-type", choices=("int16", "float32"), default="int16")
-    args = parser.parse_args(argv)
+    from realtime_asr.cli.config import configure, split_config
+
+    selected = list(sys.argv[1:] if argv is None else argv)
+    _, cleaned = split_config(selected)
+    target = cleaned[0] if cleaned else ""
+    try:
+        invocation = configure(selected, target)
+    except ASRError as exc:
+        parser.error(exc.message)
+    args = parser.parse_args(invocation.argv)
+    args.launch_config = invocation
     if args.command != "devices":
         if args.wake and args.mode != "auto":
             parser.error("唤醒要求 --mode auto")

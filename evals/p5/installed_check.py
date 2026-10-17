@@ -10,7 +10,7 @@ from pathlib import Path
 def run(project, environment, outside, *, mode):
     """基础包检查轻量导入；麦克风组检查实际入口与无 SoundFile 运行。"""
     interpreter = environment / "Scripts/python.exe"
-    executable = environment / "Scripts/realtime-asr.exe"
+    executable = environment / "Scripts/asr.exe"
     env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
     env["PYTHONIOENCODING"] = "utf-8"
     report = {"mode": mode, "cwd": str(outside), "commands": []}

@@ -90,7 +90,7 @@ def run(project, environments, outside):
             assert not imported["installed"]["faster_whisper"]
             assert not imported["installed"]["onnxruntime"]
         assert not imported["installed"]["pyaudio"] and not imported["installed"]["soundfile"]
-        entries = ["realtime-asr", "realtime-asr-server", "realtime-asr-remote"]
+        entries = ["asr"]
         for entry in entries:
             invoke(
                 [str(environments / mode / "Scripts" / (entry + ".exe")), "--help"], outside, env
@@ -143,7 +143,7 @@ def run(project, environments, outside):
                 with wave.open(str(project / "data/corpus/p0/C01-1.wav"), "rb") as source:
                     pcm = source.readframes(source.getnframes())
                 command = [
-                    str(environments / "client/Scripts/realtime-asr.exe"),
+                    str(environments / "client/Scripts/asr.exe"),
                     "remote",
                     "--url",
                     url,

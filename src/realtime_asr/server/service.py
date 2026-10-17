@@ -1,6 +1,7 @@
 """进程级运行时与会话拥有者；协议连接不拥有共享模型。"""
 
 import asyncio
+import logging
 from collections import Counter
 from dataclasses import asdict, replace
 from functools import partial
@@ -413,6 +414,13 @@ class Service:
         else:
             if self.phase == "preparing":
                 self.phase = "ready"
+                scheme = "https" if self.config.ssl_certfile or self.config.proxy_tls else "http"
+                logging.getLogger("realtime_asr.server.startup").info(
+                    "[ready] 模型已就绪：%s://%s:%s（终端持续运行，Ctrl+C 停止）",
+                    scheme,
+                    self.config.host,
+                    self.config.port,
+                )
 
     def _prepare_wake(self):
         """宿主预检与真实会话实例分开，不共享检测特征状态。"""

@@ -21,9 +21,7 @@ KINDS = {
 
 
 def parser(gpu):
-    command = argparse.ArgumentParser(
-        prog="realtime-asr gpu-runtime" if gpu else "realtime-asr models"
-    )
+    command = argparse.ArgumentParser(prog="asr gpu-runtime" if gpu else "asr models")
     actions = command.add_subparsers(dest="action", required=True)
     if not gpu:
         actions.add_parser("list", help="列出准备资源及固定身份，不加载模型")

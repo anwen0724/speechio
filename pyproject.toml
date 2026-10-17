@@ -10,9 +10,7 @@ requires-python = ">=3.12,<3.13"
 dependencies = ["numpy>=2,<3"]
 
 [project.scripts]
-realtime-asr = "realtime_asr.cli.runner:main"
-realtime-asr-server = "realtime_asr.server.__main__:main"
-realtime-asr-remote = "realtime_asr.client.__main__:main"
+asr = "realtime_asr.cli.runner:main"
 
 [project.optional-dependencies]
 models = ["huggingface-hub>=0.34,<1", "requests>=2.32,<3"]
@@ -35,6 +33,7 @@ include = ["realtime_asr*"]
 namespaces = false
 
 [tool.setuptools.package-data]
+"realtime_asr.cli" = ["config.example.toml"]
 "realtime_asr.server" = ["static/index.html", "static/audio-worklet.js", "static/assets/*"]
 
 [tool.ruff]
