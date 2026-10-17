@@ -189,17 +189,17 @@ python -m apps.cli stdin --model models/nemotron-1120ms --engine nemotron --ultr
 使用 uv 和 64 位 CPython 3.12。开发解释器由 `.python-version` 固定为已安装的 3.12.14，Python 依赖由 `uv.lock` 锁定。以下命令在项目根目录执行：
 
 ```powershell
-uv sync --locked --extra nemotron --extra vad --extra microphone
+uv sync --locked --extra nemotron
 uv run --no-sync python -m evals.p0 environment
 ```
 
-uv 建立根目录 `.venv`，不向 Anaconda 或其他项目环境安装依赖。`uv run` 也应带上所需 extras；省略 extras 会按较小的依赖集合重新同步环境。
+uv 建立根目录 `.venv`，不向 Anaconda 或其他项目环境安装依赖。`uv run` 也应带上 Nemotron extras；省略 extras 会按较小的依赖集合重新同步环境。
 
-基础包只安装 NumPy，后端依赖按 extras 安装。P0 评估通过项目根目录的 `evals/` 运行，使用开发依赖组中的 SciPy 和 psutil，M10 使用 `tests/`。wheel 只包含 `src/realtime_asr/` 的正式模块，不包含评估工具、测试或语料。源码分发包保留评估与测试，供开发验证使用。
+基础包包含 Whisper 后端、音频转换、麦克风与检测运行库；Nemotron 和唤醒词仍是可选 extras。P0 评估通过项目根目录的 `evals/` 运行，使用开发依赖组中的 SciPy 和 psutil，M10 使用 `tests/`。wheel 只包含 `src/realtime_asr/` 的正式模块，不包含评估工具、测试或语料。源码分发包保留评估与测试，供开发验证使用。
 
 ## 本地命令行与麦克风
 
-仓库内提供 CLI：`python -m apps.cli`；库安装不提供命令行。帮助不枚举设备或加载模型。麦克风使用 `microphone`，自动分句额外使用 `vad`；文件使用 `soundfile`／`soxr`。各命令均通过已有会话 SDK 识别，模型路径由调用方指定。
+仓库内提供 CLI：`python -m apps.cli`；库安装不提供命令行。帮助不枚举设备或加载模型。麦克风与自动分句的运行库随基础包安装；文件使用 `soundfile`／`soxr`。各命令均通过已有会话 SDK 识别，模型路径由调用方指定。
 
 以下示例在已经按上文同步环境、准备本地模型后运行：
 
@@ -262,7 +262,7 @@ with MicrophoneInput(MicrophoneConfig()) as microphone:
 uv pip install "<wheel-path>"
 ```
 
-默认安装包含 Whisper 后端、音频转换和 SoundFile/SoXR。最快的两种用法：
+默认安装包含 Whisper 后端、音频转换、麦克风与检测运行库。最快的两种用法：
 
 ```python
 from realtime_asr import transcribe_audio, transcribe_stream
@@ -275,7 +275,7 @@ for transcript in transcribe_stream(model="tiny", language="zh"):
     print(transcript.text)
 ```
 
-`transcribe_stream` 默认使用库内置的 Silero v6 检测模型；要换模型时传 `vad_model=`。检测运行库来自 `vad` 附加依赖。需要复用模型或控制会话时，再用下面的类写法。
+`transcribe_stream` 默认使用库内置的 Silero v6 检测模型；要换模型时传 `vad_model=`。检测运行库随基础包安装。需要复用模型或控制会话时，再用下面的类写法。
 
 `model` 可以是模型名，也可以是已经准备好的目录；名字由所选引擎解释：
 
@@ -410,7 +410,7 @@ uv run --no-sync python -m evals.p3
 
 ## 自动分句
 
-安装 `vad` 可选依赖。自动会话默认使用内置 Silero v6；要换检测模型时显式传 `VadConfig(model_path=...)`。自动会话直接接收持续输入，不逐段调用 `start()`。一个输入代次使用同一个转换器，结束录音段不会重置重采样状态。
+自动会话默认使用内置 Silero v6；要换检测模型时显式传 `VadConfig(model_path=...)`。自动会话直接接收持续输入，不逐段调用 `start()`。一个输入代次使用同一个转换器，结束录音段不会重置重采样状态。
 
 ```python
 from realtime_asr import ModelConfig, SessionConfig, VadConfig

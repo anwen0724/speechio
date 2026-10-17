@@ -57,12 +57,14 @@ class MicrophoneConfig:
 
 
 def _portaudio():
-    """只在显式设备操作时加载可选依赖。"""
+    """只在显式设备操作时加载 PortAudio 绑定。"""
     try:
         import pyaudio
     except ImportError as exc:
         raise ASRError(
-            "OPTIONAL_DEPENDENCY_MISSING", "open_microphone", "请安装 realtime-asr[microphone]"
+            "OPTIONAL_DEPENDENCY_MISSING",
+            "open_microphone",
+            "麦克风运行库缺失，请重新安装 realtime-asr",
         ) from exc
     return pyaudio
 

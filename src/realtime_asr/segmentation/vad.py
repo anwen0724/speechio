@@ -94,7 +94,9 @@ class VoiceActivityDetector:
             import webrtcvad
         except ImportError as exc:
             raise ASRError(
-                "OPTIONAL_DEPENDENCY_MISSING", "prepare_vad", "请安装 realtime-asr[vad]"
+                "OPTIONAL_DEPENDENCY_MISSING",
+                "prepare_vad",
+                "检测运行库缺失，请重新安装 realtime-asr",
             ) from exc
         path = Path(config.model_path).resolve()
         try:

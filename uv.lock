@@ -386,26 +386,19 @@ dependencies = [
     { name = "faster-whisper" },
     { name = "huggingface-hub" },
     { name = "numpy" },
+    { name = "onnxruntime" },
+    { name = "pyaudio" },
     { name = "soundfile" },
     { name = "soxr" },
+    { name = "webrtcvad-wheels" },
 ]
 
 [package.optional-dependencies]
-microphone = [
-    { name = "pyaudio" },
-    { name = "soxr" },
-]
 nemotron = [
-    { name = "onnxruntime" },
     { name = "requests" },
     { name = "sherpa-onnx" },
 ]
-vad = [
-    { name = "onnxruntime" },
-    { name = "webrtcvad-wheels" },
-]
 wake-openwakeword = [
-    { name = "onnxruntime" },
     { name = "openwakeword" },
 ]
 wake-porcupine = [
@@ -424,20 +417,17 @@ requires-dist = [
     { name = "faster-whisper", specifier = "==1.2.1" },
     { name = "huggingface-hub", specifier = ">=0.34,<1" },
     { name = "numpy", specifier = ">=2,<3" },
-    { name = "onnxruntime", marker = "extra == 'nemotron'", specifier = ">=1.31,<2" },
-    { name = "onnxruntime", marker = "extra == 'vad'", specifier = ">=1.31,<2" },
-    { name = "onnxruntime", marker = "extra == 'wake-openwakeword'", specifier = ">=1.31,<2" },
+    { name = "onnxruntime", specifier = ">=1.31,<2" },
     { name = "openwakeword", marker = "extra == 'wake-openwakeword'", specifier = "==0.6.0" },
     { name = "pvporcupine", marker = "extra == 'wake-porcupine'", specifier = "==4.0.3" },
-    { name = "pyaudio", marker = "extra == 'microphone'", specifier = "==0.2.14" },
+    { name = "pyaudio", specifier = "==0.2.14" },
     { name = "requests", marker = "extra == 'nemotron'", specifier = ">=2.32,<3" },
     { name = "sherpa-onnx", marker = "extra == 'nemotron'", specifier = "==1.13.4" },
     { name = "soundfile", specifier = ">=0.13,<0.14" },
     { name = "soxr", specifier = ">=1,<2" },
-    { name = "soxr", marker = "extra == 'microphone'", specifier = ">=1,<2" },
-    { name = "webrtcvad-wheels", marker = "extra == 'vad'", specifier = "==2.0.14" },
+    { name = "webrtcvad-wheels", specifier = "==2.0.14" },
 ]
-provides-extras = ["nemotron", "vad", "wake-porcupine", "wake-openwakeword", "microphone"]
+provides-extras = ["nemotron", "wake-porcupine", "wake-openwakeword"]
 
 [package.metadata.requires-dev]
 dev = [

@@ -13,17 +13,18 @@ dependencies = [
     "huggingface-hub>=0.34,<1",
     "soundfile>=0.13,<0.14",
     "soxr>=1,<2",
+    "PyAudio==0.2.14",
+    "webrtcvad-wheels==2.0.14",
+    "onnxruntime>=1.31,<2",
 ]
 
 [project.scripts]
 asr-install-sherpa-models = "realtime_asr.install_sherpa_models:main"
 
 [project.optional-dependencies]
-nemotron = ["sherpa-onnx==1.13.4", "onnxruntime>=1.31,<2", "requests>=2.32,<3"]
-vad = ["webrtcvad-wheels==2.0.14", "onnxruntime>=1.31,<2"]
+nemotron = ["sherpa-onnx==1.13.4", "requests>=2.32,<3"]
 wake-porcupine = ["pvporcupine==4.0.3"]
-wake-openwakeword = ["openwakeword==0.6.0", "onnxruntime>=1.31,<2"]
-microphone = ["PyAudio==0.2.14", "soxr>=1,<2"]
+wake-openwakeword = ["openwakeword==0.6.0"]
 
 [dependency-groups]
 dev = [
