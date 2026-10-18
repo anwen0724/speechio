@@ -37,8 +37,8 @@ def main():
     fast = ModelConfig(model_path=args.ultrafast_model, engine="nemotron")
     with ASRRuntime(
         accurate,
-        realtime=RealtimeConfig(mode="native"),
-        ultrafast=RealtimeConfig(mode="native", model=fast),
+        realtime=RealtimeConfig(mode="streaming"),
+        ultrafast=RealtimeConfig(mode="streaming", model=fast),
     ) as runtime:
         with closing(audio_file_chunks(args.file)) as chunks:
             format, first = next(chunks)

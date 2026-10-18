@@ -2,11 +2,13 @@
 
 import logging
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from os import PathLike
 from pathlib import Path
 
-from speechio.engines.base import BaseTranscriptionEngine, EngineCapabilities
+from speechio.config import LocalModelConfig
+from speechio.config import ModelConfig as ModelConfig
+from speechio.engines.base import BaseTranscriptionEngine
 from speechio.engines.factory import available_engines, create_engine, normalize_engine
 from speechio.errors import ASRError
 from speechio.results import CloseError, CloseResult
@@ -14,40 +16,12 @@ from speechio.results import CloseError, CloseResult
 LOGGER = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True, kw_only=True)
-class ModelConfig:
-    """加载已有本地模型；文件获取与运行设备分别配置，不在识别时下载。"""
-
-    engine: str
-    model_path: str | PathLike
-    device: str = "cpu"
-    compute_type: str | None = None
-    device_index: int = 0
-    engine_options: Mapping[str, object] | None = None
-
-    @property
-    def capabilities(self):
-        """内置能力的唯一声明位置，查询不加载模型。"""
-        engine = normalize_engine(self.engine)
-        if engine not in ("whisper", "nemotron"):
-            raise ASRError("INVALID_CONFIGURATION", "configure", "引擎或设备组合无效")
-        whisper = engine == "whisper"
-        return EngineCapabilities(
-            engine=engine,
-            model=str(self.model_path),
-            device=self.device,
-            snapshot=whisper,
-            streaming=not whisper,
-            word_timestamps=whisper,
-        )
-
-
 def resolve_config(config):
     """固定目录的绝对位置并检查运行设置；存在性留到真正加载时检查。"""
-    if not isinstance(config, ModelConfig):
-        raise ASRError("INVALID_CONFIGURATION", "configure", "需要 ModelConfig")
+    if not isinstance(config, LocalModelConfig):
+        raise ASRError("INVALID_CONFIGURATION", "configure", "需要 LocalModelConfig")
     engine = normalize_engine(config.engine)
-    if engine not in ("whisper", "nemotron"):
+    if engine not in available_engines():
         raise ASRError(
             "BACKEND_INCOMPATIBLE",
             "configure",
@@ -76,7 +50,7 @@ def resolve_config(config):
             and {"device", "provider", "device_index", "compute_type"} & engine_options.keys()
         ):
             raise ASRError(
-                "INVALID_CONFIGURATION", "configure", "设备和精度请使用 ModelConfig 的对应字段"
+                "INVALID_CONFIGURATION", "configure", "设备和精度请使用 LocalModelConfig 的对应字段"
             )
         return replace(
             config,

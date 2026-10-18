@@ -3,7 +3,7 @@
 from dataclasses import dataclass, replace
 from math import isfinite
 
-from speechio.engines.local import ModelConfig
+from speechio.config import LocalModelConfig, RemoteModelConfig
 from speechio.errors import ASRError
 
 
@@ -11,7 +11,7 @@ from speechio.errors import ASRError
 class CandidateConfig:
     """显式开启候选，缺省共用主引擎；尾部长度使用秒。"""
 
-    model: ModelConfig | None = None
+    model: LocalModelConfig | RemoteModelConfig | None = None
     engine: object | None = None
     tail_seconds: float = 3.0
 
@@ -20,7 +20,7 @@ class CandidateConfig:
             self.model is not None
             and self.engine is not None
             or self.model is not None
-            and not isinstance(self.model, ModelConfig)
+            and not isinstance(self.model, (LocalModelConfig, RemoteModelConfig))
             or isinstance(self.tail_seconds, bool)
             or not isinstance(self.tail_seconds, (int, float))
             or not isfinite(self.tail_seconds)

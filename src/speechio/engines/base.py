@@ -40,7 +40,7 @@ class EngineCapabilities:
     def realtime_mode(self):
         """入口优先选择真正的流式能力；未声明实时能力时保持不可用。"""
         if self.streaming:
-            return "native"
+            return "streaming"
         if self.snapshot:
             return "snapshot"
         return None

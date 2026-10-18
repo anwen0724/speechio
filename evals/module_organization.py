@@ -34,7 +34,7 @@ def replay(project):
     for name, config, mode in (
         ("whisper-cpu", cpu, "snapshot"),
         ("whisper-cuda", gpu, "snapshot"),
-        ("nemotron", native, "native"),
+        ("nemotron", native, "streaming"),
     ):
         with ASRRuntime(
             config, realtime=RealtimeConfig(mode=mode, initial_delay=0, interval=0.01)

@@ -92,14 +92,16 @@ class RealtimeTests(unittest.TestCase):
 
         config = self.nemotron_fixture(Native())
         with ASRRuntime(
-            config, realtime=RealtimeConfig(mode="native", initial_delay=0, interval=10)
+            config, realtime=RealtimeConfig(mode="streaming", initial_delay=0, interval=10)
         ) as runtime:
-            session = runtime.create_session(SessionConfig(realtime=True, language="zh-CN"))
+            session = runtime.create_session(
+                SessionConfig(realtime=True, language="zh-CN", completion_mode="final")
+            )
             session.start()
             session.feed_audio(np.arange(512, dtype=np.int16))
             first = session.next_event(timeout=1)
             self.assertIsNotNone(first, "原生流没有实时观察")
-            self.assertEqual((first.source, first.audio_samples), ("native", 512))
+            self.assertEqual((first.source, first.audio_samples), ("streaming", 512))
             session.feed_audio(np.array([1001, 2002, 3003], np.int16))
             task = session.end_turn()
             self.assertEqual(session.end_turn(), task)
@@ -126,7 +128,7 @@ class RealtimeTests(unittest.TestCase):
 
         with ASRRuntime(
             self.nemotron_fixture(Native()),
-            realtime=RealtimeConfig(mode="native", initial_delay=10),
+            realtime=RealtimeConfig(mode="streaming", initial_delay=10),
         ) as runtime:
             session = runtime.create_session(
                 SessionConfig(realtime=True, format=AudioFormat(48000, 2, "float32"))
@@ -141,8 +143,7 @@ class RealtimeTests(unittest.TestCase):
             self.assertEqual(ended.audio_samples, 1600)
             self.assertEqual(session.next_event(timeout=5).kind, "final")
             self.assertEqual(session.next_event(timeout=5).kind, "completed")
-            self.assertEqual([len(s.samples) for s in streams], [1600, 1600])
-            np.testing.assert_array_equal(streams[0].samples, streams[1].samples)
+            self.assertEqual([len(s.samples) for s in streams], [1600])
 
     def test_independent_realtime_model_progresses_while_final_is_blocked(self):
         entered, release = Event(), Event()
@@ -235,7 +236,9 @@ class RealtimeTests(unittest.TestCase):
                 return super().get_result_all(stream)
 
         config = self.nemotron_fixture(Native())
-        with ASRRuntime(config, realtime=RealtimeConfig(mode="native", initial_delay=0)) as runtime:
+        with ASRRuntime(
+            config, realtime=RealtimeConfig(mode="streaming", initial_delay=0)
+        ) as runtime:
             session = runtime.create_session(SessionConfig(realtime=True))
             session.start()
             session.feed_audio(np.ones(512, np.int16))
@@ -353,14 +356,14 @@ class RealtimeTests(unittest.TestCase):
         with ASRRuntime(
             config,
             limits=RuntimeLimits(max_tasks=1),
-            realtime=RealtimeConfig(mode="native", initial_delay=0),
+            realtime=RealtimeConfig(mode="streaming", initial_delay=0),
         ) as runtime:
             blocker = runtime.create_session()
             blocker.start()
             blocker.feed_audio(np.ones(512, np.int16))
             blocker.end_turn()
             self.assertTrue(entered.wait(5))
-            live = runtime.create_session(SessionConfig(realtime=True))
+            live = runtime.create_session(SessionConfig(realtime=True, completion_mode="final"))
             unit = live.start()
             live.feed_audio(np.ones(515, np.int16))
             with self.assertRaises(ASRError) as caught:
@@ -396,7 +399,8 @@ class RealtimeTests(unittest.TestCase):
                 return super().get_result_all(stream)
 
         runtime = ASRRuntime(
-            self.nemotron_fixture(Native()), realtime=RealtimeConfig(mode="native", initial_delay=0)
+            self.nemotron_fixture(Native()),
+            realtime=RealtimeConfig(mode="streaming", initial_delay=0),
         )
         runtime.prepare()
         self.addCleanup(runtime.close)
@@ -406,8 +410,7 @@ class RealtimeTests(unittest.TestCase):
         error = session.next_event(timeout=5)
         self.assertEqual((error.kind, error.error.operation), ("realtime_failed", "get_result"))
         session.end_turn()
-        self.assertEqual(session.next_event(timeout=5).kind, "final")
-        self.assertEqual(session.next_event(timeout=5).kind, "completed")
+        self.assertEqual(session.next_event(timeout=5).kind, "failed")
         fresh = session.start()
         session.feed_audio(np.ones(512, np.int16))
         observation = session.next_event(timeout=5)
@@ -421,7 +424,7 @@ class RealtimeTests(unittest.TestCase):
         with ASRRuntime(
             config,
             realtime=RealtimeConfig(
-                mode="native", initial_delay=0, max_units=1, max_audio_samples=1024
+                mode="streaming", initial_delay=0, max_units=1, max_audio_samples=1024
             ),
         ) as runtime:
             first = runtime.create_session(SessionConfig(realtime=True, max_audio_samples=1024))
@@ -468,7 +471,7 @@ class RealtimeTests(unittest.TestCase):
 
         with ASRRuntime(
             self.nemotron_fixture(Native()),
-            realtime=RealtimeConfig(mode="native", initial_delay=0, interval=0.001),
+            realtime=RealtimeConfig(mode="streaming", initial_delay=0, interval=0.001),
         ) as runtime:
             live = runtime.create_session(SessionConfig(realtime=True))
             live.start()

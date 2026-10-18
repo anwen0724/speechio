@@ -39,7 +39,7 @@ def run(project, model, output, *, configuration=None):
     configs = {
         "whisper-cpu": (cpu, RealtimeConfig()),
         "whisper-cuda": (gpu, RealtimeConfig()),
-        "nemotron": (native, RealtimeConfig(mode="native")),
+        "nemotron": (native, RealtimeConfig(mode="streaming")),
     }
     reports = []
     for name, (final_config, realtime) in configs.items():

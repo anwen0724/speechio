@@ -186,7 +186,7 @@ class AutomaticTests(unittest.TestCase):
                 expected = np.concatenate((np.full(16384, 500), np.full(16000, 700), block))
                 np.testing.assert_array_equal(actual, expected / 32768)
 
-    def test_backdated_native_and_final_receive_identical_left_segments(self):
+    def test_backdated_stream_finishes_each_left_segment_without_retranscription(self):
         streams = []
 
         class Native(RuntimeRecognizer):
@@ -204,7 +204,7 @@ class AutomaticTests(unittest.TestCase):
             )
         )
         with ASRRuntime(
-            config, realtime=RealtimeConfig(mode="native", initial_delay=0, interval=0.01)
+            config, realtime=RealtimeConfig(mode="streaming", initial_delay=0, interval=0.01)
         ) as runtime:
             session = runtime.create_auto_session(
                 vad=self.vad,
@@ -213,7 +213,7 @@ class AutomaticTests(unittest.TestCase):
             )
             session.feed_audio(audio[:10240])
             first = session.next_event(timeout=5)
-            self.assertEqual(first.source, "native")
+            self.assertEqual(first.source, "streaming")
             self.assertLessEqual(first.stream_end_sample, 10240 - 3200)
             session.feed_audio(audio[10240:])
             session.end_input()
@@ -229,7 +229,7 @@ class AutomaticTests(unittest.TestCase):
                 boundary = final.boundary
                 expected = audio[boundary.start_sample : boundary.end_sample] / 32768
                 matching = [s for s in streams if len(s.samples) == len(expected)]
-                self.assertEqual(len(matching), 2, "原生实时和普通最终应各有一个独立流")
+                self.assertEqual(len(matching), 1, "每段直接复用流式结果，不创建第二个流")
                 for stream in matching:
                     np.testing.assert_array_equal(stream.samples, expected)
                     self.assertTrue(stream.ended)

@@ -9,9 +9,9 @@ from uuid import uuid4
 
 import numpy as np
 
+from speechio.config import LocalModelConfig, RemoteModelConfig
 from speechio.errors import ASRError
 from speechio.results import CloseError, Transcript
-from speechio.runtime.transcriber import ModelConfig
 from speechio.segmentation.acoustic import AcousticBoundary, AcousticBoundaryDetector
 from speechio.session.session import EventError, SessionEvent
 
@@ -21,7 +21,7 @@ class RealtimeConfig:
     """一个实时角色；model 或 engine 指定拥有者，缺省共用最终引擎。"""
 
     mode: str = "snapshot"
-    model: ModelConfig | None = None
+    model: LocalModelConfig | RemoteModelConfig | None = None
     engine: object = None
     interval: float = 0.2
     initial_delay: float = 0.2
@@ -62,8 +62,11 @@ class RealtimeConfig:
             self, "boundary_followup_delays", tuple(sorted(set(self.boundary_followup_delays)))
         )
         if (
-            self.mode not in ("snapshot", "native")
-            or (self.model is not None and not isinstance(self.model, ModelConfig))
+            self.mode not in ("snapshot", "streaming")
+            or (
+                self.model is not None
+                and not isinstance(self.model, (LocalModelConfig, RemoteModelConfig))
+            )
             or (self.model is not None and self.engine is not None)
         ):
             raise ASRError("INVALID_CONFIGURATION", "configure", "实时模式或模型配置无效")
@@ -94,6 +97,7 @@ class _RealtimeUnit:
     invalid: bool = False
     pending: bytearray = field(default_factory=bytearray)
     stream: object = None
+    last_result: Transcript | None = None
     ended: bool = False
     accepted_samples: int = 0
     observation_sequence: int = 0
@@ -144,7 +148,7 @@ class RealtimeExecutor:
         state = self.states.get(ref)
         if state is None or state.invalid:
             return
-        if self.config.mode == "native":
+        if self.config.mode == "streaming":
             state.pending.extend(pcm)
         if state.detector is not None:
             events = state.detector.feed(pcm)
@@ -160,7 +164,7 @@ class RealtimeExecutor:
         state = self.states.get(ref)
         if state is None:
             return
-        if self.config.mode == "native":
+        if self.config.mode == "streaming":
             state.ended = True
             self.runtime.coordination.notify_all()
         else:
@@ -178,7 +182,7 @@ class RealtimeExecutor:
 
     def is_complete(self, ref):
         """本执行器维护排空屏障，不把退出标记写回会话单元。"""
-        return self.config.mode != "native" or ref not in self.states
+        return self.config.mode != "streaming" or ref not in self.states
 
     def stop(self):
         """使全部实时单元失效，唤醒执行线程完成资源清理。"""
@@ -201,12 +205,14 @@ class RealtimeExecutor:
                 state.pending.clear()
                 return state, pcm, wait
         for ref, state in tuple(self.states.items()):
-            native = self.config.mode == "native"
-            samples = len(state.pending) // 2 if native else state.session.audio_samples(state.ref)
+            streaming = self.config.mode == "streaming"
+            samples = (
+                len(state.pending) // 2 if streaming else state.session.audio_samples(state.ref)
+            )
             acoustic = state.detector is not None
             followup_due = acoustic and bool(state.followups) and state.followups[0] <= now
-            if (native and not samples) or (
-                not native
+            if (streaming and not samples and state.stream is None) or (
+                not streaming
                 and (
                     samples < self.config.min_snapshot_samples
                     or (
@@ -236,10 +242,10 @@ class RealtimeExecutor:
                 continue
             del self.states[ref]
             self.states[ref] = state
-            pcm = bytes(state.pending) if native else state.session.turn_audio(state.ref)
-            if native:
+            pcm = bytes(state.pending) if streaming else state.session.turn_audio(state.ref)
+            if streaming:
                 state.pending.clear()
-            state.trigger_reason = "native" if native else "periodic"
+            state.trigger_reason = "streaming" if streaming else "periodic"
             if acoustic:
                 if state.boundary_pending:
                     state.trigger_reason = "acoustic-boundary"
@@ -272,7 +278,7 @@ class RealtimeExecutor:
                 return EventError(code, operation, message)
         return None
 
-    def _native_step(self, state, pcm, *, finishing, cleaning):
+    def _streaming_step(self, state, pcm, *, finishing, cleaning):
         """按领取时的动作处理固定增量，后续封口由下一步补齐余量。"""
         if cleaning:
             return None, self._close_stream(state)
@@ -316,7 +322,7 @@ class RealtimeExecutor:
                 trigger, boundary = state.trigger_reason, state.boundary
                 input_end = (
                     state.accepted_samples + len(pcm) // 2
-                    if self.config.mode == "native"
+                    if self.config.mode == "streaming"
                     else len(pcm) // 2
                 )
                 epoch, resume_id, candidate_start = state.session.observation_context(
@@ -327,8 +333,8 @@ class RealtimeExecutor:
                 started = monotonic()
                 state.last_started = started
                 try:
-                    if self.config.mode == "native":
-                        result, error = self._native_step(
+                    if self.config.mode == "streaming":
+                        result, error = self._streaming_step(
                             state, pcm, finishing=finishing, cleaning=cleaning
                         )
                     else:
@@ -339,7 +345,7 @@ class RealtimeExecutor:
                 except Exception as exc:
                     error = EventError("INFERENCE_FAILED", "realtime", str(exc))
                     self._close_stream(state)
-            samples = state.accepted_samples if self.config.mode == "native" else len(pcm) // 2
+            samples = state.accepted_samples if self.config.mode == "streaming" else len(pcm) // 2
             state.observation_sequence += 1
             event = SessionEvent(
                 kind="realtime_failed" if error else "realtime",
@@ -357,19 +363,32 @@ class RealtimeExecutor:
                 candidate_start_sample=candidate_start,
                 started_at_monotonic=started,
                 completed_at_monotonic=monotonic(),
-                stream_finished=self.config.mode == "native" and finishing and error is None,
+                stream_finished=self.config.mode == "streaming" and finishing and error is None,
                 observation_sequence=state.observation_sequence,
                 trigger_reason=trigger,
                 acoustic_boundary=boundary if self.config.acoustic_boundaries else None,
             )
             with condition:
                 if not state.invalid:
-                    state.session.accept_realtime(event)
+                    # 远程结果可在没有新音频时到达；轮询相同结果不重复发布观察。
+                    previous = state.last_result
+                    if (
+                        self.config.mode != "streaming"
+                        or pcm
+                        or finishing
+                        or error
+                        or previous is None
+                        or (result.text, result.words, result.timestamp_status)
+                        != (previous.text, previous.words, previous.timestamp_status)
+                    ):
+                        state.session.accept_realtime(event)
+                    state.last_result = result
                     if error:
                         state.invalid = True
                         state.pending.clear()
                 if (state.invalid and state.stream is None) or finishing:
                     self._retire(state)
+                    state.session.complete_realtime(state.ref)
                 self.busy = None
                 condition.notify_all()
             state = pcm = result = error = event = None
@@ -418,9 +437,10 @@ class RealtimeGroup:
 
     def pending_for(self, session_id=None):
         return sum(
-            executor.busy is not None
-            and (session_id is None or executor.busy.ref.session_id == session_id)
+            (not state.invalid or executor.busy is state)
+            and (session_id is None or state.ref.session_id == session_id)
             for executor in self.executors.values()
+            for state in executor.states.values()
         )
 
     def start(self):

@@ -85,7 +85,7 @@ class EngineInjectionTests(unittest.TestCase):
         runtime = ASRRuntime(
             engine=final,
             realtime=RealtimeConfig(
-                mode="native", engine=streaming, initial_delay=0, interval=0.01
+                mode="streaming", engine=streaming, initial_delay=0, interval=0.01
             ),
         )
         self.addCleanup(runtime.close)
@@ -99,6 +99,7 @@ class EngineInjectionTests(unittest.TestCase):
             session.end_turn()
         completed = 0
         drained = set()
+        finals = []
         while completed < 2:
             event = session.next_event(timeout=5)
             self.assertIsNotNone(event)
@@ -106,7 +107,12 @@ class EngineInjectionTests(unittest.TestCase):
                 drained.add(event.turn.turn_id)
             if event.kind == "completed":
                 completed += 1
+            if event.kind == "final":
+                finals.append(event)
         self.assertEqual(drained, {1, 2})
+        self.assertEqual([event.result.text for event in finals], ["完整实时结果"] * 2)
+        self.assertTrue(all(event.source == "streaming" for event in finals))
+        self.assertEqual(final.inputs, [])
         self.assertEqual(len(streaming.streams), 2)
         for stream, source in zip(streaming.streams, sources, strict=True):
             np.testing.assert_array_equal(
@@ -154,11 +160,11 @@ class EngineInjectionTests(unittest.TestCase):
         engine = SharedEngine()
         runtime = ASRRuntime(
             engine=engine,
-            realtime=RealtimeConfig(mode="native", engine=engine, initial_delay=0),
+            realtime=RealtimeConfig(mode="streaming", engine=engine, initial_delay=0),
         )
         self.addCleanup(runtime.close)
         runtime.prepare()
-        session = runtime.create_session(SessionConfig(realtime=True))
+        session = runtime.create_session(SessionConfig(realtime=True, completion_mode="final"))
         session.start()
         source = np.arange(525, dtype=np.int16)
         session.feed_audio(source)

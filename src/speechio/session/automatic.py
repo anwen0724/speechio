@@ -126,6 +126,12 @@ class LiveSession(Session):
             or not runtime.capabilities.word_timestamps
         ):
             raise ASRError("BACKEND_INCOMPATIBLE", "configure", "句末切段需要稳定观察和词时间能力")
+        if self._endpoint.punctuation_split and self._completion_source == "streaming":
+            raise ASRError(
+                "BACKEND_INCOMPATIBLE",
+                "configure",
+                "标点回溯切段会改变已发送的音频边界，需要 completion_mode='final' 重识别",
+            )
         self._optimization_totals = {}
         self._closed_wake = None
         self._input_lock = RLock()
@@ -380,7 +386,7 @@ class LiveSession(Session):
 
     def _dispatch_final(self, unit, task, pcm):
         """只由本会话决定精确复用，调度器不读取提前策略状态。"""
-        if self.config.completion_mode == "candidate":
+        if self.config.completion_mode == "candidate" or self._completion_source == "streaming":
             return super()._dispatch_final(unit, task, pcm)
         early = unit.early_result
         if early is not None and early.matches_audio(pcm):

@@ -32,11 +32,11 @@ def configurations(project):
     return {
         "shared-whisper-cpu": (cpu, RealtimeConfig(), "whisper"),
         "shared-whisper-cuda": (gpu, RealtimeConfig(), "whisper-gpu"),
-        "shared-nemotron-cpu": (native, RealtimeConfig(mode="native"), "nemotron"),
+        "shared-nemotron-cpu": (native, RealtimeConfig(mode="streaming"), "nemotron"),
         "independent-whisper-cpu": (cpu, RealtimeConfig(model=cpu), "whisper"),
         "independent-native-cuda-final": (
             gpu,
-            RealtimeConfig(mode="native", model=native),
+            RealtimeConfig(mode="streaming", model=native),
             "whisper-gpu",
         ),
     }
@@ -191,7 +191,7 @@ def check_configuration(name, config, realtime, baseline_name, project, baseline
                 raise AssertionError("实时版本倒退或快照重复")
             if any(v > entry["samples"] for v in versions):
                 raise AssertionError("实时覆盖超过有效输入")
-            if realtime.mode == "native" and not any(
+            if realtime.mode == "streaming" and not any(
                 e["stream_finished"] and e["audio_samples"] == entry["samples"]
                 for e in observations
             ):

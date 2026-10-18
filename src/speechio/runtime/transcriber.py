@@ -10,8 +10,10 @@ import numpy as np
 
 from speechio.audio.conversion import AudioConverter, AudioFormat, validate_max_audio_seconds
 from speechio.audio.files import read_audio_file
+from speechio.config import LocalModelConfig, RemoteModelConfig
+from speechio.config import ModelConfig as ModelConfig
 from speechio.engines.base import validate_engine
-from speechio.engines.local import LocalEngine, ModelConfig
+from speechio.engines.factory import build_engine
 from speechio.errors import ASRError
 from speechio.results import CloseError, CloseResult, Transcript
 
@@ -20,7 +22,7 @@ LOGGER.addHandler(logging.NullHandler())
 
 
 def resolve_model_options(config=None, *, engine=None, model_path=None, **options):
-    """统一本地目录与外部引擎注入入口；旧下载选项给出明确迁移提示。"""
+    """统一本地、远程配置与引擎注入；旧下载选项给出明确迁移提示。"""
     if {"model", "download_root", "local_files_only"} & options.keys():
         raise ASRError(
             "INVALID_CONFIGURATION",
@@ -33,14 +35,14 @@ def resolve_model_options(config=None, *, engine=None, model_path=None, **option
     if isinstance(engine, str):
         if model_path is None:
             raise ASRError("INVALID_CONFIGURATION", "configure", "加载模型必须指定 model_path")
-        return ModelConfig(model_path=model_path, engine=engine, **options), None
+        return LocalModelConfig(model_path=model_path, engine=engine, **options), None
     if engine is not None and (model_path is not None or options):
         raise ASRError("INVALID_CONFIGURATION", "configure", "注入引擎不接受本地选项")
     if config is None and engine is None:
         raise ASRError(
             "INVALID_CONFIGURATION",
             "configure",
-            "请提供 ModelConfig，或明确指定 engine 和 model_path",
+            "请提供 LocalModelConfig / RemoteModelConfig，或明确指定 engine 和 model_path",
         )
     return config, engine
 
@@ -50,7 +52,7 @@ class Transcriber:
 
     def __init__(
         self,
-        config: ModelConfig | None = None,
+        config: LocalModelConfig | RemoteModelConfig | None = None,
         *,
         engine=None,
         model_path=None,
@@ -62,7 +64,7 @@ class Transcriber:
         config, engine = resolve_model_options(
             config, engine=engine, model_path=model_path, **options
         )
-        self._engine = LocalEngine(config) if engine is None else engine
+        self._engine = build_engine(config) if engine is None else engine
         self._config = self._engine.config if engine is None else None
         self._capabilities = validate_engine(self._engine)
         self._state = "unprepared"
@@ -82,7 +84,7 @@ class Transcriber:
         return False
 
     @property
-    def config(self) -> ModelConfig | None:
+    def config(self) -> LocalModelConfig | RemoteModelConfig | None:
         return self._config
 
     @property
@@ -104,7 +106,7 @@ class Transcriber:
         return self._engine
 
     def prepare(self) -> None:
-        """显式离线准备所选模型；输入调用也可延迟至转换完成后准备。"""
+        """显式准备所选模型或远程客户端；输入调用也可延迟至转换完成后准备。"""
         with self._operation():
             self._prepare()
 
@@ -136,7 +138,7 @@ class Transcriber:
             if cleanup_errors:
                 exc.cleanup_errors = cleanup_errors
             if self.config is not None:
-                self._engine = LocalEngine(self.config)
+                self._engine = build_engine(self.config)
             else:
                 # 已关闭的注入实例不能凭空重建，失败仍保留原始原因。
                 self._state = "closed"

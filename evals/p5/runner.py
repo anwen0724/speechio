@@ -139,7 +139,7 @@ def run(project, folder):
             "jsonl",
         ],
     )
-    if not any(e["source"] == "native" for e in native_report["events"]):
+    if not any(e["source"] == "streaming" for e in native_report["events"]):
         raise AssertionError("真实麦克风没有原生观察")
     captures.append(native_report)
     (folder / "cases.json").write_text(

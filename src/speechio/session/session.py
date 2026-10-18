@@ -1,6 +1,7 @@
 """会话拥有音频单元、归属和消费顺序，不执行模型推理。"""
 
 from collections import deque
+from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from math import isfinite
 from uuid import uuid4
@@ -53,7 +54,7 @@ class SessionConfig:
     stabilization: StabilizationConfig | None = None
     word_timestamps: bool = False
     merge: RealtimeMergeConfig | None = None
-    completion_mode: str = "final"
+    completion_mode: str = "auto"
     retain_for_correction: bool = False
 
     def __post_init__(self):
@@ -61,7 +62,7 @@ class SessionConfig:
         if (
             not isinstance(self.realtime, bool)
             or type(self.word_timestamps) is not bool
-            or self.completion_mode not in ("final", "candidate")
+            or self.completion_mode not in ("auto", "final", "candidate")
             or type(self.retain_for_correction) is not bool
             or (
                 self.merge is not None
@@ -81,6 +82,14 @@ class SessionConfig:
         for limit in (self.max_audio_samples, self.max_pending_units):
             if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
                 raise ASRError("INVALID_CONFIGURATION", "configure", "会话容量应为正整数")
+
+    def resolve_completion_source(self, realtime_mode=None):
+        """默认采用流式结束结果；快照或未启用实时识别时执行整段识别。"""
+        if self.completion_mode == "candidate":
+            return "candidate-final"
+        if self.completion_mode == "auto" and self.realtime and realtime_mode == "streaming":
+            return "streaming"
+        return "final"
 
 
 @dataclass(frozen=True)
@@ -189,6 +198,7 @@ class _AudioUnit:
     completion_source: str = "final"
     candidate_reused: bool = False
     sealed_pcm: bytes = b""
+    stream_completion: SessionEvent | None = None
 
 
 class Session:
@@ -207,6 +217,8 @@ class Session:
             raise ASRError("REALTIME_NOT_CONFIGURED", "create_session", "运行时未配置极速角色")
         self._runtime = runtime
         self._config = config
+        realtime_mode = runtime.realtime.accurate_config.mode if runtime.realtime else None
+        self._completion_source = config.resolve_completion_source(realtime_mode)
         self._session_id = uuid4().hex
         self._generation = 0
         self._next_unit = 1
@@ -291,6 +303,7 @@ class Session:
                 raise ASRError("RESULT_CAPACITY_EXCEEDED", "start", "未消费单元达到容量上限")
             ref = TurnRef(self.session_id, self._generation, self._next_unit)
             unit = self._new_unit(ref, format)
+            unit.completion_source = self._completion_source
             if self._runtime.candidate_config is not None:
                 unit.candidates = CandidateState(ref)
             if self.config.merge is not None:
@@ -320,10 +333,46 @@ class Session:
         return bytes(unit.pcm) if unit is not None and unit.ref == ref else b""
 
     def accept_realtime(self, event):
-        """执行器只交付有归属的观察，不访问可变单元。"""
+        """准确流结束后交付最终正文；失败记录保留到封口，不自动重识别。"""
         unit = self._units.get(event.turn.turn_id)
-        if unit is not None and unit.ref == event.turn:
+        if unit is not None and unit.ref == event.turn and unit.events is None:
             self._record_realtime(unit, event)
+            if (
+                self._completion_source == "streaming"
+                and event.realtime_role == "accurate"
+                and (event.stream_finished or event.error is not None)
+            ):
+                unit.stream_completion = event
+
+    def complete_realtime(self, ref):
+        """所有实时角色退出后交付，避免最终事件越过另一角色的尾部观察。"""
+        unit = self._units.get(ref.turn_id)
+        if (
+            unit is not None
+            and unit.ref == ref
+            and unit.events is None
+            and unit.task is not None
+            and unit.stream_completion is not None
+            and self._runtime.realtime.is_complete(ref)
+        ):
+            self._resolve_stream(unit)
+
+    def _resolve_stream(self, unit):
+        """仅使用 finish 返回的完整结果，包括成功的空文本。"""
+        event = unit.stream_completion
+        result = deepcopy(event.result)
+        if (
+            result is not None
+            and self.config.word_timestamps
+            and (not self._runtime.realtime_capabilities.word_timestamps or result.words is None)
+        ):
+            result = replace(result, timestamp_status="unavailable")
+        self._resolve(
+            unit.task,
+            result,
+            event.error,
+            timing=(None, event.started_at_monotonic, event.completed_at_monotonic),
+        )
 
     def accept_completion(self, request, result, error, timing):
         """协调条件内接收执行结果；发布有效性只由会话判断。"""
@@ -437,6 +486,10 @@ class Session:
 
     def _dispatch_final(self, unit, task, pcm):
         """登记完成前不释放协调条件，立即返回的执行也能关联原单元。"""
+        if self._completion_source == "streaming":
+            unit.task = task
+            self.complete_realtime(unit.ref)
+            return
         if self.config.completion_mode == "candidate":
             unit.completion_source = "candidate-final"
             cached = unit.candidates.reusable_whole(pcm)
@@ -591,7 +644,7 @@ class Session:
         )
 
     def end_turn(self) -> FinalTask:
-        """刷新尾部并提交不可变完整音频；调用返回后可开始下一单元。"""
+        """刷新尾部并登记完成任务；流式等待 finish，其余提交整段识别。"""
         with self._runtime.coordination:
             self._require_open()
             if self._active is None and self._last_task is not None:

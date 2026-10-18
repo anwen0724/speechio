@@ -205,6 +205,26 @@ class StreamLifecycleTests(unittest.TestCase):
         self.assertEqual(engine.samples, 1600)
         self.assertTrue(engine.closed)
 
+    def test_microphone_stream_defaults_to_stream_final_and_allows_retranscription(self):
+        from tests.runtime.test_dual_realtime import RoleEngine
+
+        for mode, text in (("auto", "流式最终正文"), ("final", "收到完整音频")):
+            with self.subTest(completion_mode=mode):
+                engine = RoleEngine("流式最终正文")
+                microphone = FakeMicrophone(None)
+                microphone.frames = [b"\xd0\x07" * 1600]
+                options = {} if mode == "auto" else {"completion_mode": mode}
+                with (
+                    patch("speechio.api.ASRRuntime", StreamRuntime),
+                    patch("speechio.api.MicrophoneInput", return_value=microphone),
+                    StreamTranscriber(engine=engine, **options) as stream,
+                ):
+                    stream.end_input()
+                    transcripts = list(stream)
+                self.assertEqual([item.text for item in transcripts], [text])
+                self.assertEqual(len(engine.inputs), int(mode == "final"))
+                self.assertEqual(len(engine.streams), 1)
+
     def test_end_input_delivers_all_queued_audio(self):
         microphone = FakeMicrophone(None)
         microphone.frames = [b"\xd0\x07" * 1600 for _ in range(3)]

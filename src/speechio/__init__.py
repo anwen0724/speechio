@@ -8,6 +8,7 @@ from speechio.audio.microphone import (
     MicrophoneInput,
     list_input_devices,
 )
+from speechio.config import LocalModelConfig, RemoteModelConfig
 from speechio.engines.base import (
     BaseTranscriptionEngine,
     EngineCapabilities,
@@ -41,6 +42,8 @@ __all__ = [
     "StreamTranscriber",
     "Session",
     "LiveSession",
+    "LocalModelConfig",
+    "RemoteModelConfig",
     "ModelConfig",
     "RealtimeConfig",
     "SessionConfig",

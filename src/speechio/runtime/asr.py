@@ -198,7 +198,11 @@ class ASRRuntime:
             if self._state == "ready":
                 return
             try:
-                self._engines.prepare()
+                self._engines.prepare(
+                    defer_primary=self._final_enabled
+                    and self._realtime is not None
+                    and self._realtime.accurate_config.mode == "streaming"
+                )
             except BaseException as exc:
                 # 第二角色失败时一起回收，重试使用新资源拥有者。
                 errors = self._engines.close()
@@ -338,16 +342,20 @@ class ASRRuntime:
         return self._tasks, self._realtime.unit_count if self._realtime else 0
 
     def pending_for(self, session_id):
-        """只报告仍在真实调用中的工作，不把逻辑取消视作物理退出。"""
-        pending = int(
-            self._running is not None and self._running.task.turn.session_id == session_id
-        )
-        if self._realtime is not None:
-            pending += self._realtime.pending_for(session_id)
-        pending += sum(
-            resource.busy for resource, owner in self._wake_resources.items() if owner == session_id
-        )
-        return pending
+        """原子统计排队、执行和未结束的流；取消中的真实调用仍计入等待。"""
+        with self._condition:
+            pending = sum(job.task.turn.session_id == session_id for job in self._queue)
+            pending += int(
+                self._running is not None and self._running.task.turn.session_id == session_id
+            )
+            if self._realtime is not None:
+                pending += self._realtime.pending_for(session_id)
+            pending += sum(
+                resource.busy
+                for resource, owner in self._wake_resources.items()
+                if owner == session_id
+            )
+            return pending
 
     def detach_session(self, session_id):
         """注销属于本运行时的会话，已执行任务仍保留自己的固定输入。"""

@@ -61,8 +61,10 @@ class DualRealtimeTests(unittest.TestCase):
         accurate, fast = BlockingRole("speech system"), BlockingRole("speech system today")
         runtime = ASRRuntime(
             engine=accurate,
-            realtime=sdk.RealtimeConfig(mode="native", initial_delay=0, max_units=1),
-            ultrafast=sdk.RealtimeConfig(mode="native", engine=fast, initial_delay=0, max_units=1),
+            realtime=sdk.RealtimeConfig(mode="streaming", initial_delay=0, max_units=1),
+            ultrafast=sdk.RealtimeConfig(
+                mode="streaming", engine=fast, initial_delay=0, max_units=1
+            ),
         )
         self.addCleanup(runtime.close)
         runtime.prepare()
@@ -102,8 +104,8 @@ class DualRealtimeTests(unittest.TestCase):
         accurate, fast = RoleEngine("speech system"), FailedRole("unused")
         with ASRRuntime(
             engine=accurate,
-            realtime=sdk.RealtimeConfig(mode="native", initial_delay=0),
-            ultrafast=sdk.RealtimeConfig(mode="native", engine=fast, initial_delay=0),
+            realtime=sdk.RealtimeConfig(mode="streaming", initial_delay=0),
+            ultrafast=sdk.RealtimeConfig(mode="streaming", engine=fast, initial_delay=0),
         ) as runtime:
             session = runtime.create_session(
                 sdk.SessionConfig(realtime=True, merge=sdk.RealtimeMergeConfig())
@@ -121,15 +123,15 @@ class DualRealtimeTests(unittest.TestCase):
                 (failure.realtime_role, failure.error.code), ("ultrafast", "INFERENCE_FAILED")
             )
             final = next(event for event in events if event.kind == "final")
-            self.assertEqual(final.result.text, "收到完整音频")
+            self.assertEqual(final.result.text, "speech system")
             self.assertEqual(final.merge.text, "speech system")
 
     def test_start_rejects_all_roles_together_when_fast_capacity_is_full(self):
         accurate, fast = RoleEngine("speech system"), RoleEngine("speech system today")
         with ASRRuntime(
             engine=accurate,
-            realtime=sdk.RealtimeConfig(mode="native", max_units=2),
-            ultrafast=sdk.RealtimeConfig(mode="native", engine=fast, max_units=1),
+            realtime=sdk.RealtimeConfig(mode="streaming", max_units=2),
+            ultrafast=sdk.RealtimeConfig(mode="streaming", engine=fast, max_units=1),
         ) as runtime:
             config = sdk.SessionConfig(realtime=True, merge=sdk.RealtimeMergeConfig())
             first, second = runtime.create_session(config), runtime.create_session(config)
@@ -141,12 +143,12 @@ class DualRealtimeTests(unittest.TestCase):
             self.assertEqual(runtime.capacity.realtime_units, 2)
             self.assertEqual(second.state, "idle")
 
-    def test_each_unit_drains_both_roles_and_final_remains_independent(self):
+    def test_each_unit_drains_both_roles_and_uses_accurate_final(self):
         accurate, fast = RoleEngine("speech system"), RoleEngine("speech system today")
         runtime = ASRRuntime(
             engine=accurate,
-            realtime=sdk.RealtimeConfig(mode="native", initial_delay=0),
-            ultrafast=sdk.RealtimeConfig(mode="native", engine=fast, initial_delay=0),
+            realtime=sdk.RealtimeConfig(mode="streaming", initial_delay=0),
+            ultrafast=sdk.RealtimeConfig(mode="streaming", engine=fast, initial_delay=0),
         )
         self.addCleanup(runtime.close)
         runtime.prepare()
@@ -171,7 +173,7 @@ class DualRealtimeTests(unittest.TestCase):
             completions += int(event.kind == "completed")
         self.assertEqual(drained, {"accurate": {1, 2}, "ultrafast": {1, 2}})
         self.assertIn("speech system today", merges)
-        self.assertEqual(finals, ["收到完整音频", "收到完整音频"])
+        self.assertEqual(finals, ["speech system", "speech system"])
         for engine in (accurate, fast):
             for stream, source in zip(engine.streams, sources, strict=True):
                 np.testing.assert_array_equal(
