@@ -39,12 +39,12 @@ def terminal_keys():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("model", type=Path)
+    parser.add_argument("model_path", type=Path)
     parser.add_argument("--device", type=int)
     args = parser.parse_args()
     microphone = None
     with (
-        ASRRuntime(ModelConfig(model=args.model)) as runtime,
+        ASRRuntime(ModelConfig(engine="whisper", model_path=args.model_path)) as runtime,
         terminal_keys() as read_key,
     ):
         session = runtime.create_session(SessionConfig(format=AudioFormat()))

@@ -299,7 +299,7 @@ def _execute(args, stdin, output):
             )
             return 0
         config = ModelConfig(
-            model=args.model,
+            model_path=args.model_path,
             engine=args.engine,
             device=args.device,
             device_index=args.device_index,

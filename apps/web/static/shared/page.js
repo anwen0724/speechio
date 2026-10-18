@@ -156,11 +156,12 @@ export async function startPage(debug) {
   function updatePreview() {
     if (!debug) return;
     const config = readConfig();
+    const selected = state.publicConfig.models.find(model => model.id === $('#model').value);
     $('#config-preview').textContent = JSON.stringify(config, null, 2);
-    $('#code-note').textContent = '这是对应公开 API 的最小示例。模型名或目录需填写本机值；完整配置映射见 apps/web/server/service.py。';
+    $('#code-note').textContent = '这是对应公开 API 的最小示例。模型类型和目录需填写本机值；完整配置映射见 apps/web/server/service.py。';
     $('#code-preview').textContent = config.input_mode === 'file'
-      ? `from speechio import ModelConfig, Transcriber\n\nmodel = ModelConfig(model="填写模型名或本地目录")\nwith Transcriber(model, max_audio_seconds=${config.max_audio_seconds ?? 'None'}) as recognizer:\n    result = recognizer.transcribe_file("audio.wav")\n    print(result.text)`
-      : `from speechio import ModelConfig, SessionConfig\nfrom speechio.runtime.asr import ASRRuntime\n${config.segmentation === 'auto' ? 'from speechio import VadConfig\nfrom speechio.bundled import default_vad_model\n' : ''}\nwith ASRRuntime(ModelConfig(model="填写模型名或本地目录")) as runtime:\n    session = runtime.${config.segmentation === 'auto' ? 'create_auto_session(vad=VadConfig(model_path=default_vad_model()))' : 'create_session(SessionConfig())'}\n${config.segmentation === 'manual' ? '    session.start()\n' : ''}    # 将 16 kHz 单声道 int16 音频持续送入 session.feed_audio(pcm)\n    # 停止后调用 ${config.segmentation === 'auto' ? 'session.end_input()' : 'session.end_turn()'}，继续读取 next_event()\n    # 消费完成事件后，调用 session.close()`;
+      ? `from speechio import ModelConfig, Transcriber\n\nmodel = ModelConfig(engine="${selected.engine}", model_path="填写本地模型目录", device="${selected.device}")\nwith Transcriber(model, max_audio_seconds=${config.max_audio_seconds ?? 'None'}) as recognizer:\n    result = recognizer.transcribe_file("audio.wav")\n    print(result.text)`
+      : `from speechio import ModelConfig, SessionConfig\nfrom speechio.runtime.asr import ASRRuntime\n${config.segmentation === 'auto' ? 'from speechio import VadConfig\nfrom speechio.bundled import default_vad_model\n' : ''}\nwith ASRRuntime(ModelConfig(engine="${selected.engine}", model_path="填写本地模型目录", device="${selected.device}")) as runtime:\n    session = runtime.${config.segmentation === 'auto' ? 'create_auto_session(vad=VadConfig(model_path=default_vad_model()))' : 'create_session(SessionConfig())'}\n${config.segmentation === 'manual' ? '    session.start()\n' : ''}    # 将 16 kHz 单声道 int16 音频持续送入 session.feed_audio(pcm)\n    # 停止后调用 ${config.segmentation === 'auto' ? 'session.end_input()' : 'session.end_turn()'}，继续读取 next_event()\n    # 消费完成事件后，调用 session.close()`;
   }
 
   function updateControls() {
@@ -280,7 +281,7 @@ export async function startPage(debug) {
     state.receivedSeconds = 0;
     state.completionMessage = null;
     renderResults();
-    phase('preparing', '正在准备输入与模型，首次使用可能需要下载');
+    phase('preparing', '正在准备输入并加载本地模型');
     try {
       const config = readConfig();
       if (state.mode === 'live') {

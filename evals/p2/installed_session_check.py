@@ -14,7 +14,7 @@ from pathlib import Path
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--stage", choices=("base", "whisper"), required=True)
-    parser.add_argument("--model", type=Path, required=True)
+    parser.add_argument("--model-path", type=Path, required=True)
     parser.add_argument("--audio", type=Path)
     parser.add_argument("--baseline", type=Path)
     parser.add_argument("--output", type=Path, required=True)
@@ -40,7 +40,7 @@ def main():
         "import_created_threads": False,
         "versions": {p: importlib.metadata.version(p) for p in ("numpy", "speechio")},
     }
-    runtime = asr.ASRRuntime(asr.ModelConfig(model=args.model))
+    runtime = asr.ASRRuntime(asr.ModelConfig(engine="whisper", model_path=args.model_path))
     if {t.ident for t in threading.enumerate()} != before:
         raise AssertionError("创建未准备运行时创建了线程")
     try:

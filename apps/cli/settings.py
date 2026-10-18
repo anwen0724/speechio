@@ -150,18 +150,9 @@ def _extend(configured, invocation, option, value, path):
         configured.extend([flag, *(str((path.parent / item).resolve()) for item in value)])
     elif option.kind == "path":
         configured.extend([flag, str((path.parent / value).resolve())])
-    elif option.kind == "model":
-        configured.extend([flag, _model_value(path.parent, value)])
     else:
         configured.extend([flag, str(value)])
     invocation.sources[option.dest] = f"config:{option.section}.{option.config_key}"
-
-
-def _model_value(base, value):
-    """模型名保持原样，看起来是路径的值按配置文件目录解析。"""
-    if Path(value).is_absolute() or value.startswith(".") or "/" in value or "\\" in value:
-        return str((base / value).resolve())
-    return value
 
 
 def template():
@@ -212,7 +203,7 @@ def check_paths(args, target):
     from speechio.engines.local import ModelConfig, resolve_config
 
     model = ModelConfig(
-        model=args.model,
+        model_path=args.model_path,
         engine=args.engine,
         device=args.device,
         device_index=args.device_index,

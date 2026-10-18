@@ -14,12 +14,12 @@ from speechio.runtime.asr import ASRRuntime
 
 def main():
     parser = argparse.ArgumentParser(description="解码音频，在结束识别前保存当前标准录音")
-    parser.add_argument("model", type=Path)
+    parser.add_argument("model_path", type=Path)
     parser.add_argument("input", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("--backend", choices=("whisper", "nemotron"), default="whisper")
     args = parser.parse_args()
-    with ASRRuntime(ModelConfig(model=args.model, engine=args.backend)) as runtime:
+    with ASRRuntime(ModelConfig(model_path=args.model_path, engine=args.backend)) as runtime:
         with closing(audio_file_chunks(args.input)) as blocks:
             format, first = next(blocks)
             session = runtime.create_session(SessionConfig(format=format))

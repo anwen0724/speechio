@@ -4,7 +4,7 @@ from importlib import import_module
 
 from speechio.errors import ASRError
 
-# 名字只用于选择实现；模型如何获取由各适配器决定。
+# 名字只用于选择实现；所有适配器只加载已有本地目录。
 ENGINE_CLASSES = {
     "whisper": ("speechio.engines.whisper", "WhisperEngine"),
     "faster_whisper": ("speechio.engines.whisper", "WhisperEngine"),

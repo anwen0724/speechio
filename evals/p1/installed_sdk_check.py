@@ -31,7 +31,7 @@ def main():
     """先验收基础安装，再验收不安装 audio 组的 Whisper 标准音频。"""
     parser = argparse.ArgumentParser()
     parser.add_argument("--stage", required=True, choices=("base", "whisper"))
-    parser.add_argument("--model", required=True, type=Path)
+    parser.add_argument("--model-path", required=True, type=Path)
     parser.add_argument("--audio", type=Path)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
@@ -64,7 +64,7 @@ def main():
         )
     finally:
         converter.close()
-    recognizer = Transcriber(ModelConfig(model=args.model))
+    recognizer = Transcriber(ModelConfig(engine="whisper", model_path=args.model_path))
     try:
         report["missing_soundfile"] = expect_error(
             "DEPENDENCY_MISSING", lambda: recognizer.transcribe_file("missing.wav")

@@ -42,9 +42,9 @@ def check_backend(name, root, corpus, manifest, baselines, output):
     backend = "nemotron" if name == "nemotron" else "whisper"
     gpu = name == "whisper-gpu"
     config = ModelConfig(
-        model=root / "models" / ("nemotron" if backend == "nemotron" else "whisper-tiny"),
+        model_path=root / "models" / ("nemotron" if backend == "nemotron" else "whisper-tiny"),
         engine=backend,
-        device="cuda" if gpu else "cpu",
+        device="gpu" if gpu else "cpu",
     )
     recognizer = Transcriber(config)
     record = {
@@ -58,7 +58,7 @@ def check_backend(name, root, corpus, manifest, baselines, output):
     try:
         recognizer.prepare()
         model = json.loads(
-            (recognizer.config.model / "model-manifest.json").read_text(encoding="utf-8")
+            (recognizer.config.model_path / "model-manifest.json").read_text(encoding="utf-8")
         )
         record["model_identity"] = {
             k: model[k] for k in ("model_record_id", "model_id", "revision", "source")

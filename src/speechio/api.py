@@ -22,7 +22,7 @@ from speechio.text.endpoint import EndpointConfig
 def transcribe_audio(
     audio,
     *,
-    model="tiny",
+    model_path=None,
     language=None,
     word_timestamps=False,
     format=None,
@@ -30,7 +30,7 @@ def transcribe_audio(
     **options,
 ):
     """转写一段已有音频；路径读文件，字节或数组按声明格式转换。"""
-    transcriber = Transcriber(model=model, max_audio_seconds=max_audio_seconds, **options)
+    transcriber = Transcriber(model_path=model_path, max_audio_seconds=max_audio_seconds, **options)
     try:
         # 快捷调用沿用底层的输入校验顺序，不通过 __enter__ 提前准备模型。
         if isinstance(audio, (str, PathLike)):
@@ -63,7 +63,7 @@ class StreamTranscriber:
     def __init__(
         self,
         *,
-        model="tiny",
+        model_path=None,
         vad_model=None,
         language=None,
         on_partial=None,
@@ -74,7 +74,7 @@ class StreamTranscriber:
     ):
         if on_partial is not None and not callable(on_partial):
             raise ASRError("INVALID_CONFIGURATION", "configure", "on_partial 应为可调用对象")
-        self._model = model
+        self._model_path = model_path
         self._options = options
         # 默认使用随包分发的 Silero v6；显式路径优先，启动前就检查文件。
         self._vad_model = Path(vad_model) if vad_model is not None else default_vad_model()
@@ -116,7 +116,7 @@ class StreamTranscriber:
         """加载模型、打开麦克风并建立自动分句会话。"""
         if self._session is not None:
             return self
-        config, engine = resolve_model_options(model=self._model, **self._options)
+        config, engine = resolve_model_options(model_path=self._model_path, **self._options)
         capabilities = config.capabilities if engine is None else validate_engine(engine)
         runtime = ASRRuntime(
             config,
@@ -261,10 +261,12 @@ class StreamTranscriber:
         return None
 
 
-def transcribe_stream(*, model="tiny", vad_model=None, language=None, on_partial=None, **options):
+def transcribe_stream(
+    *, model_path=None, vad_model=None, language=None, on_partial=None, **options
+):
     """持续转写麦克风；每次产出一段的最终结果，默认使用内置检测模型。"""
     with StreamTranscriber(
-        model=model,
+        model_path=model_path,
         vad_model=vad_model,
         language=language,
         on_partial=on_partial,

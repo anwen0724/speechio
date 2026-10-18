@@ -23,10 +23,12 @@ def wait_for(session, kind):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("model", type=Path)
+    parser.add_argument("model_path", type=Path)
     parser.add_argument("audio", type=Path)
     args = parser.parse_args()
-    with ASRRuntime(ModelConfig(model=args.model), candidate=CandidateConfig()) as runtime:
+    with ASRRuntime(
+        ModelConfig(engine="whisper", model_path=args.model_path), candidate=CandidateConfig()
+    ) as runtime:
         with closing(audio_file_chunks(args.audio)) as blocks:
             format, first = next(blocks)
             session = runtime.create_session(

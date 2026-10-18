@@ -40,7 +40,7 @@ class RealtimeTests(unittest.TestCase):
             side_effect=lambda *a, **kw: (iter([result]), info),
         ):
             with ASRRuntime(
-                ModelConfig(model=self.path),
+                ModelConfig(engine="whisper", model_path=self.path),
                 realtime=RealtimeConfig(
                     initial_delay=0,
                     interval=60,
@@ -79,7 +79,7 @@ class RealtimeTests(unittest.TestCase):
         factory = patch("sherpa_onnx.OnlineRecognizer.from_transducer", return_value=native)
         factory.start()
         self.addCleanup(factory.stop)
-        return ModelConfig(model=folder, engine="nemotron")
+        return ModelConfig(model_path=folder, engine="nemotron")
 
     def test_native_only_new_samples_and_short_tail_then_separate_whole_final(self):
         streams = []
@@ -158,8 +158,10 @@ class RealtimeTests(unittest.TestCase):
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=native):
             with ASRRuntime(
-                ModelConfig(model=self.path),
-                realtime=RealtimeConfig(model=ModelConfig(model=self.path), initial_delay=0),
+                ModelConfig(engine="whisper", model_path=self.path),
+                realtime=RealtimeConfig(
+                    model=ModelConfig(engine="whisper", model_path=self.path), initial_delay=0
+                ),
             ) as runtime:
                 final_session = runtime.create_session()
                 final_session.start()
@@ -185,7 +187,7 @@ class RealtimeTests(unittest.TestCase):
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=native):
             runtime = ASRRuntime(
-                ModelConfig(model=self.path),
+                ModelConfig(engine="whisper", model_path=self.path),
                 realtime=RealtimeConfig(initial_delay=0, max_units=1, max_audio_samples=2048),
             )
             runtime.prepare()
@@ -261,7 +263,8 @@ class RealtimeTests(unittest.TestCase):
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=native):
             with ASRRuntime(
-                ModelConfig(model=self.path), realtime=RealtimeConfig(initial_delay=0)
+                ModelConfig(engine="whisper", model_path=self.path),
+                realtime=RealtimeConfig(initial_delay=0),
             ) as runtime:
                 session = runtime.create_session(SessionConfig(realtime=True))
                 session.start()
@@ -283,8 +286,8 @@ class RealtimeTests(unittest.TestCase):
             side_effect=[model, RuntimeError("第二模型失败"), model, model],
         ):
             runtime = ASRRuntime(
-                ModelConfig(model=self.path),
-                realtime=RealtimeConfig(model=ModelConfig(model=self.path)),
+                ModelConfig(engine="whisper", model_path=self.path),
+                realtime=RealtimeConfig(model=ModelConfig(engine="whisper", model_path=self.path)),
             )
             self.addCleanup(runtime.close)
             with self.assertRaises(ASRError) as caught:
@@ -304,7 +307,9 @@ class RealtimeTests(unittest.TestCase):
                 side_effect=lambda *a, **k: (iter([]), native[1]),
             ),
         ):
-            with ASRRuntime(ModelConfig(model=self.path), realtime=RealtimeConfig()) as runtime:
+            with ASRRuntime(
+                ModelConfig(engine="whisper", model_path=self.path), realtime=RealtimeConfig()
+            ) as runtime:
                 session = runtime.create_session(SessionConfig(realtime=True))
                 session.start()
                 session.feed_audio(np.ones(512, np.int16))
@@ -512,7 +517,8 @@ class RealtimeTests(unittest.TestCase):
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=native):
             with ASRRuntime(
-                ModelConfig(model=self.path), realtime=RealtimeConfig(initial_delay=0)
+                ModelConfig(engine="whisper", model_path=self.path),
+                realtime=RealtimeConfig(initial_delay=0),
             ) as runtime:
                 session = runtime.create_session(SessionConfig(realtime=True))
                 first = session.start()
@@ -551,7 +557,7 @@ class RealtimeTests(unittest.TestCase):
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=native):
             with ASRRuntime(
-                ModelConfig(model=self.path),
+                ModelConfig(engine="whisper", model_path=self.path),
                 realtime=RealtimeConfig(initial_delay=0, interval=0.001),
             ) as runtime:
                 session = runtime.create_session(SessionConfig(realtime=True))
@@ -584,7 +590,7 @@ class RealtimeTests(unittest.TestCase):
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=native):
             with ASRRuntime(
-                ModelConfig(model=self.path),
+                ModelConfig(engine="whisper", model_path=self.path),
                 realtime=RealtimeConfig(initial_delay=0, interval=10),
             ) as runtime:
                 session = runtime.create_session(SessionConfig(realtime=True, language="en"))

@@ -8,29 +8,19 @@ from pathlib import Path
 from speechio.audio.conversion import as_audio
 from speechio.errors import ASRError
 from speechio.results import Transcript, WordTimestamp
-from speechio.runtime.models.manifest import verify_manifest
+from speechio.runtime.models.files import check_model_files
 from speechio.runtime.models.stages import preparation_step
 
 
 class WhisperEngine:
-    """复用上游解析的模型目录或模型名，快照与最终调用使用独立参数组。"""
+    """只加载本地目录，快照与最终调用使用独立参数组。"""
 
     def __init__(self, config):
         self.preparation_steps = []
-        model_path = Path(config.model)
+        model_path = Path(config.model_path)
         with preparation_step(self.preparation_steps, "verification"):
-            if model_path.is_dir():
-                # 已准备的目录由本项目校验清单，不信任目录名。
-                self.manifest = verify_manifest(model_path)
-                if self.manifest["backend"] != "whisper":
-                    raise ASRError("BACKEND_INCOMPATIBLE", "verify_model", "模型不是 Whisper 后端")
-                source = self.manifest["model_path"]
-                local_files_only = True
-            else:
-                # 模型名由 faster-whisper 解析并缓存；下载位置和离线策略显式传入。
-                self.manifest = None
-                source = str(config.model)
-                local_files_only = config.local_files_only
+            source = str(check_model_files("whisper", model_path))
+            self.manifest = {"backend": "whisper", "model_path": source}
         try:
             from faster_whisper import BatchedInferencePipeline, WhisperModel
             from faster_whisper.vad import VadOptions
@@ -41,7 +31,7 @@ class WhisperEngine:
                 "缺少 faster-whisper；运行 pip install speechio 后重试",
             ) from exc
         self.device = config.device
-        self.compute_type = config.compute_type
+        self.compute_type = config.compute_type or "default"
         self.device_index = config.device_index
         options = config.engine_options or {}
         beam_size = options.get("beam_size")
@@ -54,11 +44,10 @@ class WhisperEngine:
             with preparation_step(self.preparation_steps, "load"):
                 self._model = WhisperModel(
                     source,
-                    device=config.device,
-                    compute_type=config.compute_type,
+                    device="cuda" if config.device == "gpu" else "cpu",
+                    compute_type=self.compute_type,
                     device_index=config.device_index,
-                    download_root=config.download_root,
-                    local_files_only=local_files_only,
+                    local_files_only=True,
                 )
                 self._pipeline = BatchedInferencePipeline(self._model)
         except Exception as exc:

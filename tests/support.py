@@ -21,7 +21,7 @@ def whisper_engine():
         create_manifest(path, backend="whisper", model_id="tiny", source="test", revision="abc")
         model = SimpleNamespace(feature_extractor=SimpleNamespace(chunk_length=30))
         with patch("faster_whisper.WhisperModel", return_value=model):
-            engine = WhisperEngine(ModelConfig(model=path))
+            engine = WhisperEngine(ModelConfig(engine="whisper", model_path=path))
             try:
                 yield engine
             finally:

@@ -13,7 +13,7 @@ from pathlib import Path
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--stage", choices=("base", "whisper"), required=True)
-    parser.add_argument("--model", type=Path, required=True)
+    parser.add_argument("--model-path", type=Path, required=True)
     parser.add_argument("--audio", type=Path)
     parser.add_argument("--baseline", type=Path)
     parser.add_argument("--output", type=Path, required=True)
@@ -28,7 +28,7 @@ def main():
     if any(importlib.util.find_spec(name) for name in ("soxr", "soundfile", "pyaudio")):
         raise AssertionError("无 audio 验收环境安装了音频依赖")
     runtime = asr.ASRRuntime(
-        asr.ModelConfig(model=args.model),
+        asr.ModelConfig(engine="whisper", model_path=args.model_path),
         realtime=asr.RealtimeConfig(initial_delay=0, interval=10),
     )
     if {t.ident for t in threading.enumerate()} != before:

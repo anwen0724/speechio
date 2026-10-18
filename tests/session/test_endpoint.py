@@ -33,7 +33,7 @@ class EndpointTests(unittest.TestCase):
     def test_exact_early_result_is_reused_but_new_audio_is_not(self):
         for resume in (False, True):
             self.final_audio.clear()
-            with ASRRuntime(ModelConfig(model=self.path)) as runtime:
+            with ASRRuntime(ModelConfig(engine="whisper", model_path=self.path)) as runtime:
                 session = runtime.create_auto_session(
                     vad=self.vad,
                     segmentation=SegmentationConfig(silence_confirmation=0),
@@ -65,7 +65,8 @@ class EndpointTests(unittest.TestCase):
             ),
         ):
             with ASRRuntime(
-                ModelConfig(model=self.path), realtime=RealtimeConfig(initial_delay=0)
+                ModelConfig(engine="whisper", model_path=self.path),
+                realtime=RealtimeConfig(initial_delay=0),
             ) as runtime:
                 session = runtime.create_auto_session(
                     vad=self.vad,
@@ -103,7 +104,8 @@ class EndpointTests(unittest.TestCase):
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=model):
             with ASRRuntime(
-                ModelConfig(model=self.path), limits=RuntimeLimits(max_tasks=1)
+                ModelConfig(engine="whisper", model_path=self.path),
+                limits=RuntimeLimits(max_tasks=1),
             ) as runtime:
                 session = runtime.create_auto_session(
                     vad=self.vad,
@@ -141,7 +143,7 @@ class EndpointTests(unittest.TestCase):
             ), SimpleNamespace(language="zh", language_probability=1)
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=model):
-            with ASRRuntime(ModelConfig(model=self.path)) as runtime:
+            with ASRRuntime(ModelConfig(engine="whisper", model_path=self.path)) as runtime:
                 session = runtime.create_auto_session(
                     vad=self.vad,
                     segmentation=SegmentationConfig(silence_confirmation=0),
@@ -179,7 +181,7 @@ class EndpointTests(unittest.TestCase):
             ), SimpleNamespace(language="en", language_probability=1)
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=model):
-            with ASRRuntime(ModelConfig(model=self.path)) as runtime:
+            with ASRRuntime(ModelConfig(engine="whisper", model_path=self.path)) as runtime:
                 session = runtime.create_auto_session(
                     vad=self.vad,
                     segmentation=SegmentationConfig(silence_confirmation=0),
@@ -261,7 +263,7 @@ class EndpointTests(unittest.TestCase):
         )
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=model):
             with ASRRuntime(
-                ModelConfig(model=self.path),
+                ModelConfig(engine="whisper", model_path=self.path),
                 realtime=RealtimeConfig(initial_delay=0, interval=0.001),
             ) as runtime:
                 session = runtime.create_auto_session(

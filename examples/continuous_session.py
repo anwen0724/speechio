@@ -13,11 +13,11 @@ from speechio.runtime.asr import ASRRuntime
 def main():
     parser = argparse.ArgumentParser(description="标准 WAV 连续会话示例")
     parser.add_argument("audio", nargs="+", type=Path)
-    parser.add_argument("--model", required=True, type=Path)
+    parser.add_argument("--model-path", required=True, type=Path)
     parser.add_argument("--backend", choices=("whisper", "nemotron"), default="whisper")
     parser.add_argument("--language", default=None)
     args = parser.parse_args()
-    with ASRRuntime(ModelConfig(model=args.model, engine=args.backend)) as runtime:
+    with ASRRuntime(ModelConfig(model_path=args.model_path, engine=args.backend)) as runtime:
         session = runtime.create_session(SessionConfig(language=args.language))
         for path in args.audio:
             with wave.open(str(path)) as source:

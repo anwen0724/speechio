@@ -16,15 +16,13 @@ LOGGER = logging.getLogger(__name__)
 
 @dataclass(frozen=True, kw_only=True)
 class ModelConfig:
-    """显式本地配置；model 可以是模型名或已准备的本地目录。"""
+    """加载已有本地模型；文件获取与运行设备分别配置，不在识别时下载。"""
 
-    model: str | PathLike
-    engine: str = "whisper"
+    engine: str
+    model_path: str | PathLike
     device: str = "cpu"
-    compute_type: str = "default"
+    compute_type: str | None = None
     device_index: int = 0
-    download_root: str | PathLike | None = None
-    local_files_only: bool = False
     engine_options: Mapping[str, object] | None = None
 
     @property
@@ -36,7 +34,7 @@ class ModelConfig:
         whisper = engine == "whisper"
         return EngineCapabilities(
             engine=engine,
-            model=str(self.model),
+            model=str(self.model_path),
             device=self.device,
             snapshot=whisper,
             streaming=not whisper,
@@ -45,7 +43,7 @@ class ModelConfig:
 
 
 def resolve_config(config):
-    """校验本地组合；模型名保持字符串，已存在的目录才解析为路径。"""
+    """固定目录的绝对位置并检查运行设置；存在性留到真正加载时检查。"""
     if not isinstance(config, ModelConfig):
         raise ASRError("INVALID_CONFIGURATION", "configure", "需要 ModelConfig")
     engine = normalize_engine(config.engine)
@@ -57,32 +55,33 @@ def resolve_config(config):
         )
     valid_index = isinstance(config.device_index, int) and not isinstance(config.device_index, bool)
     if (
-        config.device not in ("cpu", "cuda")
+        config.device not in ("cpu", "gpu")
         or not valid_index
         or config.device_index < 0
         or (config.device == "cpu" and config.device_index != 0)
-        or not isinstance(config.compute_type, str)
-        or not config.compute_type
-        or type(config.local_files_only) is not bool
+        or (
+            config.compute_type is not None
+            and (not isinstance(config.compute_type, str) or not config.compute_type)
+        )
     ):
         raise ASRError("INVALID_CONFIGURATION", "configure", "引擎或设备组合无效")
-    if not isinstance(config.model, (str, PathLike)):
-        raise ASRError("INVALID_CONFIGURATION", "configure", "模型应为名字或目录")
+    if not isinstance(config.model_path, (str, PathLike)) or not str(config.model_path).strip():
+        raise ASRError("INVALID_CONFIGURATION", "configure", "model_path 必须是模型目录")
     if config.engine_options is not None and not isinstance(config.engine_options, Mapping):
         raise ASRError("INVALID_CONFIGURATION", "configure", "engine_options 应为映射")
     try:
-        model = str(config.model)
-        if Path(model).is_dir():
-            model = Path(model).resolve()
-        download_root = (
-            Path(config.download_root).resolve() if config.download_root is not None else None
-        )
         engine_options = dict(config.engine_options) if config.engine_options is not None else None
+        if (
+            engine_options
+            and {"device", "provider", "device_index", "compute_type"} & engine_options.keys()
+        ):
+            raise ASRError(
+                "INVALID_CONFIGURATION", "configure", "设备和精度请使用 ModelConfig 的对应字段"
+            )
         return replace(
             config,
             engine=engine,
-            model=model,
-            download_root=download_root,
+            model_path=Path(config.model_path).expanduser().resolve(),
             engine_options=engine_options,
         )
     except (TypeError, ValueError, OSError) as exc:

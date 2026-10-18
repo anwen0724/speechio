@@ -18,13 +18,13 @@ from speechio.runtime.asr import ASRRuntime
 def main():
     parser = argparse.ArgumentParser(description="连续 PCM 文件自动分句")
     parser.add_argument("audio")
-    parser.add_argument("--model", required=True)
+    parser.add_argument("--model-path", required=True)
     parser.add_argument("--vad-model", default=None)
     parser.add_argument("--backend", choices=("whisper", "nemotron"), default="whisper")
     parser.add_argument("--language", default=None)
     parser.add_argument("--realtime", action="store_true")
     args = parser.parse_args()
-    model = ModelConfig(model=args.model, engine=args.backend)
+    model = ModelConfig(model_path=args.model_path, engine=args.backend)
     realtime = None
     if args.realtime:
         realtime = RealtimeConfig(mode=model.capabilities.realtime_mode)

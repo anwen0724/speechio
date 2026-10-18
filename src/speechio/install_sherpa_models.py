@@ -6,7 +6,8 @@ from pathlib import Path
 
 from speechio.errors import ASRError
 from speechio.model_manifests import nemotron_manifests
-from speechio.runtime.models.manifest import sha256_file, verify_manifest
+from speechio.runtime.models.files import check_model_files
+from speechio.runtime.models.manifest import sha256_file
 from speechio.runtime.models.prepare import prepare_nemotron
 
 
@@ -55,8 +56,8 @@ def install_models(root, model="all", *, offline=False):
         destination = root / manifest.model_id
         if destination.is_symlink():
             raise ModelInstallError(f"目标目录不能是符号链接：{destination}")
-        if (destination / "model-manifest.json").is_file():
-            verify_manifest(destination)
+        if destination.is_dir() and offline:
+            check_model_files("nemotron", destination)
             installed[name] = destination
             continue
         if offline:

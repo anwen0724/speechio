@@ -44,18 +44,18 @@ class ConfigDeclarationTests(unittest.TestCase):
             for command in (*LOCAL, "devices"):
                 invocation = configure(["--config", str(path)], command)
                 if command in LOCAL:
-                    self.assertEqual(invocation.sources["model"], "config:model.model")
-                    self.assertIn("--model", invocation.argv)
+                    self.assertEqual(invocation.sources["model_path"], "config:model.model_path")
+                    self.assertIn("--model-path", invocation.argv)
                 else:
                     self.assertNotIn("model", invocation.sources)
 
-    def test_model_name_stays_a_name_and_path_resolves_next_to_config(self):
+    def test_all_model_paths_resolve_next_to_config(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.toml"
-            path.write_text('[model]\nmodel = "tiny"\n', encoding="utf-8")
+            path.write_text('[model]\nmodel_path = "tiny"\n', encoding="utf-8")
             invocation = configure(["--config", str(path)], "file")
-            self.assertIn("tiny", invocation.argv)
-            path.write_text('[model]\nmodel = "models/tiny"\n', encoding="utf-8")
+            self.assertIn(str((path.parent / "tiny").resolve()), invocation.argv)
+            path.write_text('[model]\nmodel_path = "models/tiny"\n', encoding="utf-8")
             invocation = configure(["--config", str(path)], "file")
             self.assertIn(str((path.parent / "models/tiny").resolve()), invocation.argv)
 
@@ -63,7 +63,7 @@ class ConfigDeclarationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.toml"
             path.write_text('[model]\nengine = "nemotron"\n', encoding="utf-8")
-            args = parse_args(["stdin", "--model", "tiny", "--config", str(path)])
+            args = parse_args(["stdin", "--model-path", "tiny", "--config", str(path)])
             self.assertEqual(args.engine, "nemotron")
 
     def test_unknown_config_key_names_the_field(self):
@@ -86,7 +86,7 @@ class ConfigDeclarationTests(unittest.TestCase):
             self.assertEqual(main(["show", "file"], path=path, stdout=report, stderr=errors), 0)
             data = json.loads(report.getvalue())
             self.assertEqual(data["command"], "file")
-            self.assertEqual(data["sources"]["model"], "config:model.model")
+            self.assertEqual(data["sources"]["model_path"], "config:model.model_path")
             self.assertEqual(data["values"]["engine"], "whisper")
 
 

@@ -22,12 +22,13 @@ from speechio.runtime.asr import ASRRuntime
 
 def configurations(project):
     """显式本地路径；覆盖两条路径、共享实例与独立角色。"""
-    cpu = ModelConfig(model=project / ".runtime/models/whisper-tiny")
+    cpu = ModelConfig(engine="whisper", model_path=project / ".runtime/models/whisper-tiny")
     gpu = ModelConfig(
-        model=cpu.model,
-        device="cuda",
+        engine="whisper",
+        model_path=cpu.model_path,
+        device="gpu",
     )
-    native = ModelConfig(model=project / ".runtime/models/nemotron", engine="nemotron")
+    native = ModelConfig(model_path=project / ".runtime/models/nemotron", engine="nemotron")
     return {
         "shared-whisper-cpu": (cpu, RealtimeConfig(), "whisper"),
         "shared-whisper-cuda": (gpu, RealtimeConfig(), "whisper-gpu"),

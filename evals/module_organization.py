@@ -23,12 +23,13 @@ from speechio.runtime.asr import ASRRuntime
 
 def replay(project):
     """覆盖实际三条路径、中英文及自动分句与实时联合运行。"""
-    cpu = ModelConfig(model=project / ".runtime/models/whisper-tiny")
+    cpu = ModelConfig(engine="whisper", model_path=project / ".runtime/models/whisper-tiny")
     gpu = ModelConfig(
-        model=cpu.model,
-        device="cuda",
+        engine="whisper",
+        model_path=cpu.model_path,
+        device="gpu",
     )
-    native = ModelConfig(model=project / ".runtime/models/nemotron", engine="nemotron")
+    native = ModelConfig(model_path=project / ".runtime/models/nemotron", engine="nemotron")
     reports = []
     for name, config, mode in (
         ("whisper-cpu", cpu, "snapshot"),

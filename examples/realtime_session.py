@@ -14,11 +14,11 @@ from speechio.runtime.asr import ASRRuntime
 def main():
     parser = argparse.ArgumentParser(description="实时会话：标准 PCM16 WAV 节奏输入")
     parser.add_argument("audio", type=Path, nargs="+")
-    parser.add_argument("--model", type=Path, required=True)
+    parser.add_argument("--model-path", type=Path, required=True)
     parser.add_argument("--backend", choices=("whisper", "nemotron"), default="whisper")
     parser.add_argument("--language")
     args = parser.parse_args()
-    model = ModelConfig(model=args.model, engine=args.backend)
+    model = ModelConfig(model_path=args.model_path, engine=args.backend)
     mode = model.capabilities.realtime_mode
     with ASRRuntime(
         model,

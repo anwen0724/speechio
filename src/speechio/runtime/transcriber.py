@@ -19,16 +19,29 @@ LOGGER = logging.getLogger(__name__)
 LOGGER.addHandler(logging.NullHandler())
 
 
-def resolve_model_options(config=None, *, engine=None, model=None, **options):
-    """统一入口选择：字符串创建本地配置，实例保留注入语义。"""
-    if config is not None and (engine is not None or model is not None or options):
+def resolve_model_options(config=None, *, engine=None, model_path=None, **options):
+    """统一本地目录与外部引擎注入入口；旧下载选项给出明确迁移提示。"""
+    if {"model", "download_root", "local_files_only"} & options.keys():
+        raise ASRError(
+            "INVALID_CONFIGURATION",
+            "configure",
+            "旧 model/下载选项已移除；已有目录使用 engine 和 model_path，"
+            "缺少文件时单独调用 download_model",
+        )
+    if config is not None and (engine is not None or model_path is not None or options):
         raise ASRError("INVALID_CONFIGURATION", "configure", "配置对象与选项应且仅应提供一个")
     if isinstance(engine, str):
-        return ModelConfig(model=model or "tiny", engine=engine, **options), None
-    if engine is not None and options:
+        if model_path is None:
+            raise ASRError("INVALID_CONFIGURATION", "configure", "加载模型必须指定 model_path")
+        return ModelConfig(model_path=model_path, engine=engine, **options), None
+    if engine is not None and (model_path is not None or options):
         raise ASRError("INVALID_CONFIGURATION", "configure", "注入引擎不接受本地选项")
     if config is None and engine is None:
-        config = ModelConfig(model=model or "tiny", **options)
+        raise ASRError(
+            "INVALID_CONFIGURATION",
+            "configure",
+            "请提供 ModelConfig，或明确指定 engine 和 model_path",
+        )
     return config, engine
 
 
@@ -40,13 +53,15 @@ class Transcriber:
         config: ModelConfig | None = None,
         *,
         engine=None,
-        model=None,
+        model_path=None,
         max_audio_seconds=None,
         **options,
     ):
         validate_max_audio_seconds(max_audio_seconds)
         self._max_audio_seconds = max_audio_seconds
-        config, engine = resolve_model_options(config, engine=engine, model=model, **options)
+        config, engine = resolve_model_options(
+            config, engine=engine, model_path=model_path, **options
+        )
         self._engine = LocalEngine(config) if engine is None else engine
         self._config = self._engine.config if engine is None else None
         self._capabilities = validate_engine(self._engine)

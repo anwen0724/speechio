@@ -12,12 +12,12 @@ def main():
     """模型与录音由使用者提供，不进行下载或目录猜测。"""
     parser = argparse.ArgumentParser(description="通过 SDK 转写本地录音")
     parser.add_argument("audio", type=Path)
-    parser.add_argument("--model", required=True, type=Path)
+    parser.add_argument("--model-path", required=True, type=Path)
     parser.add_argument("--backend", choices=("whisper", "nemotron"), default="whisper")
-    parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
+    parser.add_argument("--device", choices=("cpu", "gpu"), default="cpu")
     parser.add_argument("--language")
     args = parser.parse_args()
-    config = ModelConfig(model=args.model, engine=args.backend, device=args.device)
+    config = ModelConfig(model_path=args.model_path, engine=args.backend, device=args.device)
     with Transcriber(config) as recognizer:
         result = recognizer.transcribe_file(args.audio, language=args.language)
     print(

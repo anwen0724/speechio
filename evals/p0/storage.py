@@ -4,6 +4,7 @@ import hashlib
 import importlib.metadata
 import json
 from dataclasses import asdict
+from pathlib import Path
 from uuid import uuid4
 
 from evals.p0.evaluation.metrics import compute_metrics
@@ -31,6 +32,9 @@ class BaselineStorage:
 
     def configuration(self, task, engine):
         """快照与最终参数组同时进入配置，不让不同 beam size 共用摘要。"""
+        # 评测自行登记本次模型身份，不要求加载目录提供说明文件或哈希。
+        engine.manifest.setdefault("model_record_id", uuid4().hex)
+        engine.manifest.setdefault("model_id", Path(engine.manifest["model_path"]).name)
         if task.input_path == "snapshot":
             parameters = {
                 "snapshot_parameters": engine.resolved_parameters("snapshot"),
@@ -52,7 +56,7 @@ class BaselineStorage:
             "model_id": engine.manifest["model_id"],
             "backend": task.backend,
             "backend_version": version,
-            "device": "cuda" if task.backend == "whisper-gpu" else "cpu",
+            "device": "gpu" if task.backend == "whisper-gpu" else "cpu",
             "compute_type": "float16" if task.backend == "whisper-gpu" else "int8",
             "device_index": 0 if task.backend == "whisper-gpu" else None,
             "language_mode": "auto" if task.auto_language else "fixed",

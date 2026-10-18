@@ -15,9 +15,9 @@ from speechio import AudioFormat, ModelConfig, Transcriber, list_input_devices
 
 def run(project, folder):
     """三条模型路径分别覆盖文件、序列、stdin 与自动模式。"""
-    cpu = ModelConfig(model=project / ".runtime/models/whisper-tiny")
-    gpu = ModelConfig(model=cpu.model, device="cuda")
-    native = ModelConfig(model=project / ".runtime/models/nemotron", engine="nemotron")
+    cpu = ModelConfig(engine="whisper", model_path=project / ".runtime/models/whisper-tiny")
+    gpu = ModelConfig(engine="whisper", model_path=cpu.model_path, device="gpu")
+    native = ModelConfig(model_path=project / ".runtime/models/nemotron", engine="nemotron")
     chinese = project / "data/corpus/p0/C01-1.wav"
     stereo = folder / "C01-stereo-48k.wav"
     voice = read_audio(chinese)
@@ -26,8 +26,8 @@ def run(project, folder):
     reports = []
     for name, config in (("whisper-cpu", cpu), ("whisper-cuda", gpu), ("nemotron", native)):
         options = [
-            "--model",
-            str(config.model),
+            "--model-path",
+            str(config.model_path),
             "--engine",
             config.engine,
             "--device",
@@ -107,8 +107,8 @@ def run(project, folder):
             continue
         args = [
             "mic",
-            "--model",
-            str(cpu.model),
+            "--model-path",
+            str(cpu.model_path),
             "--input-device",
             str(device["index"]),
             "--mode",
@@ -127,8 +127,8 @@ def run(project, folder):
         project,
         [
             "mic",
-            "--model",
-            str(native.model),
+            "--model-path",
+            str(native.model_path),
             "--engine",
             "nemotron",
             "--mode",
@@ -195,7 +195,7 @@ def check_broken_pipe(project, *, idle_stdin=False):
                 if idle_stdin
                 else ["file", str(project / "data/corpus/p0/C01-1.wav")]
             ),
-            "--model",
+            "--model-path",
             str(project / ".runtime/models/whisper-tiny"),
             "--output",
             "jsonl",

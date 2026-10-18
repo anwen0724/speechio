@@ -16,8 +16,12 @@ class Settings:
     upload_dir: Path = Path(".runtime/web-uploads")
     models: dict[str, ModelConfig] = field(
         default_factory=lambda: {
-            "whisper-tiny": ModelConfig(model="tiny"),
-            "whisper-base": ModelConfig(model="base"),
+            "whisper-tiny": ModelConfig(
+                engine="whisper", model_path=".runtime/models/whisper-tiny"
+            ),
+            "whisper-base": ModelConfig(
+                engine="whisper", model_path=".runtime/models/whisper-base"
+            ),
         }
     )
     wakes: dict[str, WakeConfig] = field(default_factory=dict)

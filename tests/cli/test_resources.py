@@ -30,11 +30,20 @@ class ResourceCommandTests(unittest.TestCase):
             ):
                 api.return_value.model_info.return_value = SimpleNamespace(sha="1" * 40)
                 code = main(
-                    ["models", "prepare", "--kind", "whisper", "--path", str(root), "--download"],
+                    [
+                        "models",
+                        "download",
+                        "--engine",
+                        "whisper",
+                        "--model-id",
+                        "tiny",
+                        "--destination",
+                        str(root),
+                    ],
                     stdout=output,
                 )
             self.assertEqual(code, 1)
-            self.assertEqual(json.loads(output.getvalue())["code"], "MODEL_INTEGRITY")
+            self.assertEqual(json.loads(output.getvalue())["code"], "MODEL_CONFLICT")
             self.assertEqual((root / "model.bin").read_bytes(), b"user existing file")
 
     def test_fixed_detection_import_rejects_conflicting_source(self):
@@ -60,7 +69,7 @@ class ResourceCommandTests(unittest.TestCase):
             self.assertEqual(json.loads(output.getvalue())["code"], "MODEL_INTEGRITY")
             self.assertFalse((root / "model" / "model-manifest.json").exists())
 
-    def test_offline_cache_reuses_only_selected_model_identity(self):
+    def test_existing_asr_directory_and_detection_resources_use_separate_checks(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for name in ("model.bin", "config.json", "tokenizer.json"):
@@ -75,9 +84,7 @@ class ResourceCommandTests(unittest.TestCase):
                 ),
                 0,
             )
-            self.assertEqual(
-                json.loads(output.getvalue())["manifest"]["model_path"], str(root.resolve())
-            )
+            self.assertEqual(json.loads(output.getvalue())["model_path"], str(root.resolve()))
             output = io.StringIO()
             self.assertEqual(
                 main(["models", "prepare", "--kind", "vad", "--path", str(root)], stdout=output),

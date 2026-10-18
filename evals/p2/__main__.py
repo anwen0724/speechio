@@ -22,9 +22,9 @@ def check_backend(name, project, baseline):
         project / ".runtime/models" / ("nemotron" if backend == "nemotron" else "whisper-tiny")
     )
     config = ModelConfig(
-        model=model_path,
+        model_path=model_path,
         engine=backend,
-        device="cuda" if gpu else "cpu",
+        device="gpu" if gpu else "cpu",
     )
     model = json.loads((model_path / "model-manifest.json").read_text(encoding="utf-8"))
     report = {

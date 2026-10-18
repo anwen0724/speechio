@@ -47,7 +47,7 @@ class CommandTests(unittest.TestCase):
             code = main(
                 [
                     "stdin",
-                    "--model",
+                    "--model-path",
                     str(self.path),
                     "--candidates",
                     "--candidate-every",
@@ -110,7 +110,7 @@ class CommandTests(unittest.TestCase):
             code = main(
                 [
                     "stdin",
-                    "--model",
+                    "--model-path",
                     str(self.path),
                     "--realtime",
                     "--dual-realtime",
@@ -136,7 +136,7 @@ class CommandTests(unittest.TestCase):
     def test_json_input_error_is_structured_and_also_visible_on_stderr(self):
         stdout, stderr = io.StringIO(), io.StringIO()
         code = main(
-            ["stdin", "--model", str(self.path), "--output", "jsonl"],
+            ["stdin", "--model-path", str(self.path), "--output", "jsonl"],
             stdin=io.BytesIO(b"\x01"),
             stdout=stdout,
             stderr=stderr,
@@ -165,7 +165,7 @@ class CommandTests(unittest.TestCase):
         )
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", return_value=result):
             code = main(
-                ["stdin", "--model", str(self.path), "--output", "jsonl"],
+                ["stdin", "--model-path", str(self.path), "--output", "jsonl"],
                 stdin=Input(),
                 stdout=stdout,
                 stderr=stderr,
@@ -207,7 +207,7 @@ class CommandTests(unittest.TestCase):
         stdout, stderr = io.StringIO(), Diagnostic()
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=transcribe):
             code = main(
-                ["stdin", "--model", str(self.path), "--realtime"],
+                ["stdin", "--model-path", str(self.path), "--realtime"],
                 stdin=Input(),
                 stdout=stdout,
                 stderr=stderr,
@@ -235,7 +235,7 @@ class CommandTests(unittest.TestCase):
                     "file",
                     str(file),
                     str(self.path / "missing.wav"),
-                    "--model",
+                    "--model-path",
                     str(self.path),
                     "--output",
                     "jsonl",
@@ -271,7 +271,7 @@ class CommandTests(unittest.TestCase):
         stdin = io.BytesIO(b"\x01\x00" * 515)
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", return_value=result):
             code = main(
-                ["stdin", "--model", str(self.path), "--output", "jsonl"],
+                ["stdin", "--model-path", str(self.path), "--output", "jsonl"],
                 stdin=stdin,
                 stdout=stdout,
                 stderr=stderr,
@@ -298,7 +298,7 @@ class CommandTests(unittest.TestCase):
                 main(
                     [
                         "stdin",
-                        "--model",
+                        "--model-path",
                         str(self.path),
                         "--output",
                         "jsonl",
@@ -358,7 +358,7 @@ class CommandTests(unittest.TestCase):
                 code = main(
                     [
                         "stdin",
-                        "--model",
+                        "--model-path",
                         str(self.path),
                         "--output",
                         "jsonl",

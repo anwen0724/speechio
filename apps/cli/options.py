@@ -6,7 +6,7 @@ from pathlib import Path
 LOCAL = ("mic", "file", "stdin")
 TARGETS = (*LOCAL, "devices")
 ENGINES = ("whisper", "nemotron")
-DEVICES = ("cpu", "cuda")
+DEVICES = ("cpu", "gpu")
 
 
 @dataclass(frozen=True)
@@ -30,9 +30,8 @@ COMMANDS = (
 class Option:
     """一个选项在命令行和配置文件中的完整声明。
 
-    kind 决定取值校验和配置渲染方式：str、int、float、bool、model、path、
-    strlist、pathlist。model 只把看起来像路径的值按配置文件目录解析，
-    其余按模型名原样交给引擎。
+    kind 决定取值校验和配置渲染方式：str、int、float、bool、path、strlist、pathlist。
+    模型目录也使用 path，相对路径按配置文件目录解析。
     """
 
     flag: str
@@ -83,12 +82,12 @@ SECTION_COMMENTS = {
 # 声明顺序同时决定命令行帮助和配置模板的分组顺序。
 OPTIONS = (
     Option(
-        "model",
-        "model",
+        "model-path",
+        "path",
         "model",
         required=True,
-        help="模型名或已准备的目录",
-        comment="模型名或目录；相对路径以本文件目录为基准",
+        help="已有模型目录",
+        comment="已有模型目录；相对路径以本文件目录为基准",
         sample='".runtime/models/whisper-tiny"',
         active_sample=True,
     ),
@@ -108,9 +107,9 @@ OPTIONS = (
         choices=DEVICES,
         default="cpu",
         help="模型计算设备",
-        comment="需要本机 GPU 时改为 cuda",
+        comment="需要本机 GPU 时改为 gpu",
     ),
-    Option("device-index", "int", "model", default=0, help="CUDA 设备索引"),
+    Option("device-index", "int", "model", default=0, help="GPU 设备索引"),
     Option(
         "language",
         "str",
@@ -256,7 +255,7 @@ OPTIONS = (
     ),
     Option(
         "realtime-model",
-        "model",
+        "path",
         "realtime",
         key="model",
         help="独立准确角色模型",
@@ -292,7 +291,7 @@ OPTIONS = (
     ),
     Option(
         "ultrafast-model",
-        "model",
+        "path",
         "ultrafast",
         key="model",
         help="极速角色模型",
@@ -406,7 +405,7 @@ OPTIONS = (
     Option("candidates", "bool", "candidate", key="enabled", default=False, help="启用候选"),
     Option(
         "candidate-model",
-        "model",
+        "path",
         "candidate",
         key="model",
         help="候选角色模型",
@@ -642,10 +641,10 @@ def _local_role_model(args, role, primary):
         return None
     selected_device = device or primary.device
     return ModelConfig(
-        model=path,
+        model_path=path,
         engine=engine or primary.engine,
         device=selected_device,
-        device_index=primary.device_index if selected_device == "cuda" else 0,
+        device_index=primary.device_index if selected_device == "gpu" else 0,
     )
 
 

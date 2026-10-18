@@ -30,14 +30,15 @@ class EnginePool:
             from speechio.engines.nemotron import NemotronEngine
 
             return NemotronEngine(
-                ModelConfig(model=self.root / "models/nemotron", engine="nemotron")
+                ModelConfig(model_path=self.root / "models/nemotron", engine="nemotron")
             )
         from speechio.engines.whisper import WhisperEngine
 
         return WhisperEngine(
             ModelConfig(
-                model=self.root / "models/whisper-tiny",
-                device="cuda" if backend == "whisper-gpu" else "cpu",
+                engine="whisper",
+                model_path=self.root / "models/whisper-tiny",
+                device="gpu" if backend == "whisper-gpu" else "cpu",
                 compute_type="float16" if backend == "whisper-gpu" else "int8",
             )
         )
