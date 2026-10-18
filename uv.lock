@@ -764,6 +764,30 @@ wheels = [
 ]
 
 [[package]]
+name = "pydantic-settings"
+version = "2.16.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pydantic" },
+    { name = "python-dotenv" },
+    { name = "typing-extensions" },
+    { name = "typing-inspection" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/2e/3b/a5d2294799b53b448319978cfb5bd139d5a9d45e862af91661614f14c922/pydantic_settings-2.16.0.tar.gz", hash = "sha256:5b6c578049ede4db0e2ef3b4eaa4ad4069cfa9211f83fb38df899dfade50a614", size = 301031, upload-time = "2026-10-14T12:44:09.998Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/53/f4/b987bf8c51e5b19a95fa66d1ee596074141e085d9c2ddf97920803c7029b/pydantic_settings-2.16.0-py3-none-any.whl", hash = "sha256:7e73acf7f61936a15e5a3b6eedaea29f133357faf7272f2607ba479b049dd7f2", size = 80364, upload-time = "2026-10-14T12:44:08.233Z" },
+]
+
+[[package]]
+name = "python-dotenv"
+version = "1.2.4"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/74/26/2fbeedb218a787a5eea551c7532cac4e009f83d689dd2faa0d0353473f86/python_dotenv-1.2.4.tar.gz", hash = "sha256:f0d53e69935a851c0dcc78f3ab7aaccd8cabef0b92382b576b824212902873c0", size = 60824, upload-time = "2026-10-01T05:36:10Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/60/d1/38f3a3405989a89ac18390803e70c6ad7c7760da4f9b83cbeca0c44a0c72/python_dotenv-1.2.4-py3-none-any.whl", hash = "sha256:42269a8a5b3fd54ffa6f3d84b18abed50064717576b4ecf03dc4a55d8aa04fdc", size = 23266, upload-time = "2026-10-01T05:36:08.633Z" },
+]
+
+[[package]]
 name = "python-multipart"
 version = "0.0.32"
 source = { registry = "https://pypi.org/simple" }
@@ -1095,6 +1119,10 @@ nemotron = [
     { name = "requests" },
     { name = "sherpa-onnx" },
 ]
+remote = [
+    { name = "httpx" },
+    { name = "websockets" },
+]
 wake-openwakeword = [
     { name = "private-assistant-openwakeword", extra = ["onnx"] },
 ]
@@ -1111,7 +1139,9 @@ dev = [
 ]
 web = [
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "pydantic" },
+    { name = "pydantic-settings" },
     { name = "python-multipart" },
     { name = "uvicorn" },
     { name = "websockets" },
@@ -1120,6 +1150,7 @@ web-test = [
     { name = "fastapi" },
     { name = "httpx" },
     { name = "pydantic" },
+    { name = "pydantic-settings" },
     { name = "python-multipart" },
     { name = "uvicorn" },
     { name = "websockets" },
@@ -1128,6 +1159,7 @@ web-test = [
 [package.metadata]
 requires-dist = [
     { name = "faster-whisper", specifier = ">=1.2.1,<2" },
+    { name = "httpx", marker = "extra == 'remote'", specifier = ">=0.28.1,<0.29" },
     { name = "huggingface-hub", specifier = ">=0.34,<1" },
     { name = "numpy", specifier = ">=2,<3" },
     { name = "onnxruntime", specifier = ">=1.20.1,<2" },
@@ -1139,8 +1171,9 @@ requires-dist = [
     { name = "soundfile", specifier = ">=0.13,<0.15" },
     { name = "soxr", specifier = ">=1,<2" },
     { name = "webrtcvad-wheels", specifier = ">=2.0.14,<3" },
+    { name = "websockets", marker = "extra == 'remote'", specifier = ">=17.2,<18" },
 ]
-provides-extras = ["microphone", "nemotron", "wake-porcupine", "wake-openwakeword"]
+provides-extras = ["remote", "microphone", "nemotron", "wake-porcupine", "wake-openwakeword"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1150,7 +1183,9 @@ dev = [
 ]
 web = [
     { name = "fastapi", specifier = ">=0.143.5,<0.144" },
+    { name = "httpx", specifier = ">=0.28.1,<0.29" },
     { name = "pydantic", specifier = ">=2.14.1,<3" },
+    { name = "pydantic-settings", specifier = ">=2.16.0,<3" },
     { name = "python-multipart", specifier = ">=0.0.32,<0.1" },
     { name = "uvicorn", specifier = ">=0.54.0,<0.55" },
     { name = "websockets", specifier = ">=17.2,<18" },
@@ -1159,6 +1194,7 @@ web-test = [
     { name = "fastapi", specifier = ">=0.143.5,<0.144" },
     { name = "httpx", specifier = ">=0.28.1,<0.29" },
     { name = "pydantic", specifier = ">=2.14.1,<3" },
+    { name = "pydantic-settings", specifier = ">=2.16.0,<3" },
     { name = "python-multipart", specifier = ">=0.0.32,<0.1" },
     { name = "uvicorn", specifier = ">=0.54.0,<0.55" },
     { name = "websockets", specifier = ">=17.2,<18" },
