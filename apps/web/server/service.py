@@ -18,6 +18,7 @@ from speechio.bundled import default_vad_model
 from speechio.runtime.asr import ASRRuntime
 
 from .protocol import event_message
+from .settings import model_summary
 
 
 class SpeechService:
@@ -49,21 +50,77 @@ class SpeechService:
             raise ASRError("INVALID_CONFIGURATION", "configure", "未知唤醒预设")
         if not debug and (config.input_mode == "chunks" or config.candidates or config.correction):
             raise ASRError("DEBUG_DISABLED", "configure", "该功能只对启用的调试台开放")
-        model = self.settings.models[config.model]
-        realtime_model = self.settings.models.get(config.realtime_model, model)
+        model = self.resolve_model(config)
+        realtime_fields = {"realtime_device", "realtime_device_index", "realtime_compute_type"}
+        if config.model_fields_set & realtime_fields and (
+            not config.realtime_model or not config.realtime or config.input_mode == "file"
+        ):
+            raise ASRError("INVALID_CONFIGURATION", "configure", "独立实时参数需要启用独立实时模型")
+        realtime_model = (
+            self.resolve_model(config, realtime=True) if config.realtime_model else model
+        )
         caps = realtime_model.capabilities
         if config.realtime and config.input_mode != "file":
             supported = caps.snapshot if config.realtime_mode == "snapshot" else caps.streaming
             if not supported:
                 raise ASRError("BACKEND_INCOMPATIBLE", "configure", "模型不支持所选实时方式")
 
+    def resolve_model(self, config, *, realtime=False):
+        """仅覆盖本次明确传入的字段；空精度表示引擎默认，不改变文件配置。"""
+        key = config.realtime_model if realtime else config.model
+        base = self.settings.models[key]
+        prefix = "realtime_" if realtime else ""
+        fields = {
+            name
+            for name in ("device", "device_index", "compute_type")
+            if prefix + name in config.model_fields_set
+        }
+        overrides = {name: getattr(config, prefix + name) for name in fields}
+        model = replace(base, **overrides)
+        if model.device not in ("cpu", "gpu") or model.device_index is None:
+            raise ASRError("INVALID_CONFIGURATION", "configure", "设备和设备序号不能留空")
+        if model.device == "cpu":
+            if "device_index" in fields and model.device_index != 0:
+                raise ASRError("INVALID_CONFIGURATION", "configure", "CPU 的设备序号应为 0")
+            model = replace(model, device_index=0)
+        if model.engine == "nemotron" and (
+            model.device != "cpu" or model.compute_type not in (None, "int8")
+        ):
+            raise ASRError("INVALID_CONFIGURATION", "configure", "Nemotron INT8 仅支持 CPU 和 INT8")
+        return model
+
+    def effective_config(self, config):
+        """返回服务端组合后的请求配置，不将请求精度宣称为硬件实测精度。"""
+        main = model_summary(config.model, self.resolve_model(config))
+        realtime = None
+        if config.realtime and config.input_mode != "file":
+            realtime = (
+                model_summary(config.realtime_model, self.resolve_model(config, realtime=True))
+                if config.realtime_model
+                else main
+            )
+        return {
+            "main": main,
+            "realtime": realtime,
+            "realtime_shared": realtime is not None and config.realtime_model is None,
+            "candidate": main if config.candidates and config.input_mode != "file" else None,
+        }
+
     async def prepare(self, config):
         """准备可能耗时的模型；不阻塞 Web 事件循环。"""
+        model = self.resolve_model(config)
+        realtime_model = (
+            self.resolve_model(config, realtime=True)
+            if config.realtime_model and config.realtime and config.input_mode != "file"
+            else None
+        )
         key = (
             config.model,
+            model,
             config.realtime,
             config.realtime_mode,
             config.realtime_model,
+            realtime_model,
             config.interval,
             config.candidates,
             config.input_mode == "file",
@@ -74,7 +131,6 @@ class SpeechService:
         if self.runtime is not None and self.model_key == key and self.runtime.state == "ready":
             return
         await self.release()
-        model = self.settings.models[config.model]
         if config.input_mode == "file":
             options = (
                 {"engine": self.engine_factory(model)}
@@ -90,7 +146,10 @@ class SpeechService:
             RealtimeConfig(
                 mode=config.realtime_mode,
                 interval=config.interval,
-                model=self.settings.models.get(config.realtime_model),
+                model=realtime_model if self.engine_factory is None else None,
+                engine=self.engine_factory(realtime_model)
+                if self.engine_factory and realtime_model is not None
+                else None,
             )
             if config.realtime
             else None

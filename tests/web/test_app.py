@@ -12,16 +12,28 @@ from fastapi.testclient import TestClient
 
 from apps.web.server.app import create_app
 from apps.web.server.settings import Settings
+from speechio import ModelConfig
 from tests.runtime.test_engine_injection import RecordingEngine
+
+
+def make_settings(**options):
+    """路由测试显式提供模型，不读取开发者的本机配置。"""
+    return Settings(
+        models={"whisper-tiny": ModelConfig(engine="whisper", model_path="test-model")},
+        **options,
+    )
 
 
 class WebAppTests(unittest.TestCase):
     def test_active_task_rejects_another_page_without_interrupting_owner(self):
-        with TestClient(create_app(engine_factory=lambda _: RecordingEngine())) as client:
+        with TestClient(
+            create_app(make_settings(), engine_factory=lambda _: RecordingEngine())
+        ) as client:
             with client.websocket_connect("/api/session") as owner:
                 start = {
                     "type": "start",
                     "config": {
+                        "model": "whisper-tiny",
                         "segmentation": "manual",
                         "realtime": False,
                     },
@@ -38,7 +50,7 @@ class WebAppTests(unittest.TestCase):
                 owner.send_json({"type": "close"})
 
     def test_manual_wake_and_cross_origin_requests_are_rejected(self):
-        with TestClient(create_app()) as client:
+        with TestClient(create_app(make_settings())) as client:
             self.assertEqual(
                 client.post(
                     "/api/uploads",
@@ -54,6 +66,7 @@ class WebAppTests(unittest.TestCase):
                     {
                         "type": "start",
                         "config": {
+                            "model": "whisper-tiny",
                             "segmentation": "manual",
                             "wake": "wake-preset",
                         },
@@ -66,7 +79,7 @@ class WebAppTests(unittest.TestCase):
         buffer = io.BytesIO()
         sf.write(buffer, np.arange(1625, dtype=np.int16), 16000, format="WAV")
         with tempfile.TemporaryDirectory() as directory:
-            settings = Settings(debug=True, upload_dir=Path(directory))
+            settings = make_settings(debug=True, upload_dir=Path(directory))
             with TestClient(create_app(settings, engine_factory=lambda _: engine)) as client:
                 token = client.post("/api/uploads", content=buffer.getvalue()).json()["token"]
                 with client.websocket_connect("/api/session?debug=1") as socket:
@@ -75,6 +88,7 @@ class WebAppTests(unittest.TestCase):
                             "type": "start",
                             "file_token": token,
                             "config": {
+                                "model": "whisper-tiny",
                                 "input_mode": "chunks",
                                 "segmentation": "manual",
                                 "realtime": False,
@@ -105,7 +119,7 @@ class WebAppTests(unittest.TestCase):
         buffer = io.BytesIO()
         sf.write(buffer, np.arange(800, dtype=np.int16), 16000, format="WAV")
         with tempfile.TemporaryDirectory() as directory:
-            settings = Settings(upload_dir=Path(directory))
+            settings = make_settings(upload_dir=Path(directory))
             with TestClient(create_app(settings, engine_factory=lambda _: engine)) as client:
                 token = client.post("/api/uploads", content=buffer.getvalue()).json()["token"]
                 with client.websocket_connect("/api/session") as socket:
@@ -114,6 +128,7 @@ class WebAppTests(unittest.TestCase):
                             "type": "start",
                             "file_token": token,
                             "config": {
+                                "model": "whisper-tiny",
                                 "input_mode": "file",
                                 "realtime": False,
                             },
@@ -132,7 +147,7 @@ class WebAppTests(unittest.TestCase):
 
     def test_upload_limit_rejects_and_removes_partial_file(self):
         with tempfile.TemporaryDirectory() as directory:
-            settings = Settings(upload_dir=Path(directory), upload_limit_bytes=8)
+            settings = make_settings(upload_dir=Path(directory), upload_limit_bytes=8)
             with TestClient(create_app(settings)) as client:
                 response = client.post("/api/uploads", content=b"012345678")
                 self.assertEqual(response.status_code, 413)
@@ -146,12 +161,13 @@ class WebAppTests(unittest.TestCase):
                 super().close()
                 closed.set()
 
-        with TestClient(create_app(engine_factory=lambda _: Engine())) as client:
+        with TestClient(create_app(make_settings(), engine_factory=lambda _: Engine())) as client:
             with client.websocket_connect("/api/session") as socket:
                 socket.send_json(
                     {
                         "type": "start",
                         "config": {
+                            "model": "whisper-tiny",
                             "segmentation": "manual",
                             "realtime": False,
                         },
@@ -164,6 +180,7 @@ class WebAppTests(unittest.TestCase):
                     {
                         "type": "start",
                         "config": {
+                            "model": "whisper-tiny",
                             "segmentation": "manual",
                             "realtime": False,
                         },
@@ -174,12 +191,13 @@ class WebAppTests(unittest.TestCase):
 
     def test_stop_delivers_tail_audio_before_finished(self):
         engine = RecordingEngine()
-        with TestClient(create_app(engine_factory=lambda _: engine)) as client:
+        with TestClient(create_app(make_settings(), engine_factory=lambda _: engine)) as client:
             with client.websocket_connect("/api/session") as socket:
                 socket.send_json(
                     {
                         "type": "start",
                         "config": {
+                            "model": "whisper-tiny",
                             "segmentation": "manual",
                             "realtime": False,
                         },
@@ -202,8 +220,8 @@ class WebAppTests(unittest.TestCase):
                 socket.send_json({"type": "close"})
         self.assertEqual(engine.closes, 1)
 
-    def test_default_configuration_exposes_presets_but_disables_debug(self):
-        with TestClient(create_app()) as client:
+    def test_configuration_exposes_presets_but_disables_debug(self):
+        with TestClient(create_app(make_settings())) as client:
             response = client.get("/api/config")
             self.assertEqual(response.status_code, 200)
             config = response.json()

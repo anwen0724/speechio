@@ -28,6 +28,13 @@ function toggle(id, title, checked = false) {
   return `<label class="toggle"><span>${title}</span><input id="${id}" type="checkbox" ${checked ? 'checked' : ''}></label>`;
 }
 
+function runtimeFields(prefix = '') {
+  return `<div class="field-pair">
+    ${selectField(`${prefix}compute-type`, '计算精度', [], '配置默认沿用文件值；引擎默认交给运行库选择。')}
+    ${numberField(`${prefix}device-index`, 'GPU 序号', '0', '从 0 开始；CPU 使用 0。')}
+  </div>`;
+}
+
 function modelSettings() {
   return `${selectField('engine', '识别引擎', [])}
     ${selectField('model', '模型', [], '模型来自服务端配置的预设。')}
@@ -35,7 +42,8 @@ function modelSettings() {
       ${selectField('language', '识别语言', ['中文', '自动检测', 'English'])}
       ${selectField('device', '运行设备', [])}
     </div>
-    <p class="help" id="compatibility">引擎和设备由本机模型预设决定。</p>`;
+    ${debug ? runtimeFields() : ''}
+    <p class="help" id="compatibility">配置文件提供默认值，页面设置用于本次运行。</p>`;
 }
 
 function sessionSettings() {
@@ -64,6 +72,11 @@ function debugSettings() {
     <details><summary>02　实时识别</summary>
       ${selectField('realtime-mode', '实时处理方式', ['快照识别', '原生流式（取决于引擎）'], '快照：定时识别当前积累的音频；原生流式：引擎持续接收音频。')}
       ${selectField('realtime-model', '实时识别模型', ['共用最终模型'])}
+      <div id="realtime-runtime" hidden>
+        ${selectField('realtime-device', '实时模型运行设备', [])}
+        ${runtimeFields('realtime-')}
+      </div>
+      <p class="help" id="realtime-runtime-note">共用最终模型时，设备和精度也随主模型。</p>
       ${numberField('interval', '文字更新间隔（秒）', '0.2')}
       ${toggle('stabilize', '稳定临时文字', true)}
       <p class="help">稳定文字：减少已经显示的文字来回变化。只影响临时文字的显示，不修改最终结果。</p>
@@ -179,7 +192,10 @@ if (debug) {
       </div><div class="event-list" id="events"></div></section>
       <details class="developer"><summary>〈 / 〉配置与 Python 调用</summary><div class="developer-body">
         <div class="toolbar"><span class="help">下方配置来自当前控件；识别流程不在浏览器中执行。</span><button class="quiet" id="copy-config">复制配置</button></div>
-        <pre id="config-preview"></pre><p class="help" id="code-note"></p><pre id="code-preview"></pre>
+        <p class="help">页面准备发送的参数</p><pre id="config-preview"></pre>
+        <p class="help">服务端最近确认的模型配置（请求精度，不代表硬件实测精度）</p>
+        <pre id="effective-config">尚未准备或开始</pre>
+        <p class="help" id="code-note"></p><pre id="code-preview"></pre>
       </div></details>
     </div></div>
     <footer class="studio-footer"><span>参数 → 输入 → 识别结果 → 事件与清理状态</span><span>仅显示本连接的事件；模型由本机服务管理。</span></footer>

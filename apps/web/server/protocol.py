@@ -10,7 +10,10 @@ class RunConfig(BaseModel):
     """一次运行的固定参数，不接受浏览器提供的文件系统路径。"""
 
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
-    model: str = "whisper-tiny"
+    model: str
+    device: Literal["cpu", "gpu"] | None = None
+    device_index: int | None = Field(default=None, ge=0, strict=True)
+    compute_type: str | None = Field(default=None, min_length=1)
     language: str | None = "zh"
     input_mode: Literal["live", "file", "chunks"] = "live"
     segmentation: Literal["auto", "manual"] = "auto"
@@ -19,6 +22,9 @@ class RunConfig(BaseModel):
     realtime: bool = True
     realtime_mode: Literal["snapshot", "native"] = "snapshot"
     realtime_model: str | None = None
+    realtime_device: Literal["cpu", "gpu"] | None = None
+    realtime_device_index: int | None = Field(default=None, ge=0, strict=True)
+    realtime_compute_type: str | None = Field(default=None, min_length=1)
     interval: float = Field(default=0.2, gt=0)
     stabilize: bool = True
     word_timestamps: bool = False

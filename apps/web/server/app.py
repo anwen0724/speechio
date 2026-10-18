@@ -48,7 +48,7 @@ def failure(error, *, fatal=True):
 
 def create_app(settings=None, *, engine_factory=None):
     """创建独立应用实例；注入点仅用于替换外部模型，不替换会话逻辑。"""
-    settings = settings or Settings()
+    settings = settings if settings is not None else Settings.load()
     service = SpeechService(settings, engine_factory)
     uploads = Uploads(settings)
 
@@ -147,7 +147,9 @@ def create_app(settings=None, *, engine_factory=None):
                 await asyncio.to_thread(run.feed, audio)
             else:
                 run = await service.open_run(config)
-            await socket.send_json({"type": "ready"})
+            await socket.send_json(
+                {"type": "ready", "effective_config": service.effective_config(config)}
+            )
             receive = asyncio.create_task(socket.receive())
             next_chunk = monotonic() + config.chunk_ms / 1000
             next_metrics = 0
@@ -290,7 +292,7 @@ def create_app(settings=None, *, engine_factory=None):
                 await service.prepare(config)
                 if service.batch is not None:
                     await asyncio.to_thread(service.batch.prepare)
-                return {"status": "ready"}
+                return {"status": "ready", "effective_config": service.effective_config(config)}
             finally:
                 service.owner = None
 

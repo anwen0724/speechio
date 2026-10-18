@@ -102,10 +102,60 @@ export async function startPage(debug) {
     }
   }
 
+  // 只在模型变化时重置默认值，其他控件变化不能覆盖用户刚选的设备和精度。
+  function syncModelControls(model, prefix = '') {
+    const device = $(`#${prefix}device`);
+    const changed = device.dataset.model !== model.id;
+    const locked = busy() || state.phase === 'finished';
+    if (changed) {
+      options(device, model.devices.map(value => [value, value.toUpperCase()]), model.device);
+      device.dataset.model = model.id;
+      if (debug) {
+        options($(`#${prefix}compute-type`), [
+          ['inherit', `配置默认（${model.compute_type ?? '引擎默认'}）`],
+          ['default', '引擎默认'],
+          ...model.compute_types.filter(value => value !== null).map(value => [value, value]),
+        ], 'inherit');
+        $(`#${prefix}device-index`).value = model.device_index;
+      }
+    }
+    device.disabled = locked || model.devices.length === 1;
+    if (debug) {
+      const index = $(`#${prefix}device-index`);
+      index.min = '0';
+      index.step = '1';
+      if (device.value === 'cpu') index.value = '0';
+      index.disabled = locked || device.value === 'cpu';
+      $(`#${prefix}compute-type`).disabled = locked;
+    }
+  }
+
+  function modelOverrides(prefix = '', fieldPrefix = '') {
+    const result = { [`${fieldPrefix}device`]: $(`#${prefix}device`).value };
+    if (debug) {
+      const index = Number($(`#${prefix}device-index`).value);
+      result[`${fieldPrefix}device_index`] = index;
+      const precision = $(`#${prefix}compute-type`).value;
+      // 不发送表示继承；明确发送 null 表示取消文件中指定的精度。
+      if (precision !== 'inherit') result[`${fieldPrefix}compute_type`] = precision === 'default' ? null : precision;
+    }
+    return result;
+  }
+
+  function showEffective(config) {
+    if (!config) return;
+    const main = config.main;
+    $('#model-summary').textContent = `${main.id} · ${main.device.toUpperCase()} · ${main.compute_type ?? '引擎默认'}`;
+    if (debug) $('#effective-config').textContent = JSON.stringify(config, null, 2);
+  }
+
   function readConfig() {
     const selected = state.publicConfig.models.find(model => model.id === $('#model').value);
     return {
       model: selected.id, input_mode: state.mode,
+      ...modelOverrides(),
+      ...(debug && state.mode !== 'file' && checked('#partials', true) && $('#realtime-model').value
+        ? modelOverrides('realtime-', 'realtime_') : {}),
       language: { '中文': 'zh', 'English': 'en', '自动检测': null }[$('#language').value],
       segmentation: $('#segmentation').selectedIndex ? 'manual' : 'auto',
       realtime: state.mode !== 'file' && checked('#partials', true),
@@ -126,13 +176,19 @@ export async function startPage(debug) {
   function syncCapabilities() {
     if (!state.publicConfig) return;
     const selected = state.publicConfig.models.find(model => model.id === $('#model').value);
-    options($('#device'), [[selected.device, selected.device]]);
-    $('#device').disabled = true;
-    $('#compatibility').textContent = `${selected.engine} · ${selected.streaming ? '原生流式' : '快照实时'} · ${selected.word_timestamps ? '支持词时间戳' : '无词时间戳'}`;
+    syncModelControls(selected);
+    $('#compatibility').textContent = `${selected.engine} · ${selected.streaming ? '原生流式 · 仅 CPU / INT8' : '快照实时 · GPU 需本机运行环境'} · ${selected.word_timestamps ? '支持词时间戳' : '无词时间戳'}`;
     if (debug) {
       const realtime = state.publicConfig.models.find(model => model.id === $('#realtime-model').value) || selected;
       $('#realtime-mode').selectedIndex = realtime.streaming ? 1 : 0;
       $('#realtime-mode').disabled = true;
+      const independent = state.mode !== 'file' && checked('#partials', true) && Boolean($('#realtime-model').value);
+      $('#realtime-runtime').hidden = !independent;
+      $('#realtime-model').disabled = busy() || state.phase === 'finished' || state.mode === 'file' || !checked('#partials', true);
+      $('#realtime-runtime-note').textContent = independent
+        ? '独立实时模型使用下面的设备与精度。候选和修正仍共用主模型。'
+        : '未启用独立实时模型；启用实时识别时共用主模型及其设备、精度。';
+      if (independent) syncModelControls(realtime, 'realtime-');
     }
     const manual = $('#segmentation').selectedIndex === 1;
     if (manual || !state.publicConfig.wakes.length) $('#wake').checked = false;
@@ -158,10 +214,39 @@ export async function startPage(debug) {
     const config = readConfig();
     const selected = state.publicConfig.models.find(model => model.id === $('#model').value);
     $('#config-preview').textContent = JSON.stringify(config, null, 2);
-    $('#code-note').textContent = '这是对应公开 API 的最小示例。模型类型和目录需填写本机值；完整配置映射见 apps/web/server/service.py。';
-    $('#code-preview').textContent = config.input_mode === 'file'
-      ? `from speechio import ModelConfig, Transcriber\n\nmodel = ModelConfig(engine="${selected.engine}", model_path="填写本地模型目录", device="${selected.device}")\nwith Transcriber(model, max_audio_seconds=${config.max_audio_seconds ?? 'None'}) as recognizer:\n    result = recognizer.transcribe_file("audio.wav")\n    print(result.text)`
-      : `from speechio import ModelConfig, SessionConfig\nfrom speechio.runtime.asr import ASRRuntime\n${config.segmentation === 'auto' ? 'from speechio import VadConfig\nfrom speechio.bundled import default_vad_model\n' : ''}\nwith ASRRuntime(ModelConfig(engine="${selected.engine}", model_path="填写本地模型目录", device="${selected.device}")) as runtime:\n    session = runtime.${config.segmentation === 'auto' ? 'create_auto_session(vad=VadConfig(model_path=default_vad_model()))' : 'create_session(SessionConfig())'}\n${config.segmentation === 'manual' ? '    session.start()\n' : ''}    # 将 16 kHz 单声道 int16 音频持续送入 session.feed_audio(pcm)\n    # 停止后调用 ${config.segmentation === 'auto' ? 'session.end_input()' : 'session.end_turn()'}，继续读取 next_event()\n    # 消费完成事件后，调用 session.close()`;
+    $('#code-note').textContent = '以下按当前页面选项生成；目录替换为本机路径。上方服务端配置仅在准备或开始后更新。';
+    const pythonValue = value => value === null ? 'None' : JSON.stringify(value);
+    const modelCode = (model, prefix = '') => {
+      const precisionKey = `${prefix}compute_type`;
+      const precision = Object.hasOwn(config, precisionKey) ? config[precisionKey] : model.compute_type;
+      const device = config[`${prefix}device`] ?? model.device;
+      const index = device === 'cpu' ? 0 : (config[`${prefix}device_index`] ?? model.device_index);
+      return `ModelConfig(engine=${pythonValue(model.engine)}, model_path="填写本地模型目录", device=${pythonValue(device)}, device_index=${index}, compute_type=${pythonValue(precision)})`;
+    };
+    const lines = ['from speechio import ModelConfig, Transcriber, RealtimeConfig, SessionConfig', '', `model = ${modelCode(selected)}`];
+    if (config.input_mode === 'file') {
+      lines.push(`with Transcriber(model, max_audio_seconds=${config.max_audio_seconds ?? 'None'}) as transcriber:`,
+        `    result = transcriber.transcribe_file("audio.wav", language=${pythonValue(config.language)})`, '    print(result.text)');
+    } else {
+      lines.push('from speechio.runtime.asr import ASRRuntime');
+      if (config.realtime && config.realtime_model) {
+        const realtime = state.publicConfig.models.find(model => model.id === config.realtime_model);
+        lines.push(`realtime_model = ${modelCode(realtime, 'realtime_')}`);
+      }
+      const realtime = config.realtime
+        ? `RealtimeConfig(mode=${pythonValue(config.realtime_mode)}, interval=${config.interval}${config.realtime_model ? ', model=realtime_model' : ''})` : 'None';
+      lines.push(`with ASRRuntime(model, realtime=${realtime}) as runtime:`);
+      if (config.segmentation === 'auto') {
+        lines.push('    from speechio import VadConfig', '    from speechio.bundled import default_vad_model',
+          `    session = runtime.create_auto_session(config=SessionConfig(language=${pythonValue(config.language)}, realtime=${config.realtime ? 'True' : 'False'}), vad=VadConfig(model_path=default_vad_model()))`);
+      } else {
+        lines.push(`    session = runtime.create_session(SessionConfig(language=${pythonValue(config.language)}, realtime=${config.realtime ? 'True' : 'False'}))`, '    session.start()');
+      }
+      lines.push('    # 输入 16 kHz 单声道 int16 音频：session.feed_audio(pcm)',
+        `    # 输入结束：session.${config.segmentation === 'auto' ? 'end_input' : 'end_turn'}()`,
+        '    # 继续读取 next_event() 直到完成，最后 session.close()');
+    }
+    $('#code-preview').textContent = lines.join('\n');
   }
 
   function updateControls() {
@@ -210,6 +295,7 @@ export async function startPage(debug) {
       $('#status').textContent = labels[message.wake.state] || '正在监听';
     }
     log(message);
+    if (message.type === 'ready') { state.lastEffective = message.effective_config; showEffective(message.effective_config); }
     if (message.type === 'error') {
       if (message.fatal) void abort(new Error(message.message));
       else showError(new Error(message.message));
@@ -310,6 +396,7 @@ export async function startPage(debug) {
       await client.start(config, state.token, debug);
       state.token = null;
       phase('recording', state.mode === 'live' ? '正在接收音频' : '正在识别文件');
+      showEffective(state.lastEffective);
       state.microphone?.start(bytes => {
         client.audio(bytes);
         state.receivedSeconds += bytes.byteLength / 2 / config.sample_rate;
@@ -402,7 +489,8 @@ export async function startPage(debug) {
         const result = await request('/api/debug/prepare', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(readConfig()) });
         $('#model-state').textContent = '模型已准备';
         log({ type: 'model.prepared', ...result });
-      } finally { phase('idle', '准备操作已结束'); }
+        state.lastEffective = result.effective_config;
+      } finally { phase('idle', '准备操作已结束'); showEffective(state.lastEffective); }
     });
     $('#release').onclick = act(async () => {
       phase('preparing', '正在释放模型');
