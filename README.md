@@ -30,7 +30,7 @@ The initial Bailian integration supports short audio and realtime recognition, n
 Requires 64-bit Python 3.11–3.13.
 
 ```bash
-python -m pip install speechio
+pip install speechio
 ```
 
 Install optional dependencies for the features you need. Each command also installs SpeechIO:

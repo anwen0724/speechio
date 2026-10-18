@@ -30,7 +30,7 @@ SpeechIO 是一个 Python 语音转写库。你可以把音频文件转成文字
 需要 64 位 Python 3.11–3.13。
 
 ```bash
-python -m pip install speechio
+pip install speechio
 ```
 
 按所需功能安装可选依赖，以下命令也会安装 SpeechIO：
