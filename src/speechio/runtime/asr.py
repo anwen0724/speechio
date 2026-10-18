@@ -1,5 +1,6 @@
 """共享最终模型与有界任务；协调锁不覆盖模型调用。"""
 
+import logging
 from collections import deque
 from dataclasses import dataclass, replace
 from threading import Condition, Lock, Thread
@@ -14,6 +15,9 @@ from speechio.runtime.realtime import RealtimeConfig, RealtimeGroup
 from speechio.runtime.tasks import InferenceRequest
 from speechio.runtime.transcriber import Transcriber
 from speechio.session.session import Session, SessionConfig, _validate_timeout
+
+LOGGER = logging.getLogger(__name__)
+LOGGER.addHandler(logging.NullHandler())
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -105,6 +109,7 @@ class ASRRuntime:
         self._task_samples = 0
         self._worker = None
         self._close_result = None
+        self._worker_error = None
         self._wake_resources = {}
         self._wake_errors = ()
         self._model_lock = Lock()
@@ -221,6 +226,9 @@ class ASRRuntime:
             self._state = "ready"
 
     def _require_ready(self, *, allow_unprepared=False):
+        if self._worker_error is not None:
+            error = self._worker_error
+            raise ASRError(error.code, error.operation, error.message)
         codes = {
             "closing": "RUNTIME_CLOSING",
             "closed": "RUNTIME_CLOSED",
@@ -368,6 +376,54 @@ class ASRRuntime:
         return True
 
     def _run(self):
+        """未预期异常终止宿主；正常模型失败仍由任务循环逐项交付。"""
+        errors = []
+        try:
+            self._work_loop()
+        except BaseException as exc:
+            LOGGER.exception("最终识别工作线程异常退出")
+            failure = ASRError("RUNTIME_WORKER_FAILED", "worker", f"{type(exc).__name__}: {exc}")
+            errors.append(CloseError(failure.code, failure.operation, failure.message))
+            with self._condition:
+                self._worker_error = errors[0]
+                self._state = "closing"
+                # 推理调用已经退出，排队任务不再执行，立即释放物理登记。
+                self._queue.clear()
+                self._running = None
+                self._tasks = self._task_samples = 0
+                for session in tuple(self._sessions.values()):
+                    try:
+                        session.fail_runtime(failure)
+                    except BaseException as notify_error:
+                        errors.append(
+                            CloseError("CLEANUP_FAILED", "fail_session", str(notify_error))
+                        )
+                self._sessions.clear()
+                if self._realtime is not None:
+                    self._realtime.stop()
+                self._condition.notify_all()
+        finally:
+            # 仅在其他执行器退出后释放共用模型，不销毁仍在使用的资源。
+            try:
+                if self._realtime is not None:
+                    self._realtime.join()
+                with self._condition:
+                    while self._wake_resources:
+                        self._condition.wait()
+                errors.extend(self._engines.close())
+            except BaseException as cleanup_error:
+                errors.append(CloseError("CLEANUP_FAILED", "close", str(cleanup_error)))
+            finally:
+                with self._condition:
+                    errors.extend(self._realtime.errors if self._realtime else ())
+                    errors.extend(self._wake_errors)
+                    self._close_result = RuntimeCloseResult(
+                        "failed" if errors else "ok", errors=tuple(errors)
+                    )
+                    self._state = "closed"
+                    self._condition.notify_all()
+
+    def _work_loop(self):
         """锁外串行推理；锁内回交归属及释放物理容量。"""
         while True:
             with self._condition:
@@ -408,21 +464,6 @@ class ASRRuntime:
                 self._condition.notify_all()
             # 异常栈也可能引用音频；物理任务退出后不在空闲线程中保留它。
             job = result = error = None
-        if self._realtime is not None:
-            self._realtime.join()
-        with self._condition:
-            while self._wake_resources:
-                self._condition.wait()
-        cleanup_errors = self._engines.close()
-        with self._condition:
-            errors = (
-                cleanup_errors
-                + (self._realtime.errors if self._realtime else ())
-                + self._wake_errors
-            )
-            self._close_result = RuntimeCloseResult("failed" if errors else "ok", errors=errors)
-            self._state = "closed"
-            self._condition.notify_all()
 
     def cancel_task(self, task_id):
         """只移除尚未执行的任务；运行引用在调用实际返回后释放。"""

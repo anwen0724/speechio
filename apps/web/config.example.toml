@@ -1,0 +1,34 @@
+# 从仓库根目录运行。模型名首次使用可能下载；本地目录可启用 local_files_only。
+[web]
+upload_limit_mb = 100
+upload_dir = ".runtime/web-uploads"
+
+[models.whisper-tiny]
+model = "tiny"
+engine = "whisper"
+device = "cpu"
+compute_type = "int8"
+
+[models.whisper-base]
+model = "base"
+engine = "whisper"
+device = "cpu"
+compute_type = "int8"
+
+# 使用本机模型时，取消注释并填写已安装模型目录。
+# [models.nemotron-local]
+# model = ".runtime/models/nemotron"
+# engine = "nemotron"
+# device = "cpu"
+# local_files_only = true
+
+# 唤醒项只有配置后才会在页面出现。文件路径与密钥不会返回浏览器。
+# [wakes.hey-jarvis]
+# backend = "openwakeword"
+# model_paths = ["/absolute/path/hey_jarvis_v0.1.onnx"]
+# feature_model_dir = "/absolute/path/openwakeword"
+#
+# [wakes.porcupine]
+# backend = "porcupine"
+# keywords = ["porcupine"]
+# access_key = "填写本机 AccessKey，不要提交该文件"

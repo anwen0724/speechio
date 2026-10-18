@@ -50,6 +50,13 @@ class PortAudio:
 
 
 class MicrophoneTests(unittest.TestCase):
+    def test_missing_dependency_explains_microphone_extra(self):
+        with patch.dict("sys.modules", {"pyaudio": None}):
+            with self.assertRaises(ASRError) as caught:
+                list_input_devices()
+        self.assertEqual(caught.exception.code, "OPTIONAL_DEPENDENCY_MISSING")
+        self.assertIn('pip install "speechio[microphone]"', caught.exception.message)
+
     def test_explicit_device_reports_actual_fallback_rate_and_releases_resources(self):
         class Stream:
             def stop_stream(self):

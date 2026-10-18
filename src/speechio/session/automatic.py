@@ -184,6 +184,8 @@ class LiveSession(Session):
         with self._runtime.coordination:
             if self._closed:
                 return "closed"
+            if self._runtime_error is not None:
+                return "failed"
             return self._input.state
 
     @property
@@ -204,7 +206,7 @@ class LiveSession(Session):
     def pending_segments(self):
         with self._input_lock, self._runtime.coordination:
             if self._input is None:
-                return 0
+                return len(self._units)
             unassigned = sum(segment.turn is None for segment in self._input.segments)
             return len(self._units) + unassigned
 
@@ -655,6 +657,8 @@ class LiveSession(Session):
             with self._input_lock, self._runtime.coordination:
                 if self._closed:
                     return None
+                if self._runtime_error is not None:
+                    return Session.next_event(self)
                 state = self._input
                 self._pump(state)
                 event = Session.next_event(self)
@@ -668,7 +672,7 @@ class LiveSession(Session):
             with self._runtime.coordination:
                 if token == self._wait_token():
                     self._runtime.coordination.wait(remaining)
-                if self._input is not state:
+                if self._input is not state and self._runtime_error is None:
                     return None
 
     def _fail_input(self, state, error):
@@ -685,6 +689,20 @@ class LiveSession(Session):
             if state.wake:
                 state.wake.state = "failed"
                 state.wake.close()
+
+    def fail_runtime(self, error):
+        """失效自动输入并回收唤醒资源；已固定单元的事件由基础会话保留。"""
+        with self._runtime.coordination:
+            old = self._input
+            # 不等待检测锁，正在检测的调用按原有代次检查丢弃迟到结果。
+            self._input = None
+            self._closed_wake = old.wake if old is not None else None
+            try:
+                super().fail_runtime(error)
+            finally:
+                if old is not None and old.wake is not None:
+                    old.wake.state = "failed"
+                    old.wake.close()
 
     def close(self):
         """控制不等待检测锁；正在执行的检测保留自己的本地引用。"""

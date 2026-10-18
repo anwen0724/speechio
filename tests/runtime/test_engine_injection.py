@@ -8,6 +8,7 @@ import numpy as np
 from speechio import (
     ASRError,
     AudioFormat,
+    ModelConfig,
     SessionConfig,
     Transcriber,
     Transcript,
@@ -41,6 +42,17 @@ class RecordingEngine:
 
 
 class EngineInjectionTests(unittest.TestCase):
+    def test_builtin_engine_names_accept_local_options_and_preserve_config_conflicts(self):
+        for name in ("whisper", "nemotron"):
+            with self.subTest(engine=name):
+                recognizer = Transcriber(model="test-model", engine=name, compute_type="default")
+                self.addCleanup(recognizer.close)
+                self.assertEqual(recognizer.config.engine, name)
+                self.assertEqual(recognizer.state, "unprepared")
+        with self.assertRaises(ASRError) as caught:
+            Transcriber(ModelConfig(model="tiny"), engine="whisper")
+        self.assertEqual(caught.exception.code, "INVALID_CONFIGURATION")
+
     def test_custom_engine_receives_complete_audio_and_owns_one_lifecycle(self):
         engine = RecordingEngine()
         recognizer = Transcriber(engine=engine)

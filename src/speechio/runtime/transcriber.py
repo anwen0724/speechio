@@ -8,7 +8,7 @@ from threading import Lock
 
 import numpy as np
 
-from speechio.audio.conversion import AudioConverter, AudioFormat
+from speechio.audio.conversion import AudioConverter, AudioFormat, validate_max_audio_seconds
 from speechio.audio.files import read_audio_file
 from speechio.engines.base import validate_engine
 from speechio.engines.local import LocalEngine, ModelConfig
@@ -19,16 +19,34 @@ LOGGER = logging.getLogger(__name__)
 LOGGER.addHandler(logging.NullHandler())
 
 
+def resolve_model_options(config=None, *, engine=None, model=None, **options):
+    """统一入口选择：字符串创建本地配置，实例保留注入语义。"""
+    if config is not None and (engine is not None or model is not None or options):
+        raise ASRError("INVALID_CONFIGURATION", "configure", "配置对象与选项应且仅应提供一个")
+    if isinstance(engine, str):
+        return ModelConfig(model=model or "tiny", engine=engine, **options), None
+    if engine is not None and options:
+        raise ASRError("INVALID_CONFIGURATION", "configure", "注入引擎不接受本地选项")
+    if config is None and engine is None:
+        config = ModelConfig(model=model or "tiny", **options)
+    return config, engine
+
+
 class Transcriber:
     """通过小接口隐藏模型准备、输入转换和资源管理，不持有设备或服务。"""
 
-    def __init__(self, config: ModelConfig | None = None, *, engine=None, model=None, **options):
-        if config is not None and (engine is not None or model is not None or options):
-            raise ASRError("INVALID_CONFIGURATION", "configure", "配置对象与选项应且仅应提供一个")
-        if engine is not None and options:
-            raise ASRError("INVALID_CONFIGURATION", "configure", "注入引擎不接受本地选项")
-        if config is None and engine is None:
-            config = ModelConfig(model=model or "tiny", **options)
+    def __init__(
+        self,
+        config: ModelConfig | None = None,
+        *,
+        engine=None,
+        model=None,
+        max_audio_seconds=None,
+        **options,
+    ):
+        validate_max_audio_seconds(max_audio_seconds)
+        self._max_audio_seconds = max_audio_seconds
+        config, engine = resolve_model_options(config, engine=engine, model=model, **options)
         self._engine = LocalEngine(config) if engine is None else engine
         self._config = self._engine.config if engine is None else None
         self._capabilities = validate_engine(self._engine)
@@ -130,7 +148,7 @@ class Transcriber:
 
     def _transcribe_chunks(self, chunks, format, language, word_timestamps):
         """输入迭代失败与转换失败分别保留；全部转换完成后才准备模型。"""
-        converter = AudioConverter(format)
+        converter = AudioConverter(format, max_audio_seconds=self._max_audio_seconds)
         output = bytearray()
         try:
             try:
@@ -156,7 +174,11 @@ class Transcriber:
         """从本地文件头解码，不接受外部格式覆盖。"""
         with self._operation():
             self._validate_options(language, word_timestamps)
-            return self._infer(read_audio_file(path), language, word_timestamps=word_timestamps)
+            return self._infer(
+                read_audio_file(path, max_audio_seconds=self._max_audio_seconds),
+                language,
+                word_timestamps=word_timestamps,
+            )
 
     def _validate_options(self, language, word_timestamps):
         """调用边界先检查元数据，错误选项不能消费源或加载模型。"""

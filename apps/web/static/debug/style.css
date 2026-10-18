@@ -1,0 +1,2 @@
+/* 调试结果中的长错误和模型 ID 可以换行。 */
+.compare-row, .metric { overflow-wrap: anywhere; }

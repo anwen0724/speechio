@@ -1,9 +1,12 @@
-include README.md pyproject.toml .python-version
+include README.md README.zh-CN.md LICENSE pyproject.toml .python-version
 recursive-include src *.py
 recursive-include src/speechio/assets *
 recursive-include evals *.py *.mjs
 recursive-include tests *.py *.mjs
 recursive-include examples *.py
+recursive-include apps *.py
+recursive-include apps/web *.html *.css *.js *.toml
+exclude apps/web/config.toml
 prune .runtime
 prune .venv
 prune artifacts

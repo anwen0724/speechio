@@ -215,6 +215,7 @@ class Session:
         self._active = None
         self._last_task = None
         self._closed = False
+        self._runtime_error = None
         self._close_result = None
         self._retained = None
 
@@ -269,6 +270,9 @@ class Session:
             return "sealed" if self._active.converter.state == "finished" else "receiving"
 
     def _require_open(self):
+        if self._runtime_error is not None:
+            error = self._runtime_error
+            raise ASRError(error.code, error.operation, error.message)
         if self._closed:
             raise ASRError("SESSION_CLOSED", "session", "会话已经关闭")
 
@@ -794,6 +798,19 @@ class Session:
         pending = self._runtime.pending_for(self.session_id)
         return SessionChange(self._generation, tuple(cancelled), discarded, pending)
 
+    def fail_runtime(self, error):
+        """后台退出时结束未完成单元，保留已登记的成功或失败事件供调用方领取。"""
+        with self._runtime.coordination:
+            self._runtime_error = EventError(error.code, error.operation, error.message)
+            try:
+                for unit in self._units.values():
+                    if unit.events is None:
+                        self._terminal(unit, "failed", error=error)
+                self._clear_correction()
+                self._active = None
+            finally:
+                self._runtime.coordination.notify_all()
+
     def close(self) -> SessionChange:
         """只取消自己的工作；共享模型由运行时拥有者关闭。"""
         with self._runtime.coordination:
@@ -851,14 +868,21 @@ class Session:
 
             def available():
                 return (
-                    self._closed or generation != self._generation or self._next_event() is not None
+                    self._closed
+                    or self._runtime_error is not None
+                    or generation != self._generation
+                    or self._next_event() is not None
                 )
 
             if not self._runtime.coordination.wait_for(available, timeout=timeout):
                 return None
             if self._closed or generation != self._generation:
                 return None
-            unit, source = self._next_event()
+            available_event = self._next_event()
+            if available_event is None and self._runtime_error is not None:
+                error = self._runtime_error
+                raise ASRError(error.code, error.operation, error.message)
+            unit, source = available_event
             self._sequence += 1
             if source == "correction":
                 event = unit.event

@@ -6,14 +6,20 @@ from pathlib import Path
 
 import numpy as np
 
-from speechio.audio.conversion import SAMPLE_RATE, AudioConverter, AudioFormat
+from speechio.audio.conversion import (
+    SAMPLE_RATE,
+    AudioConverter,
+    AudioFormat,
+    validate_max_audio_seconds,
+)
 from speechio.errors import ASRError
 
 
-def read_audio_file(path) -> bytes:
+def read_audio_file(path, *, max_audio_seconds=None) -> bytes:
     """读取文件头格式，返回完整标准 PCM；异常不返回成功前缀。"""
     if not isinstance(path, (str, os.PathLike)):
         raise ASRError("INVALID_AUDIO", "read_file", "输入应为本地文件路径")
+    validate_max_audio_seconds(max_audio_seconds)
     try:
         import soundfile as sf
     except (ImportError, OSError) as exc:
@@ -21,8 +27,16 @@ def read_audio_file(path) -> bytes:
     converter = None
     try:
         with sf.SoundFile(os.fspath(path)) as source:
+            if (
+                max_audio_seconds is not None
+                and source.frames / source.samplerate > max_audio_seconds
+            ):
+                raise ASRError("AUDIO_CAPACITY_EXCEEDED", "read_file", "音频超过配置的时长上限")
             sample_type = "int16" if source.subtype == "PCM_16" else "float32"
-            converter = AudioConverter(AudioFormat(source.samplerate, source.channels, sample_type))
+            converter = AudioConverter(
+                AudioFormat(source.samplerate, source.channels, sample_type),
+                max_audio_seconds=max_audio_seconds,
+            )
             output = bytearray()
             while True:
                 chunk = source.read(8192, dtype=sample_type, always_2d=True)

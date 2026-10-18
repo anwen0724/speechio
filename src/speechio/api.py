@@ -2,14 +2,17 @@
 
 from os import PathLike
 from pathlib import Path
+from sys import exc_info
+from time import monotonic
 
 from speechio.audio.conversion import AudioFormat
 from speechio.audio.microphone import MicrophoneConfig, MicrophoneInput
 from speechio.bundled import default_vad_model
+from speechio.engines.base import validate_engine
 from speechio.errors import ASRError
 from speechio.runtime.asr import ASRRuntime
 from speechio.runtime.realtime import RealtimeConfig
-from speechio.runtime.transcriber import ModelConfig, Transcriber
+from speechio.runtime.transcriber import Transcriber, resolve_model_options
 from speechio.segmentation.gate import SegmentationConfig
 from speechio.segmentation.vad import VadConfig
 from speechio.session.session import SessionConfig
@@ -23,10 +26,13 @@ def transcribe_audio(
     language=None,
     word_timestamps=False,
     format=None,
+    max_audio_seconds=None,
     **options,
 ):
     """转写一段已有音频；路径读文件，字节或数组按声明格式转换。"""
-    with Transcriber(model=model, **options) as transcriber:
+    transcriber = Transcriber(model=model, max_audio_seconds=max_audio_seconds, **options)
+    try:
+        # 快捷调用沿用底层的输入校验顺序，不通过 __enter__ 提前准备模型。
         if isinstance(audio, (str, PathLike)):
             return transcriber.transcribe_file(
                 audio, language=language, word_timestamps=word_timestamps
@@ -34,7 +40,7 @@ def transcribe_audio(
         source = format or AudioFormat()
         if isinstance(audio, (bytes, bytearray, memoryview)):
             return transcriber.transcribe(
-                bytes(audio), format=source, language=language, word_timestamps=word_timestamps
+                audio, format=source, language=language, word_timestamps=word_timestamps
             )
         try:
             import numpy as np
@@ -47,6 +53,8 @@ def transcribe_audio(
         return transcriber.transcribe_chunks(
             audio, format=source, language=language, word_timestamps=word_timestamps
         )
+    finally:
+        transcriber.__exit__(*exc_info())
 
 
 class StreamTranscriber:
@@ -89,7 +97,15 @@ class StreamTranscriber:
         return self
 
     def __exit__(self, exc_type, exc, tb):
-        self.close()
+        try:
+            self.close()
+        except BaseException as cleanup_error:
+            if exc is None:
+                raise
+            # 清理失败不能覆盖触发退出的推理错误或使用者异常。
+            exc.add_note(f"关闭 StreamTranscriber 时发生异常：{cleanup_error!r}")
+            for note in getattr(cleanup_error, "__notes__", ()):
+                exc.add_note(note)
         return False
 
     @property
@@ -100,12 +116,12 @@ class StreamTranscriber:
         """加载模型、打开麦克风并建立自动分句会话。"""
         if self._session is not None:
             return self
-        config = ModelConfig(model=self._model, **self._options)
+        config, engine = resolve_model_options(model=self._model, **self._options)
+        capabilities = config.capabilities if engine is None else validate_engine(engine)
         runtime = ASRRuntime(
             config,
-            realtime=RealtimeConfig(mode=config.capabilities.realtime_mode)
-            if self._realtime
-            else None,
+            engine=engine,
+            realtime=RealtimeConfig(mode=capabilities.realtime_mode) if self._realtime else None,
         )
         microphone = None
         try:
@@ -130,39 +146,71 @@ class StreamTranscriber:
         return self
 
     def end_input(self):
-        """停止采集并结束输入；已固定的段落仍会交付。"""
+        """停止采集，送完采集队列后结束输入；继续迭代可取得剩余结果。"""
         if self._ending or self._session is None:
             return
-        self._ending = True
         if self._microphone is not None:
-            self._microphone.close(timeout=2)
+            self._stop_microphone(self._microphone)
+            # 采集器关闭不会清空队列，必须先交付其中的成功采集块。
+            while (pcm := self._microphone.read_audio(timeout=0)) is not None:
+                self._session.feed_audio(pcm)
         self._session.end_input()
+        self._ending = True
+
+    def _stop_microphone(self, microphone):
+        """限时等待读取退出，避免将暂时空队列误认为最后一块已到达。"""
+        deadline = monotonic() + self._drain_timeout
+        result = microphone.close(timeout=min(2, max(0, self._drain_timeout)))
+        while result.status == "pending":
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                raise ASRError("CLOSE_TIMEOUT", "close_microphone", "等待采集结束超时")
+            result = microphone.close(timeout=remaining)
+        if result.status != "ok":
+            error = ASRError("MICROPHONE_CLEANUP_FAILED", "close_microphone", "采集器清理失败")
+            error.cleanup_errors = result.errors
+            raise error
 
     def close(self):
         """清理采集器、会话和运行时；重复调用无副作用。"""
         session, microphone, runtime = self._session, self._microphone, self._runtime
-        self._session = self._microphone = self._runtime = None
-        self._ending = False
+        errors = []
+        try:
+            if session is not None:
+                self.end_input()
+                self._drain(session)
+            elif microphone is not None:
+                self._stop_microphone(microphone)
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            self._session = self._microphone = self._runtime = None
+            self._ending = False
+
+        # 每个资源独立清理；排空或前一个资源失败不能跳过后续释放。
         if session is not None:
             try:
-                try:
-                    if microphone is not None:
-                        microphone.close(timeout=2)
-                    session.end_input()
-                except ASRError:
-                    pass
-                self._drain(session)
-            finally:
                 session.close()
-        elif microphone is not None:
-            microphone.close(timeout=2)
+            except BaseException as exc:
+                errors.append(exc)
         if runtime is not None:
-            runtime.close()
+            try:
+                result = runtime.close()
+                if result.status != "ok":
+                    code = "CLOSE_TIMEOUT" if result.status == "pending" else "CLEANUP_FAILED"
+                    error = ASRError(code, "close", "运行时关闭未成功")
+                    error.cleanup_errors = result.errors
+                    raise error
+            except BaseException as exc:
+                errors.append(exc)
+        if errors:
+            first, *remaining = errors
+            for error in remaining:
+                first.add_note(f"后续清理异常：{error!r}")
+            raise first
 
     def _drain(self, session):
         """关闭前取走已完成的最终结果，避免直接丢弃。"""
-        from time import monotonic
-
         deadline = monotonic() + self._drain_timeout
         while monotonic() < deadline:
             event = session.next_event(timeout=0.05)
@@ -189,7 +237,7 @@ class StreamTranscriber:
                 if transcript is not None:
                     yield transcript
         finally:
-            self.close()
+            self.__exit__(*exc_info())
 
     def _handle(self, event):
         """过滤事件：最终正文交付，预览走回调，失败转为异常。"""

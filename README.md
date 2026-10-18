@@ -1,6 +1,6 @@
 # speechio
 
-[中文](README.zh-CN.md)
+[中文](https://github.com/anwen0724/speechio/blob/main/README.zh-CN.md)
 
 Local speech-to-text for Python. Transcribe audio files or stream from a microphone, entirely on your machine.
 

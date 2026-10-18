@@ -10,13 +10,61 @@ import speechio
 from speechio import (
     ASRError,
     AudioFormat,
+    BaseTranscriptionEngine,
     CloseResult,
+    EngineCapabilities,
     StreamTranscriber,
     Transcript,
     transcribe_audio,
     transcribe_stream,
 )
 from speechio.bundled import default_vad_model
+from speechio.runtime.asr import ASRRuntime
+from speechio.segmentation.vad import VoiceActivity
+
+
+class RecordingEngine(BaseTranscriptionEngine):
+    """替代模型边界，记录实际收到的样本并支持推理故障。"""
+
+    capabilities = EngineCapabilities(engine="test")
+
+    def __init__(self, *, fail=False):
+        self.fail = fail
+        self.samples = 0
+        self.closed = False
+        self.preparations = 0
+
+    def prepare(self):
+        self.preparations += 1
+
+    def transcribe(self, audio, language=None, *, role="final", word_timestamps=False):
+        self.samples += len(audio)
+        if self.fail:
+            raise ASRError("INFERENCE_FAILED", "transcribe", "controlled model failure")
+        return Transcript(text="recognized")
+
+    def close(self):
+        self.closed = True
+
+
+class SpeechDetector:
+    """替代 VAD 模型边界，将固定输入判定为语音。"""
+
+    info = {"backend": "test"}
+
+    def detect(self, pcm, start_sample, *, recording=False):
+        return VoiceActivity(True, True, True, True, 1.0)
+
+    def reset(self):
+        pass
+
+
+class StreamRuntime(ASRRuntime):
+    """保留真实运行时和会话，只注入无需加载权重的检测器。"""
+
+    def create_auto_session(self, **options):
+        options.pop("vad")
+        return super().create_auto_session(detector_factory=SpeechDetector, **options)
 
 
 class RecordingTranscriber:
@@ -68,6 +116,23 @@ class FakeMicrophone:
         return CloseResult()
 
 
+class FinishingMicrophone(FakeMicrophone):
+    """确定性模拟停止时仍有一次设备读取：先返回 pending，再交付尾块。"""
+
+    def __init__(self, config):
+        super().__init__(config)
+        self.frames = []
+        self.stopping = False
+
+    def close(self, *, timeout=2):
+        if not self.stopping:
+            self.stopping = True
+            return CloseResult(status="pending")
+        if not self.closed:
+            self.frames.append(b"\xd0\x07" * 1600)
+        return super().close(timeout=timeout)
+
+
 class FakeSession:
     """按预设顺序交付事件；结束输入后不再产生新事件。"""
 
@@ -103,7 +168,7 @@ class FakeRuntime:
         return self.session
 
     def close(self):
-        pass
+        return CloseResult()
 
 
 def event(kind, text="", error=None):
@@ -111,7 +176,90 @@ def event(kind, text="", error=None):
     return SimpleNamespace(kind=kind, result=result, merge=None, stabilization=None, error=error)
 
 
+class StreamLifecycleTests(unittest.TestCase):
+    """通过门面验证停止与清理，运行时和会话均使用真实实现。"""
+
+    def make_stream(self, microphone, *, fail=False):
+        engine = RecordingEngine(fail=fail)
+        runtime = StreamRuntime(engine=engine)
+        self.addCleanup(runtime.close)
+        self.enterContext(patch("speechio.api.ASRRuntime", return_value=runtime))
+        self.enterContext(patch("speechio.api.MicrophoneInput", return_value=microphone))
+        stream = StreamTranscriber(realtime=False)
+        stream.start()
+        self.addCleanup(stream.close)
+        return stream, engine, runtime
+
+    def test_stream_accepts_an_injected_engine(self):
+        engine = RecordingEngine()
+        microphone = FakeMicrophone(None)
+        microphone.frames = [b"\xd0\x07" * 1600]
+        with (
+            patch("speechio.api.ASRRuntime", StreamRuntime),
+            patch("speechio.api.MicrophoneInput", return_value=microphone),
+            StreamTranscriber(engine=engine, realtime=False) as stream,
+        ):
+            stream.end_input()
+            transcripts = list(stream)
+        self.assertEqual([item.text for item in transcripts], ["recognized"])
+        self.assertEqual(engine.samples, 1600)
+        self.assertTrue(engine.closed)
+
+    def test_end_input_delivers_all_queued_audio(self):
+        microphone = FakeMicrophone(None)
+        microphone.frames = [b"\xd0\x07" * 1600 for _ in range(3)]
+        stream, engine, _ = self.make_stream(microphone)
+
+        stream.end_input()
+        transcripts = list(stream)
+
+        self.assertEqual(engine.samples, 4800)
+        self.assertEqual([item.text for item in transcripts], ["recognized"])
+
+    def test_end_input_waits_for_last_capture_block(self):
+        stream, engine, _ = self.make_stream(FinishingMicrophone(None))
+
+        stream.end_input()
+        transcripts = list(stream)
+
+        self.assertEqual(engine.samples, 1600)
+        self.assertEqual([item.text for item in transcripts], ["recognized"])
+
+    def test_close_releases_resources_after_inference_failure(self):
+        microphone = FakeMicrophone(None)
+        microphone.frames = [b"\xd0\x07" * 16000]
+        stream, engine, runtime = self.make_stream(microphone, fail=True)
+        stream.end_input()
+
+        with self.assertRaises(ASRError) as caught:
+            stream.close()
+
+        self.assertEqual(caught.exception.code, "INFERENCE_FAILED")
+        self.assertTrue(microphone.closed)
+        self.assertTrue(engine.closed)
+        self.assertEqual(runtime.state, "closed")
+        self.assertEqual(stream.state, "idle")
+        stream.close()
+
+
 class EntryTests(unittest.TestCase):
+    def test_audio_entry_validates_input_before_preparing_and_always_closes(self):
+        for audio, code in (
+            (b"", "INVALID_AUDIO"),
+            ("missing-audit-audio.wav", "AUDIO_READ_FAILED"),
+        ):
+            with self.subTest(audio=audio):
+                engine = RecordingEngine()
+                with self.assertRaises(ASRError) as caught:
+                    transcribe_audio(audio, engine=engine)
+                self.assertEqual(caught.exception.code, code)
+                self.assertEqual(engine.preparations, 0)
+                self.assertTrue(engine.closed)
+        engine = RecordingEngine()
+        self.assertEqual(transcribe_audio(b"\xd0\x07" * 1600, engine=engine).text, "recognized")
+        self.assertEqual(engine.preparations, 1)
+        self.assertTrue(engine.closed)
+
     def test_audio_entry_dispatches_by_input_type(self):
         RecordingTranscriber.calls = []
         with patch("speechio.api.Transcriber", RecordingTranscriber):

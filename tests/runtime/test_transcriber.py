@@ -11,8 +11,69 @@ from unittest.mock import patch
 import numpy as np
 import soundfile as sf
 
-from speechio import ASRError, AudioFormat, ModelConfig, Transcriber
+from speechio import ASRError, AudioFormat, ModelConfig, Transcriber, transcribe_audio
 from speechio.runtime.models.manifest import create_manifest
+from tests.runtime.test_engine_injection import RecordingEngine
+
+
+class AudioLimitTests(unittest.TestCase):
+    def test_chunk_limit_stops_consuming_and_shortcut_accepts_none(self):
+        consumed = []
+
+        def chunks():
+            for index in range(100):
+                consumed.append(index)
+                yield b"\x01\x00" * 800
+
+        engine = RecordingEngine()
+        with self.assertRaises(ASRError) as caught:
+            transcribe_audio(chunks(), engine=engine, max_audio_seconds=0.1)
+        self.assertEqual(caught.exception.code, "AUDIO_CAPACITY_EXCEEDED")
+        self.assertEqual(consumed, [0, 1, 2])
+        self.assertEqual(engine.preparations, 0)
+        self.assertEqual(engine.closes, 1)
+        result = transcribe_audio(
+            b"\x01\x00" * 2000, engine=RecordingEngine(), max_audio_seconds=None
+        )
+        self.assertTrue(result.text)
+
+    def test_file_limit_rejects_before_decoding_and_model_preparation(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "long.wav"
+            sf.write(path, np.ones(1601, dtype=np.int16), 16000, subtype="PCM_16")
+            engine = RecordingEngine()
+            transcriber = Transcriber(engine=engine, max_audio_seconds=0.1)
+            self.addCleanup(transcriber.close)
+            # 文件读取是外部边界，超长文件应仅检查头信息就拒绝。
+            with patch.object(sf.SoundFile, "read", side_effect=AssertionError("不应解码超限文件")):
+                with self.assertRaises(ASRError) as caught:
+                    transcriber.transcribe_file(path)
+            self.assertEqual(caught.exception.code, "AUDIO_CAPACITY_EXCEEDED")
+            self.assertEqual(engine.preparations, 0)
+
+    def test_configurable_limit_accepts_boundary_and_rejects_oversized_input_before_model(self):
+        for source in (b"\x01\x00" * 800, np.ones((800, 1), dtype=np.int16)):
+            with self.subTest(kind=type(source).__name__):
+                engine = RecordingEngine()
+                transcriber = Transcriber(engine=engine, max_audio_seconds=0.1)
+                self.addCleanup(transcriber.close)
+                result = transcriber.transcribe(source, format=AudioFormat(sample_rate=8000))
+                self.assertTrue(result.text)
+                # 每次调用重新计时，不累计到对象下一次调用。
+                transcriber.transcribe(source, format=AudioFormat(sample_rate=8000))
+                with self.assertRaises(ASRError) as caught:
+                    transcriber.transcribe_chunks(
+                        (source, source), format=AudioFormat(sample_rate=8000)
+                    )
+                self.assertEqual(caught.exception.code, "AUDIO_CAPACITY_EXCEEDED")
+                self.assertEqual(len(engine.inputs), 2)
+
+    def test_invalid_limit_is_rejected_at_construction(self):
+        for value in (0, -1, True, "600", float("inf"), float("nan")):
+            with self.subTest(value=value):
+                with self.assertRaises(ASRError) as caught:
+                    Transcriber(max_audio_seconds=value)
+                self.assertEqual(caught.exception.code, "INVALID_CONFIGURATION")
 
 
 class RecognizerTests(unittest.TestCase):
