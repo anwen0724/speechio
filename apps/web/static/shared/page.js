@@ -11,6 +11,12 @@ export async function startPage(debug) {
     fileUrl: null, token: null, rows: new Map(), events: [], comparison: {},
     receivedSeconds: 0, config: null, publicConfig: null, completionMessage: null,
   };
+  const remote = model => model?.source === 'remote';
+  const backend = model => `${model.source}:${remote(model) ? model.provider : model.engine}`;
+  const backendLabel = model => remote(model)
+    ? `${model.provider === 'bailian' ? '百炼' : model.provider}（云端）`
+    : `${{ whisper: 'Whisper', nemotron: 'Nemotron' }[model.engine] || model.engine}（本地）`;
+  const selectedModel = (prefix = '') => state.publicConfig.models.find(model => model.id === $(`#${prefix}model`).value);
   const busy = () => ['preparing', 'recording', 'draining', 'stopping', 'closing'].includes(state.phase);
   const number = (id, fallback) => $(id)?.value === '' ? fallback : Number($(id)?.value ?? fallback);
   const checked = (id, fallback = false) => $(id)?.checked ?? fallback;
@@ -107,9 +113,19 @@ export async function startPage(debug) {
     const device = $(`#${prefix}device`);
     const changed = device.dataset.model !== model.id;
     const locked = busy() || state.phase === 'finished';
-    if (changed) {
+    const cloud = remote(model);
+    device.closest('.field').hidden = cloud;
+    if (debug) {
+      $(`#${prefix}runtime-fields`).hidden = cloud;
+      $(`#${prefix}remote-runtime`).hidden = !cloud;
+      const timeout = $(`#${prefix}timeout`);
+      timeout.min = '0.01';
+      timeout.placeholder = '填写正数';
+      timeout.disabled = locked;
+      if (changed && cloud) timeout.value = model.timeout_seconds;
+    }
+    if (changed && !cloud) {
       options(device, model.devices.map(value => [value, value.toUpperCase()]), model.device);
-      device.dataset.model = model.id;
       if (debug) {
         options($(`#${prefix}compute-type`), [
           ['inherit', `配置默认（${model.compute_type ?? '引擎默认'}）`],
@@ -119,22 +135,26 @@ export async function startPage(debug) {
         $(`#${prefix}device-index`).value = model.device_index;
       }
     }
-    device.disabled = locked || model.devices.length === 1;
+    device.dataset.model = model.id;
+    device.disabled = locked || cloud || model.devices.length === 1;
     if (debug) {
       const index = $(`#${prefix}device-index`);
       index.min = '0';
       index.step = '1';
       if (device.value === 'cpu') index.value = '0';
-      index.disabled = locked || device.value === 'cpu';
-      $(`#${prefix}compute-type`).disabled = locked;
+      index.disabled = locked || cloud || device.value === 'cpu';
+      $(`#${prefix}compute-type`).disabled = locked || cloud;
     }
   }
 
   function modelOverrides(prefix = '', fieldPrefix = '') {
+    const model = selectedModel(prefix);
+    if (remote(model)) {
+      return debug ? { [`${fieldPrefix}timeout_seconds`]: number(`#${prefix}timeout`, null) } : {};
+    }
     const result = { [`${fieldPrefix}device`]: $(`#${prefix}device`).value };
     if (debug) {
-      const index = Number($(`#${prefix}device-index`).value);
-      result[`${fieldPrefix}device_index`] = index;
+      result[`${fieldPrefix}device_index`] = Number($(`#${prefix}device-index`).value);
       const precision = $(`#${prefix}compute-type`).value;
       // 不发送表示继承；明确发送 null 表示取消文件中指定的精度。
       if (precision !== 'inherit') result[`${fieldPrefix}compute_type`] = precision === 'default' ? null : precision;
@@ -144,8 +164,10 @@ export async function startPage(debug) {
 
   function showEffective(config) {
     if (!config) return;
-    const main = config.main;
-    $('#model-summary').textContent = `${main.id} · ${main.device.toUpperCase()} · ${main.compute_type ?? '引擎默认'}`;
+    const main = config.completion_source === 'streaming' ? config.realtime : config.main;
+    $('#model-summary').textContent = remote(main)
+      ? `${main.id} · 云端 · 超时 ${main.timeout_seconds} 秒`
+      : `${main.id} · ${main.device.toUpperCase()} · ${main.compute_type ?? '引擎默认'}`;
     if (debug) $('#effective-config').textContent = JSON.stringify(config, null, 2);
   }
 
@@ -159,8 +181,9 @@ export async function startPage(debug) {
       language: { '中文': 'zh', 'English': 'en', '自动检测': null }[$('#language').value],
       segmentation: $('#segmentation').selectedIndex ? 'manual' : 'auto',
       realtime: state.mode !== 'file' && checked('#partials', true),
-      realtime_mode: debug ? ($('#realtime-mode').selectedIndex ? 'native' : 'snapshot') : (selected.streaming ? 'native' : 'snapshot'),
-      realtime_model: debug ? ($('#realtime-model').value || null) : null,
+      completion_mode: debug && state.mode !== 'file' && checked('#retranscribe') ? 'final' : 'auto',
+      realtime_mode: debug ? ($('#realtime-mode').value === 'streaming' ? 'streaming' : 'snapshot') : (selected.streaming ? 'streaming' : 'snapshot'),
+      realtime_model: debug && state.mode !== 'file' && checked('#partials', true) ? ($('#realtime-model').value || null) : null,
       interval: number('#interval', .2), stabilize: checked('#stabilize', true),
       word_timestamps: checked('#timestamps', true) && selected.word_timestamps,
       silence: number('#silence', .8), vad_sensitivity: number('#vad', .4),
@@ -177,19 +200,51 @@ export async function startPage(debug) {
     if (!state.publicConfig) return;
     const selected = state.publicConfig.models.find(model => model.id === $('#model').value);
     syncModelControls(selected);
-    $('#compatibility').textContent = `${selected.engine} · ${selected.streaming ? '原生流式 · 仅 CPU / INT8' : '快照实时 · GPU 需本机运行环境'} · ${selected.word_timestamps ? '支持词时间戳' : '无词时间戳'}`;
+    const realtime = (debug && selectedModel('realtime-')) || selected;
+    const canPreview = realtime.snapshot || realtime.streaming;
+    const choice = `${selected.id}:${realtime.id}`;
+    const partials = $('#partials');
+    // 切换模型时按能力启用预览；语言等其他设置不能覆盖用户手动关闭的选择。
+    if (partials.dataset.model !== choice) partials.checked = canPreview;
+    partials.dataset.model = choice;
+    if (!canPreview) partials.checked = false;
+    partials.disabled = !canPreview || state.mode === 'file' || busy() || state.phase === 'finished';
+    const streaming = state.mode !== 'file' && partials.checked && realtime.streaming;
+    const reuseStream = streaming && !(debug && checked('#retranscribe'));
+    const capability = selected.streaming ? '原生流式' : selected.snapshot ? '快照实时' : '仅整段识别';
+    $('#compatibility').textContent = `${backendLabel(selected)} · ${capability} · ${selected.word_timestamps ? '词时间戳以返回结果为准' : '无词时间戳'}${remote(selected) && !selected.api_key_configured ? ' · 密钥未配置，请填写 config.toml 的 apikey 或 apps/web/.env 后重启服务' : ''}`;
     if (debug) {
-      const realtime = state.publicConfig.models.find(model => model.id === $('#realtime-model').value) || selected;
-      $('#realtime-mode').selectedIndex = realtime.streaming ? 1 : 0;
+      options($('#realtime-mode'), realtime.streaming ? [['streaming', '原生流式']]
+        : realtime.snapshot ? [['snapshot', '快照识别']] : [['none', '所选模型不支持实时预览']]);
       $('#realtime-mode').disabled = true;
-      const independent = state.mode !== 'file' && checked('#partials', true) && Boolean($('#realtime-model').value);
+      $('#retranscribe').disabled = !streaming || busy() || state.phase === 'finished';
+      $('#completion-note').textContent = reuseStream
+        ? `最终结果来自 ${realtime.id} 的流式任务，不再调用主模型识别整段音频。`
+        : streaming
+          ? '流式结束后，使用主模型重新识别整段音频；云端可能增加一次识别费用。'
+          : '当前没有使用流式识别，最终结果由主模型识别整段音频得到。';
+      const independent = state.mode !== 'file' && partials.checked && Boolean($('#realtime-model').value);
       $('#realtime-runtime').hidden = !independent;
-      $('#realtime-model').disabled = busy() || state.phase === 'finished' || state.mode === 'file' || !checked('#partials', true);
+      // 即使主模型不支持预览，也允许选择另一个有流式能力的模型。
+      $('#realtime-model').disabled = busy() || state.phase === 'finished' || state.mode === 'file';
       $('#realtime-runtime-note').textContent = independent
-        ? '独立实时模型使用下面的设备与精度。候选和修正仍共用主模型。'
-        : '未启用独立实时模型；启用实时识别时共用主模型及其设备、精度。';
+        ? `独立实时模型使用下方${remote(realtime) ? '请求超时' : '设备与精度'}。候选和修正仍共用主模型。`
+        : '启用实时识别时共用主模型；也可选择独立实时模型。';
       if (independent) syncModelControls(realtime, 'realtime-');
     }
+    const cloudPreview = state.mode !== 'file' && partials.checked && remote(realtime);
+    const cloud = remote(selected) || cloudPreview;
+    if (!debug) $('#recognition-location').textContent = cloud ? '云端识别' : '本地识别';
+    $('#remote-note').hidden = !cloud;
+    const notes = [];
+    if (cloud) notes.push('音频将由本机服务发送至百炼识别。');
+    if (remote(selected) && !reuseStream) notes.push('整段识别最多 300 秒，HTTP 还受编码后大小限制；超限不会自动切分。');
+    if (cloudPreview && reuseStream) notes.push('最终文字直接采用流式任务的最终结果，不会自动再次识别整段音频。');
+    if (streaming && !reuseStream && remote(selected)) notes.push('已开启重识别：结束后主模型将额外识别整段音频，可能增加费用。');
+    if (debug && remote(selected)) notes.push('主动请求候选或修正会增加识别请求。');
+    if (cloudPreview && !realtime.api_key_configured) notes.push('实时模型密钥未配置，请填写 config.toml 的 apikey 或 apps/web/.env 后重启服务。');
+    $('#remote-note').textContent = notes.join(' ');
+    $('#audio-location').textContent = `${debug ? '本机单任务' : 'SpeechIO 示例应用'} · ${cloud ? '音频发送至百炼识别' : '音频由本机服务处理'}`;
     const manual = $('#segmentation').selectedIndex === 1;
     if (manual || !state.publicConfig.wakes.length) $('#wake').checked = false;
     $('#wake').disabled = manual || !state.publicConfig.wakes.length || busy() || state.phase === 'finished';
@@ -214,16 +269,20 @@ export async function startPage(debug) {
     const config = readConfig();
     const selected = state.publicConfig.models.find(model => model.id === $('#model').value);
     $('#config-preview').textContent = JSON.stringify(config, null, 2);
-    $('#code-note').textContent = '以下按当前页面选项生成；目录替换为本机路径。上方服务端配置仅在准备或开始后更新。';
+    $('#code-note').textContent = '以下使用核心包公开 API；本地目录和环境变量由使用者填写，未包含服务端密钥或地址。';
     const pythonValue = value => value === null ? 'None' : JSON.stringify(value);
     const modelCode = (model, prefix = '') => {
+      if (remote(model)) {
+        const timeout = config[`${prefix}timeout_seconds`] ?? model.timeout_seconds;
+        return `RemoteModelConfig(provider=${pythonValue(model.provider)}, model=${pythonValue(model.model)}, api_key=os.environ["DASHSCOPE_API_KEY"], timeout_seconds=${timeout})`;
+      }
       const precisionKey = `${prefix}compute_type`;
       const precision = Object.hasOwn(config, precisionKey) ? config[precisionKey] : model.compute_type;
       const device = config[`${prefix}device`] ?? model.device;
       const index = device === 'cpu' ? 0 : (config[`${prefix}device_index`] ?? model.device_index);
-      return `ModelConfig(engine=${pythonValue(model.engine)}, model_path="填写本地模型目录", device=${pythonValue(device)}, device_index=${index}, compute_type=${pythonValue(precision)})`;
+      return `LocalModelConfig(engine=${pythonValue(model.engine)}, model_path="填写本地模型目录", device=${pythonValue(device)}, device_index=${index}, compute_type=${pythonValue(precision)})`;
     };
-    const lines = ['from speechio import ModelConfig, Transcriber, RealtimeConfig, SessionConfig', '', `model = ${modelCode(selected)}`];
+    const lines = ['import os', 'from speechio import LocalModelConfig, RemoteModelConfig, Transcriber, RealtimeConfig, SessionConfig', '', `model = ${modelCode(selected)}`];
     if (config.input_mode === 'file') {
       lines.push(`with Transcriber(model, max_audio_seconds=${config.max_audio_seconds ?? 'None'}) as transcriber:`,
         `    result = transcriber.transcribe_file("audio.wav", language=${pythonValue(config.language)})`, '    print(result.text)');
@@ -238,9 +297,9 @@ export async function startPage(debug) {
       lines.push(`with ASRRuntime(model, realtime=${realtime}) as runtime:`);
       if (config.segmentation === 'auto') {
         lines.push('    from speechio import VadConfig', '    from speechio.bundled import default_vad_model',
-          `    session = runtime.create_auto_session(config=SessionConfig(language=${pythonValue(config.language)}, realtime=${config.realtime ? 'True' : 'False'}), vad=VadConfig(model_path=default_vad_model()))`);
+          `    session = runtime.create_auto_session(config=SessionConfig(language=${pythonValue(config.language)}, realtime=${config.realtime ? 'True' : 'False'}, completion_mode=${pythonValue(config.completion_mode)}), vad=VadConfig(model_path=default_vad_model()))`);
       } else {
-        lines.push(`    session = runtime.create_session(SessionConfig(language=${pythonValue(config.language)}, realtime=${config.realtime ? 'True' : 'False'}))`, '    session.start()');
+        lines.push(`    session = runtime.create_session(SessionConfig(language=${pythonValue(config.language)}, realtime=${config.realtime ? 'True' : 'False'}, completion_mode=${pythonValue(config.completion_mode)}))`, '    session.start()');
       }
       lines.push('    # 输入 16 kHz 单声道 int16 音频：session.feed_audio(pcm)',
         `    # 输入结束：session.${config.segmentation === 'auto' ? 'end_input' : 'end_turn'}()`,
@@ -306,7 +365,7 @@ export async function startPage(debug) {
       $('#metric-queue').textContent = message.capacity.tasks;
       $('#metric-elapsed').textContent = `${message.input_seconds.toFixed(1)} 秒`;
       $('#timer').textContent = clock(message.input_seconds);
-      $('#model-state').textContent = `模型 ${message.model_state}`;
+      $('#model-state').textContent = `识别资源 ${message.model_state}`;
       if (message.wake) $('#session-state').textContent = `唤醒：${message.wake.state}`;
       return;
     }
@@ -367,7 +426,7 @@ export async function startPage(debug) {
     state.receivedSeconds = 0;
     state.completionMessage = null;
     renderResults();
-    phase('preparing', '正在准备输入并加载本地模型');
+    phase('preparing', '正在准备输入与识别配置');
     try {
       const config = readConfig();
       if (state.mode === 'live') {
@@ -477,7 +536,7 @@ export async function startPage(debug) {
     element.addEventListener('change', () => { syncCapabilities(); renderResults(); });
   });
   $('#engine').onchange = () => {
-    const models = state.publicConfig.models.filter(model => model.engine === $('#engine').value);
+    const models = state.publicConfig.models.filter(model => backend(model) === $('#engine').value);
     options($('#model'), models.map(model => [model.id, model.id]));
     syncCapabilities();
   };
@@ -487,7 +546,9 @@ export async function startPage(debug) {
       phase('preparing', '正在准备模型');
       try {
         const result = await request('/api/debug/prepare', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(readConfig()) });
-        $('#model-state').textContent = '模型已准备';
+        const used = [result.effective_config.main, result.effective_config.realtime].filter(Boolean);
+        $('#model-state').textContent = used.some(remote)
+          ? '配置已就绪；云端将在识别时连接并验证权限' : '模型已准备';
         log({ type: 'model.prepared', ...result });
         state.lastEffective = result.effective_config;
       } finally { phase('idle', '准备操作已结束'); showEffective(state.lastEffective); }
@@ -555,10 +616,10 @@ export async function startPage(debug) {
   try {
     state.publicConfig = await request('/api/config');
     const models = state.publicConfig.models;
-    options($('#engine'), [...new Set(models.map(model => model.engine))].map(name => [name, name]));
-    options($('#model'), models.filter(model => model.engine === $('#engine').value).map(model => [model.id, model.id]));
+    options($('#engine'), [...new Map(models.map(model => [backend(model), backendLabel(model)]))]);
+    options($('#model'), models.filter(model => backend(model) === $('#engine').value).map(model => [model.id, model.id]));
     options($('#keyword'), state.publicConfig.wakes.map(wake => [wake.id, wake.id]));
-    if (debug) options($('#realtime-model'), [['', '共用最终模型'], ...models.map(model => [model.id, model.id])]);
+    if (debug) options($('#realtime-model'), [['', '共用主模型'], ...models.filter(model => model.streaming || model.snapshot).map(model => [model.id, `${model.id} · ${backendLabel(model)}`])]);
     if (debug) $('#model-state').textContent = `模型 ${state.publicConfig.model_state}`;
     $('#other-page').hidden = !debug && !state.publicConfig.debug;
     phase('idle', '已就绪，可以开始');

@@ -14,17 +14,20 @@ class RunConfig(BaseModel):
     device: Literal["cpu", "gpu"] | None = None
     device_index: int | None = Field(default=None, ge=0, strict=True)
     compute_type: str | None = Field(default=None, min_length=1)
+    timeout_seconds: float | None = Field(default=None, gt=0)
     language: str | None = "zh"
     input_mode: Literal["live", "file", "chunks"] = "live"
     segmentation: Literal["auto", "manual"] = "auto"
     sample_rate: int = Field(default=16000, ge=8000, le=192000)
     channels: int = Field(default=1, ge=1, le=2)
     realtime: bool = True
-    realtime_mode: Literal["snapshot", "native"] = "snapshot"
+    completion_mode: Literal["auto", "final"] = "auto"
+    realtime_mode: Literal["snapshot", "streaming"] = "snapshot"
     realtime_model: str | None = None
     realtime_device: Literal["cpu", "gpu"] | None = None
     realtime_device_index: int | None = Field(default=None, ge=0, strict=True)
     realtime_compute_type: str | None = Field(default=None, min_length=1)
+    realtime_timeout_seconds: float | None = Field(default=None, gt=0)
     interval: float = Field(default=0.2, gt=0)
     stabilize: bool = True
     word_timestamps: bool = False

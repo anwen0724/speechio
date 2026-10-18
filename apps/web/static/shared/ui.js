@@ -29,21 +29,23 @@ function toggle(id, title, checked = false) {
 }
 
 function runtimeFields(prefix = '') {
-  return `<div class="field-pair">
+  return `<div class="field-pair" id="${prefix}runtime-fields">
     ${selectField(`${prefix}compute-type`, '计算精度', [], '配置默认沿用文件值；引擎默认交给运行库选择。')}
     ${numberField(`${prefix}device-index`, 'GPU 序号', '0', '从 0 开始；CPU 使用 0。')}
   </div>`;
 }
 
 function modelSettings() {
-  return `${selectField('engine', '识别引擎', [])}
+  return `${selectField('engine', '识别后端', [])}
     ${selectField('model', '模型', [], '模型来自服务端配置的预设。')}
     <div class="field-pair">
       ${selectField('language', '识别语言', ['中文', '自动检测', 'English'])}
       ${selectField('device', '运行设备', [])}
     </div>
     ${debug ? runtimeFields() : ''}
-    <p class="help" id="compatibility">配置文件提供默认值，页面设置用于本次运行。</p>`;
+    ${debug ? `<div id="remote-runtime" hidden>${numberField('timeout', '远程请求超时（秒）', '30', '仅修改本次请求，不写回配置文件。')}</div>` : ''}
+    <p class="help" id="compatibility">配置文件提供默认值，页面设置用于本次运行。</p>
+    <p class="help" id="remote-note" hidden></p>`;
 }
 
 function sessionSettings() {
@@ -71,12 +73,15 @@ function debugSettings() {
     <details open><summary>01　引擎与模型</summary>${modelSettings()}</details>
     <details><summary>02　实时识别</summary>
       ${selectField('realtime-mode', '实时处理方式', ['快照识别', '原生流式（取决于引擎）'], '快照：定时识别当前积累的音频；原生流式：引擎持续接收音频。')}
-      ${selectField('realtime-model', '实时识别模型', ['共用最终模型'])}
+      ${selectField('realtime-model', '实时识别模型', ['共用主模型'])}
+      ${toggle('retranscribe', '结束后用主模型重新识别')}
+      <p class="help" id="completion-note">默认直接采用流式任务的最终结果。开启重识别会额外处理整段音频；云端可能增加费用。</p>
       <div id="realtime-runtime" hidden>
         ${selectField('realtime-device', '实时模型运行设备', [])}
         ${runtimeFields('realtime-')}
+        <div id="realtime-remote-runtime" hidden>${numberField('realtime-timeout', '实时模型请求超时（秒）', '30', '沿用独立实时模型的默认值，可修改本次请求。')}</div>
       </div>
-      <p class="help" id="realtime-runtime-note">共用最终模型时，设备和精度也随主模型。</p>
+      <p class="help" id="realtime-runtime-note">共用主模型时，设备和精度也随主模型。</p>
       ${numberField('interval', '文字更新间隔（秒）', '0.2')}
       ${toggle('stabilize', '稳定临时文字', true)}
       <p class="help">稳定文字：减少已经显示的文字来回变化。只影响临时文字的显示，不修改最终结果。</p>
@@ -158,7 +163,7 @@ function resultCard() {
   return `<section class="${debug ? 'studio-results' : 'results'}">
     <div class="section-head">${debug ? `<nav class="result-tabs" aria-label="结果视图">
       <button id="text-tab" class="active" aria-pressed="true">转写结果</button>
-      <button id="compare-tab" aria-pressed="false">结果对照</button></nav>` : '<h2>转写结果 <span class="badge">本地识别</span></h2>'}
+      <button id="compare-tab" aria-pressed="false">结果对照</button></nav>` : '<h2>转写结果 <span id="recognition-location" class="badge">本地识别</span></h2>'}
       ${resultActions}
     </div>
     <div class="transcript" id="transcript"></div>
@@ -178,7 +183,7 @@ if (debug) {
       <div class="session-actions"><button class="quiet" id="prepare">准备模型</button><button class="quiet" id="release">释放模型</button><span class="pill" id="model-state">模型未准备</span></div>
     </div>
     <div class="studio-grid">${debugSettings()}<div class="studio-content">
-      <div class="toolbar">${tabs}<span class="subtle">本机单任务 · 使用 speechio API</span></div>
+      <div class="toolbar">${tabs}<span class="subtle" id="audio-location">本机单任务 · 使用 speechio API</span></div>
       ${inputCard()}
       <div class="metrics">
         <div class="metric"><span>任务占用音频</span><strong id="metric-buffer">0 <small>秒</small></strong></div>
@@ -206,7 +211,7 @@ if (debug) {
     <div class="toolbar">${tabs}<button class="quiet" id="open-settings">${icon('settings')}识别设置</button></div>
     ${inputCard()}${resultCard()}
     <div class="toolbar" style="margin-top:24px"><span class="subtle">清空只移除文字，新录音会重新开始。</span><button class="text-button" id="new-session">＋ 新录音</button></div>
-    <footer class="page-footer">SpeechIO 示例应用 · 音频由本机服务处理</footer>
+    <footer class="page-footer" id="audio-location">SpeechIO 示例应用 · 音频由本机服务处理</footer>
   </main>
   <div class="backdrop" id="backdrop" hidden></div>
   <section class="drawer" id="drawer" role="dialog" aria-modal="true" aria-label="识别设置" hidden>

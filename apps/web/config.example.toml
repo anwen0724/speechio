@@ -1,4 +1,4 @@
-# 从仓库根目录运行；先下载模型，再填写已有模型目录。加载时不联网。
+# 从仓库根目录运行；本地模型填写已有目录，云端模型填写服务商与环境变量名称。
 [web]
 upload_limit_mb = 100
 upload_dir = ".runtime/web-uploads"
@@ -31,3 +31,23 @@ compute_type = "int8"
 # backend = "porcupine"
 # keywords = ["porcupine"]
 # access_key = "填写本机 AccessKey，不要提交该文件"
+
+# 优先使用 apikey；留空时按 api_key_env 读取进程环境，其次读取 apps/web/.env。
+[models."qwen-audio-3.1-asr-flash"]
+source = "remote"
+provider = "bailian"
+model = "qwen-audio-3.1-asr-flash"
+apikey = ""
+api_key_env = "DASHSCOPE_API_KEY"
+timeout_seconds = 30
+# 如需业务空间专属域名或其他地域，填写 HTTPS 根地址（不含 API 路径）。
+# base_url = "https://你的WorkspaceId.cn-beijing.maas.aliyuncs.com"
+
+[models."qwen-audio-3.1-asr-flash-streaming"]
+source = "remote"
+provider = "bailian"
+model = "qwen-audio-3.1-asr-flash-streaming"
+apikey = ""
+api_key_env = "DASHSCOPE_API_KEY"
+timeout_seconds = 30
+# base_url = "https://你的WorkspaceId.cn-beijing.maas.aliyuncs.com"

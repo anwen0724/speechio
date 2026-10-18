@@ -8,6 +8,7 @@ from speechio import (
     AudioFormat,
     CandidateConfig,
     RealtimeConfig,
+    RemoteModelConfig,
     SegmentationConfig,
     SessionConfig,
     StabilizationConfig,
@@ -51,7 +52,12 @@ class SpeechService:
         if not debug and (config.input_mode == "chunks" or config.candidates or config.correction):
             raise ASRError("DEBUG_DISABLED", "configure", "该功能只对启用的调试台开放")
         model = self.resolve_model(config)
-        realtime_fields = {"realtime_device", "realtime_device_index", "realtime_compute_type"}
+        realtime_fields = {
+            "realtime_device",
+            "realtime_device_index",
+            "realtime_compute_type",
+            "realtime_timeout_seconds",
+        }
         if config.model_fields_set & realtime_fields and (
             not config.realtime_model or not config.realtime or config.input_mode == "file"
         ):
@@ -72,10 +78,23 @@ class SpeechService:
         prefix = "realtime_" if realtime else ""
         fields = {
             name
-            for name in ("device", "device_index", "compute_type")
+            for name in ("device", "device_index", "compute_type", "timeout_seconds")
             if prefix + name in config.model_fields_set
         }
         overrides = {name: getattr(config, prefix + name) for name in fields}
+        if isinstance(base, RemoteModelConfig):
+            if fields - {"timeout_seconds"}:
+                raise ASRError("INVALID_CONFIGURATION", "configure", "云端模型不接受本地设备或精度")
+            if not base.api_key:
+                raise ASRError(
+                    "INVALID_CONFIGURATION",
+                    "configure",
+                    "未配置云端密钥；请填写 config.toml 的 apikey，"
+                    "或按 api_key_env 配置进程环境变量 / apps/web/.env 后重启服务",
+                )
+            return replace(base, **overrides)
+        if "timeout_seconds" in fields:
+            raise ASRError("INVALID_CONFIGURATION", "configure", "远程请求超时只适用于云端模型")
         model = replace(base, **overrides)
         if model.device not in ("cpu", "gpu") or model.device_index is None:
             raise ASRError("INVALID_CONFIGURATION", "configure", "设备和设备序号不能留空")
@@ -101,6 +120,10 @@ class SpeechService:
             )
         return {
             "main": main,
+            "completion_mode": config.completion_mode,
+            "completion_source": SessionConfig(
+                realtime=realtime is not None, completion_mode=config.completion_mode
+            ).resolve_completion_source(config.realtime_mode),
             "realtime": realtime,
             "realtime_shared": realtime is not None and config.realtime_model is None,
             "candidate": main if config.candidates and config.input_mode != "file" else None,
@@ -194,6 +217,7 @@ class SpeechService:
             or AudioFormat(sample_rate=config.sample_rate, channels=config.channels),
             language=config.language,
             realtime=config.realtime,
+            completion_mode=config.completion_mode,
             stabilization=StabilizationConfig() if config.realtime and config.stabilize else None,
             word_timestamps=config.word_timestamps,
             max_audio_samples=config.max_audio_samples,
@@ -297,6 +321,9 @@ class ActiveRun:
             self.session.request_correction(self.last_turn)
 
     def poll(self):
+        # 先读取任务状态，再取结果。若先读到空队列、后台随后完成，不能越过尾部事件。
+        pending = self.runtime.pending_for(self.session.session_id)
+        automatic_pending = getattr(self.session, "pending_segments", 0)
         messages = []
         while (event := self.session.next_event(timeout=0)) is not None:
             messages.append(event_message(event))
@@ -304,8 +331,6 @@ class ActiveRun:
                 self.failed = True
             if event.kind == "completed":
                 self.last_turn = event.turn
-        pending = self.runtime.pending_for(self.session.session_id)
-        automatic_pending = getattr(self.session, "pending_segments", 0)
         if self.ended and not self.finished and not pending and not automatic_pending:
             self.finished = True
             messages.append({"type": "finished", "success": not self.failed})

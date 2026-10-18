@@ -7,6 +7,8 @@ recursive-include examples *.py
 recursive-include apps *.py
 recursive-include apps/web *.html *.css *.js *.toml
 exclude apps/web/config.toml
+exclude apps/web/.env
+include apps/web/.env.example
 prune .runtime
 prune .venv
 prune artifacts
