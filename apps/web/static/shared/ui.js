@@ -130,7 +130,8 @@ function inputCard() {
     <div id="file-input" hidden>
       <label class="upload" id="drop-zone">${icon('upload')}<span>拖入音频，或选择文件</span>
         <span class="subtle">上传到本机服务识别，处理结束后删除临时文件。</span>
-        <input id="file-picker" type="file" accept="audio/*" aria-label="选择音频文件">
+        <span class="subtle">WAV、FLAC、MP3、AIFF、M4A、AAC、OGG、Opus、WebM、MP4；视频文件只读取第一条音轨</span>
+        <input id="file-picker" type="file" accept=".wav,.flac,.mp3,.aiff,.aif,.m4a,.aac,.ogg,.opus,.webm,.mp4" aria-label="选择音频文件">
       </label>
       <div class="file-info">${icon('file')}<div><strong id="filename">尚未选择文件</strong><small id="file-meta">选择 WAV、FLAC 等音频文件</small></div></div>
       <audio id="player" controls hidden></audio>

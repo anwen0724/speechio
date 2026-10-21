@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from apps.web.server.app import create_app
 from apps.web.server.settings import Settings
 from speechio import ModelConfig
+from tests.audio.encoded_samples import encoded_audio
 from tests.runtime.test_engine_injection import RecordingEngine
 
 
@@ -25,6 +26,37 @@ def make_settings(**options):
 
 
 class WebAppTests(unittest.TestCase):
+    def test_m4a_upload_reaches_model_in_file_and_debug_chunks_modes(self):
+        content = encoded_audio()
+        for mode in ("file", "chunks"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                engine = RecordingEngine()
+                settings = make_settings(debug=True, upload_dir=Path(directory))
+                with TestClient(create_app(settings, engine_factory=lambda _: engine)) as client:
+                    token = client.post("/api/uploads", content=content).json()["token"]
+                    with client.websocket_connect("/api/session?debug=1") as socket:
+                        socket.send_json(
+                            {
+                                "type": "start",
+                                "file_token": token,
+                                "config": {
+                                    "model": "whisper-tiny",
+                                    "input_mode": mode,
+                                    "segmentation": "manual",
+                                    "realtime": False,
+                                    "pace": "fast",
+                                },
+                            }
+                        )
+                        while True:
+                            message = socket.receive_json()
+                            self.assertNotEqual(message["type"], "error", message)
+                            if message["type"] == "finished":
+                                break
+                        socket.send_json({"type": "close"})
+                    self.assertGreaterEqual(len(engine.inputs[0][0]), 8000)
+                    self.assertEqual(list(Path(directory).iterdir()), [])
+
     def test_active_task_rejects_another_page_without_interrupting_owner(self):
         with TestClient(
             create_app(make_settings(), engine_factory=lambda _: RecordingEngine())

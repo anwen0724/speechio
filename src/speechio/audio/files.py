@@ -1,7 +1,7 @@
 """本地文件解码边界，解码结果沿用连续音频转换规则。"""
 
-import os
 import wave
+from contextlib import closing
 from pathlib import Path
 
 import numpy as np
@@ -9,48 +9,34 @@ import numpy as np
 from speechio.audio.conversion import (
     SAMPLE_RATE,
     AudioConverter,
-    AudioFormat,
     validate_max_audio_seconds,
 )
+from speechio.audio.decoding import AudioFileInfo, open_audio_source
 from speechio.errors import ASRError
 
 
+def read_audio_info(path) -> AudioFileInfo:
+    """读取第一条音轨的信息并关闭文件；不加载模型或完整解码音频。"""
+    with open_audio_source(path) as source:
+        return source.info
+
+
 def read_audio_file(path, *, max_audio_seconds=None) -> bytes:
-    """读取文件头格式，返回完整标准 PCM；异常不返回成功前缀。"""
-    if not isinstance(path, (str, os.PathLike)):
-        raise ASRError("INVALID_AUDIO", "read_file", "输入应为本地文件路径")
-    validate_max_audio_seconds(max_audio_seconds)
-    try:
-        import soundfile as sf
-    except (ImportError, OSError) as exc:
-        raise ASRError("DEPENDENCY_MISSING", "read_file", "请安装 audio 依赖") from exc
+    """读取完整标准 PCM；解码失败不返回已读取的前缀。"""
     converter = None
     try:
-        with sf.SoundFile(os.fspath(path)) as source:
-            if (
-                max_audio_seconds is not None
-                and source.frames / source.samplerate > max_audio_seconds
-            ):
-                raise ASRError("AUDIO_CAPACITY_EXCEEDED", "read_file", "音频超过配置的时长上限")
-            sample_type = "int16" if source.subtype == "PCM_16" else "float32"
-            converter = AudioConverter(
-                AudioFormat(source.samplerate, source.channels, sample_type),
-                max_audio_seconds=max_audio_seconds,
-            )
+        with closing(
+            audio_file_chunks(path, chunk_frames=8192, max_audio_seconds=max_audio_seconds)
+        ) as chunks:
             output = bytearray()
-            while True:
-                chunk = source.read(8192, dtype=sample_type, always_2d=True)
-                if not chunk.size:
-                    break
+            for format, chunk in chunks:
+                if converter is None:
+                    converter = AudioConverter(format)
                 for frame in converter.feed(chunk):
                     output.extend(frame.pcm)
             for frame in converter.finish():
                 output.extend(frame.pcm)
             return bytes(output)
-    except ASRError:
-        raise
-    except Exception as exc:
-        raise ASRError("AUDIO_READ_FAILED", "read_file", str(exc)) from exc
     finally:
         if converter is not None:
             converter.close()
@@ -73,26 +59,28 @@ def read_wav(path):
     return np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
 
 
-def audio_file_chunks(path, *, chunk_frames=1024):
-    """按文件头交付格式与有限源块；结束或关闭生成器即释放文件。"""
-    if not isinstance(path, (str, os.PathLike)):
-        raise ASRError("INVALID_AUDIO", "read_file", "输入应为本地文件路径")
-    try:
-        import soundfile as sf
-    except (ImportError, OSError) as exc:
-        raise ASRError("DEPENDENCY_MISSING", "read_file", "请安装 audio 依赖") from exc
-    try:
-        with sf.SoundFile(os.fspath(path)) as source:
-            sample_type = "int16" if source.subtype == "PCM_16" else "float32"
-            format = AudioFormat(source.samplerate, source.channels, sample_type)
-            # 空文件仍交付格式，让会话决定没有有效样本的失败。
-            chunk = source.read(chunk_frames, dtype=sample_type, always_2d=True)
-            yield format, chunk
-            while chunk.size:
-                chunk = source.read(chunk_frames, dtype=sample_type, always_2d=True)
-                if chunk.size:
-                    yield format, chunk
-    except ASRError:
-        raise
-    except Exception as exc:
-        raise ASRError("AUDIO_READ_FAILED", "read_file", str(exc)) from exc
+def audio_file_chunks(path, *, chunk_frames=1024, max_audio_seconds=None):
+    """按源格式交付有界音频块；检查实际时长，关闭生成器即释放文件。"""
+    validate_max_audio_seconds(max_audio_seconds)
+    if isinstance(chunk_frames, bool) or not isinstance(chunk_frames, int) or chunk_frames <= 0:
+        raise ASRError("INVALID_CONFIGURATION", "read_file", "chunk_frames 应为正整数")
+    with open_audio_source(path) as source:
+        info = source.info
+        if (
+            max_audio_seconds is not None
+            and info.duration_seconds is not None
+            and info.duration_seconds > max_audio_seconds
+        ):
+            raise ASRError("AUDIO_CAPACITY_EXCEEDED", "read_file", "音频超过配置的时长上限")
+        samples = 0
+        for chunk in source.chunks(chunk_frames):
+            samples += len(chunk)
+            if (
+                max_audio_seconds is not None
+                and samples / info.format.sample_rate > max_audio_seconds
+            ):
+                raise ASRError("AUDIO_CAPACITY_EXCEEDED", "read_file", "音频超过配置的时长上限")
+            yield info.format, chunk
+        if not samples:
+            # 空文件也交付格式，让上层保持原有空音频处理行为。
+            yield info.format, np.empty((0, info.format.channels), dtype=info.format.sample_type)

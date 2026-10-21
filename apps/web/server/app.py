@@ -9,7 +9,6 @@ from pathlib import Path
 from time import monotonic
 from urllib.parse import urlsplit
 
-import soundfile as sf
 from anyio import CancelScope
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
@@ -17,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from speechio import ASRError
-from speechio.audio.files import audio_file_chunks
+from speechio.audio.files import audio_file_chunks, read_audio_info
 
 from .files import Uploads
 from .protocol import Command, RunConfig
@@ -129,11 +128,11 @@ def create_app(settings=None, *, engine_factory=None):
             if config.input_mode == "file":
                 batch = asyncio.create_task(service.transcribe_file(config, file_path))
             elif config.input_mode == "chunks":
-                info = await asyncio.to_thread(sf.info, str(file_path))
-                if config.max_audio_seconds and info.duration > config.max_audio_seconds:
-                    raise ASRError("AUDIO_CAPACITY_EXCEEDED", "read_file", "音频超过配置的时长上限")
+                info = await asyncio.to_thread(read_audio_info, file_path)
                 chunks = audio_file_chunks(
-                    file_path, chunk_frames=max(1, int(info.samplerate * config.chunk_ms / 1000))
+                    file_path,
+                    chunk_frames=max(1, int(info.format.sample_rate * config.chunk_ms / 1000)),
+                    max_audio_seconds=config.max_audio_seconds,
                 )
                 first = await asyncio.to_thread(next, chunks)
                 audio_format, audio = first
