@@ -29,6 +29,16 @@ class RecordingEngine(TTSAdapter):
 
 
 class SynthesisTests(unittest.TestCase):
+    def test_omitted_voice_is_left_to_adapter_default_and_cloning_is_optional(self):
+        engine = RecordingEngine()
+        with Synthesizer.from_adapter(engine) as synth:
+            result = synth.synthesize("使用后端默认音色")
+            self.assertEqual(result.data, b"\x01\x00" * 240)
+            self.assertIsNone(engine.received[0][1].voice)
+            with self.assertRaises(TTSError) as caught:
+                synth.synthesize("不支持克隆", reference_audio="does-not-exist.wav")
+            self.assertEqual(caught.exception.code, "CAPABILITY_UNSUPPORTED")
+
     def test_close_waits_for_running_native_call_before_releasing_engine(self):
         entered = Event()
         finish = Event()

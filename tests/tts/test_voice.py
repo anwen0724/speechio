@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from speechio import AudioFormat, AudioResult, SynthesisOptions, Synthesizer
+from speechio import AudioFormat, AudioResult, SynthesisOptions, Synthesizer, TTSError
 from speechio.adapters.contracts import TTSAdapter, TTSCapabilities
 
 
@@ -21,6 +21,25 @@ class CloneAdapter(TTSAdapter):
 
 
 class VoiceTests(unittest.TestCase):
+    def test_conflicting_voice_and_orphan_reference_text_are_rejected(self):
+        with Synthesizer.from_adapter(CloneAdapter()) as tts:
+            for arguments in (
+                {
+                    "reference_audio": "does-not-exist.wav",
+                    "options": SynthesisOptions(voice="preset"),
+                },
+                {"reference_text": "没有提供录音"},
+            ):
+                with self.subTest(arguments=arguments), self.assertRaises(TTSError) as caught:
+                    tts.synthesize("你好", **arguments)
+                self.assertEqual(caught.exception.code, "INVALID_INPUT")
+
+    def test_reference_audio_can_be_cloned_and_used_in_one_synthesis(self):
+        reference = AudioResult(b"\x02\x00" * 240, AudioFormat(sample_rate=24000))
+        with Synthesizer.from_adapter(CloneAdapter()) as tts:
+            audio = tts.synthesize("你好", reference_audio=reference)
+        self.assertEqual(audio.data, reference.data)
+
     def test_saved_clone_survives_closed_instance_and_missing_reference_file(self):
         with tempfile.TemporaryDirectory() as folder:
             reference = Path(folder) / "reference.wav"

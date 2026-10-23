@@ -9,7 +9,14 @@ from unittest.mock import patch
 
 import numpy as np
 
-from speechio import AudioFormat, AudioResult, LocalModelConfig, SynthesisOptions, Synthesizer
+from speechio import (
+    AudioFormat,
+    AudioResult,
+    LocalModelConfig,
+    SynthesisOptions,
+    Synthesizer,
+    TTSError,
+)
 
 
 class ArrayTensor:
@@ -107,6 +114,16 @@ class LocalTTSTests(unittest.TestCase):
                     AudioResult(b"\x01\x00" * 240, AudioFormat(sample_rate=24000)),
                     reference_text="你好",
                 )
+                combined = tts.synthesize(
+                    "组合调用",
+                    reference_audio=AudioResult(b"\x01\x00" * 240, AudioFormat(sample_rate=24000)),
+                    reference_text="你好",
+                    options=SynthesisOptions(language="zh"),
+                )
+                self.assertEqual(combined.data, b"\x00\x20" * 240)
+                with self.assertRaises(TTSError) as caught:
+                    tts.synthesize("没有音色")
+                self.assertEqual(caught.exception.code, "INVALID_INPUT")
             # 另一实例只接收克隆结果；不再执行提取参考音频的操作。
             backend.create_voice_clone_prompt = lambda **kw: self.fail("合成不应重新提取声音")
             with Synthesizer(config) as tts:

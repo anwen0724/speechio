@@ -98,6 +98,8 @@ class Synthesizer:
 
     def _options(self, options, capability):
         """统一校验能力；未知音色与语言组合仍由后端判断。"""
+        if options is None:
+            options = SynthesisOptions()
         if not isinstance(options, SynthesisOptions):
             raise TTSError("INVALID_INPUT", "synthesize", "需要 SynthesisOptions")
         caps = self.capabilities
@@ -121,12 +123,19 @@ class Synthesizer:
         if not isinstance(text, str) or not text.strip():
             raise TTSError("INVALID_INPUT", "synthesize", "完整合成文本不能为空")
 
-    def synthesize(self, text, *, options):
-        """完整合成只调用一次后端；结果大小随文本增长。"""
+    def synthesize(self, text, *, options=None, reference_audio=None, reference_text=None):
+        """可先克隆再合成；整个组合任务共用模型和一次资源占用。"""
         self._text(text)
         selected = self._options(options, "synthesis")
+        if reference_audio is not None and selected.voice is not None:
+            raise TTSError("INVALID_INPUT", "synthesize", "参考音频与指定音色不能同时提供")
+        if reference_audio is None and reference_text is not None:
+            raise TTSError("INVALID_INPUT", "synthesize", "参考文字必须随参考音频提供")
         self._begin()
         try:
+            if reference_audio is not None:
+                voice = self._clone_voice(reference_audio, reference_text=reference_text)
+                selected = replace(selected, voice=voice)
             self._prepare()
             result = self._engine.synthesize(text, options=selected)
             if (
@@ -144,13 +153,20 @@ class Synthesizer:
 
     def clone_voice(self, reference_audio, *, reference_text=None) -> Voice:
         """使用本实例选定的模型克隆声音，不执行文字合成。"""
+        self._begin()
+        try:
+            return self._clone_voice(reference_audio, reference_text=reference_text)
+        finally:
+            self._end()
+
+    def _clone_voice(self, reference_audio, *, reference_text):
+        """独立克隆与组合合成共用控制流程；调用者持有任务占用。"""
         if not self.capabilities.voice_cloning:
             raise TTSError("CAPABILITY_UNSUPPORTED", "clone_voice", "所选模型不支持声音克隆")
         if reference_text is not None and (
             not isinstance(reference_text, str) or not reference_text.strip()
         ):
             raise TTSError("INVALID_INPUT", "clone_voice", "参考文字应为非空字符串或 None")
-        self._begin()
         try:
             audio = read_reference_audio(reference_audio)
             self._prepare()
@@ -162,8 +178,6 @@ class Synthesizer:
             raise
         except Exception as exc:
             raise TTSError("CLONING_FAILED", "clone_voice", "声音克隆失败") from exc
-        finally:
-            self._end()
 
     def close(self, *, timeout=5.0):
         """关闭超时保留资源拥有者，执行退出后再释放引擎。"""

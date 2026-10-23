@@ -1,10 +1,14 @@
 """百炼 Qwen TTS；每次任务使用一条独立连接。"""
 
+import base64
+import io
 import json
 import logging
 import socket
+import wave
+from dataclasses import replace
 from threading import Event, Lock, Timer
-from time import monotonic
+from time import monotonic, sleep
 from uuid import uuid4
 
 from speechio.adapters.contracts import TTSAdapter, TTSCapabilities
@@ -12,6 +16,7 @@ from speechio.audio.formats import AudioFormat
 from speechio.audio.results import AudioChunk, AudioResult
 from speechio.errors import TTSError
 from speechio.resources import CloseResult
+from speechio.tts.voices import Voice
 
 
 class BailianSynthesisEngine(TTSAdapter):
@@ -25,6 +30,7 @@ class BailianSynthesisEngine(TTSAdapter):
         language_selection=True,
         speed_control=True,
         instruction_control=True,
+        voice_cloning=True,
         sample_rates=(8000, 16000, 22050, 24000, 44100, 48000),
     )
 
@@ -45,12 +51,143 @@ class BailianSynthesisEngine(TTSAdapter):
             ) from None
 
     def open_stream(self, *, options):
+        options = self._voice_options(options)
         if not 0.5 <= options.speed <= 2.0:
             raise TTSError("INVALID_INPUT", "synthesize", "百炼语速应在 0.5 到 2.0 之间")
         stream = _BailianSynthesisStream(self.config, options, self._forget)
         with self._lock:
             self._streams.add(stream)
         return stream
+
+    def _voice_options(self, options):
+        """将保存的云端音色转成服务 ID，不重新创建音色或读取其中的地址。"""
+        voice = options.voice
+        if voice is None:
+            raise TTSError("INVALID_INPUT", "synthesize", "百炼当前合成接口需要指定音色")
+        if not isinstance(voice, Voice):
+            return options
+        if (
+            voice.adapter != "bailian"
+            or voice.model != self.config.model
+            or voice.data_version != 1
+        ):
+            raise TTSError("VOICE_INCOMPATIBLE", "synthesize", "音色与百炼模型不兼容")
+        try:
+            value = json.loads(voice.data)
+            voice_id = value["voice_id"]
+            if (
+                not isinstance(voice_id, str)
+                or not voice_id.strip()
+                or value["base_url"] != self._root_url()
+            ):
+                raise ValueError
+        except (ValueError, KeyError, TypeError):
+            raise TTSError(
+                "VOICE_INCOMPATIBLE", "synthesize", "音色数据无效或服务地址不匹配"
+            ) from None
+        return replace(options, voice=voice_id)
+
+    def _root_url(self):
+        return (self.config.base_url or "https://dashscope.aliyuncs.com").rstrip("/")
+
+    def clone_voice(self, reference_audio, *, reference_text=None):
+        """创建云端音色并等到可用；不执行试听合成，不保存密钥或原录音。"""
+        if reference_text is not None:
+            raise TTSError("CAPABILITY_UNSUPPORTED", "clone_voice", "百炼音色创建不接收参考文字")
+        if (
+            reference_audio.format.sample_rate < 16000
+            or not 5 <= reference_audio.duration_seconds <= 60
+            or len(reference_audio.data) + 44 > 10 * 1024 * 1024
+        ):
+            raise TTSError(
+                "INVALID_INPUT",
+                "clone_voice",
+                "百炼参考录音须为 5～60 秒、至少 16 kHz、WAV 不超过 10 MB",
+            )
+        try:
+            import httpx
+        except ImportError:
+            raise TTSError(
+                "OPTIONAL_DEPENDENCY_MISSING", "clone_voice", "请安装 speechio[remote]"
+            ) from None
+
+        buffer = io.BytesIO()
+        with wave.open(buffer, "wb") as output:
+            output.setnchannels(1)
+            output.setsampwidth(2)
+            output.setframerate(reference_audio.format.sample_rate)
+            output.writeframes(reference_audio.data)
+        audio = "data:audio/wav;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+        with httpx.Client(follow_redirects=False) as client:
+            output = self._enrollment_request(
+                client,
+                {
+                    "action": "create_voice",
+                    "target_model": self.config.model,
+                    "prefix": "speechio",
+                    "audio": audio,
+                },
+                timeout=self.config.timeout_seconds,
+            )
+            voice_id = output.get("voice_id")
+            if not isinstance(voice_id, str) or not voice_id.strip():
+                raise TTSError("PROTOCOL_ERROR", "clone_voice", "百炼没有返回有效音色 ID")
+            deadline = monotonic() + self.config.timeout_seconds
+            try:
+                while True:
+                    remaining = deadline - monotonic()
+                    if remaining <= 0:
+                        raise TTSError("REMOTE_TIMEOUT", "clone_voice", "等待云端音色可用超时")
+                    output = self._enrollment_request(
+                        client, {"action": "query_voice", "voice_id": voice_id}, timeout=remaining
+                    )
+                    status = output.get("status")
+                    if status == "OK":
+                        break
+                    if status != "DEPLOYING":
+                        raise TTSError("CLONING_FAILED", "clone_voice", "云端音色未能创建成功")
+                    sleep(min(0.5, max(0, deadline - monotonic())))
+            except TTSError as exc:
+                # 创建后查询失败不代表音色不存在；保留 ID 供调用方查询，禁止重建或删除。
+                exc.add_note(f"云端已返回音色 ID：{voice_id}；未自动重建或删除")
+                raise
+        return Voice(
+            adapter="bailian",
+            model=self.config.model,
+            data=json.dumps({"voice_id": voice_id, "base_url": self._root_url()}).encode("utf-8"),
+        )
+
+    def _enrollment_request(self, client, payload, *, timeout):
+        """一次创建或查询请求；不重试、不重定向，也不回显服务原文中的敏感数据。"""
+        import httpx
+
+        try:
+            response = client.post(
+                self._root_url() + "/api/v1/services/audio/tts/customization",
+                headers={"Authorization": f"Bearer {self.config.api_key}"},
+                json={"model": "voice-enrollment", "input": payload},
+                timeout=timeout,
+            )
+        except httpx.TimeoutException:
+            raise TTSError(
+                "REMOTE_TIMEOUT", "clone_voice", "百炼音色请求超时，未自动重试"
+            ) from None
+        except httpx.HTTPError:
+            raise TTSError(
+                "REMOTE_CONNECTION", "clone_voice", "百炼音色请求失败，未自动重试"
+            ) from None
+        if not response.is_success:
+            code = {401: "REMOTE_AUTH", 403: "REMOTE_AUTH", 429: "REMOTE_RATE_LIMIT"}.get(
+                response.status_code, "REMOTE_SERVICE"
+            )
+            raise TTSError(code, "clone_voice", "百炼拒绝音色请求，未自动重试")
+        try:
+            output = response.json()["output"]
+            if not isinstance(output, dict):
+                raise ValueError
+            return output
+        except (ValueError, TypeError, KeyError):
+            raise TTSError("PROTOCOL_ERROR", "clone_voice", "百炼音色响应格式无效") from None
 
     def _forget(self, stream):
         with self._lock:

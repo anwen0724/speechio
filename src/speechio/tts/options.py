@@ -22,17 +22,19 @@ def validate_seconds(value, name, *, positive=False, optional=False):
 
 @dataclass(frozen=True, kw_only=True)
 class SynthesisOptions:
-    """音色必填；未指定的语言、风格和采样率交由后端决定。"""
+    """未指定音色时保留模型原生默认行为，其余设置按模型能力校验。"""
 
-    voice: str | Voice
+    voice: str | Voice | None = None
     language: str | None = None
     speed: float = 1.0
     instruction: str | None = None
     sample_rate: int | None = None
 
     def __post_init__(self):
-        if not isinstance(self.voice, Voice) and (
-            not isinstance(self.voice, str) or not self.voice.strip()
+        if (
+            self.voice is not None
+            and not isinstance(self.voice, Voice)
+            and (not isinstance(self.voice, str) or not self.voice.strip())
         ):
             raise TTSError("INVALID_INPUT", "synthesize", "voice 应为非空音色 ID 或 Voice")
         for name in ("language", "instruction"):
