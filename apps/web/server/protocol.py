@@ -61,12 +61,51 @@ class SynthesisConfig(BaseModel):
     model: str
     mode: Literal["full", "stream", "incremental"] = "stream"
     voice: str | None = None
+    saved_voice_id: str | None = None
+    reference_audio_token: str | None = None
+    reference_text: str | None = None
     language: str | None = None
     speed: float | None = Field(default=None, gt=0)
     instruction: str | None = None
     sample_rate: int | None = Field(default=None, gt=0)
     timeout_seconds: float | None = Field(default=None, gt=0)
     max_buffer_seconds: float | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def validate_voice(self):
+        if (
+            sum(
+                bool(value)
+                for value in (self.voice, self.saved_voice_id, self.reference_audio_token)
+            )
+            > 1
+        ):
+            raise ValueError("预设音色、已保存音色和参考音频只能选择一项")
+        if self.reference_audio_token and self.mode != "full":
+            raise ValueError("参考音频直接合成只支持完整生成；流式请先克隆并保存音色")
+        if self.reference_text is not None and not self.reference_audio_token:
+            raise ValueError("参考文字需要同时上传参考音频")
+        return self
+
+
+class CloneVoiceRequest(BaseModel):
+    """独立克隆的模型与录音；名称只用于应用保存记录。"""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, allow_inf_nan=False)
+    model: str
+    name: str = Field(min_length=1, max_length=100)
+    reference_audio_token: str
+    reference_text: str | None = None
+    timeout_seconds: float | None = Field(default=None, gt=0)
+
+
+class ImportVoiceRequest(BaseModel):
+    """导入已有核心音色文件，并绑定本次选择的模型配置。"""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    model: str
+    name: str = Field(min_length=1, max_length=100)
+    file_token: str
 
 
 class SynthesisCommand(BaseModel):

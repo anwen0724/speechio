@@ -263,3 +263,12 @@ body[data-app=debug] .alert { background: #32241f; border-color: #684337; color:
 #tts-events summary { display: block; color: var(--text); }
 #tts-content .help { line-height: 1.8; }
 #tts-content .hero h1 { margin-bottom: 14px; }
+.voice-panel { padding: 22px; margin: 18px 0; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+.voice-panel audio { width: 100%; margin: 10px 0; }
+.voice-panel textarea { width: 100%; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--soft); color: var(--text); font: inherit; resize: vertical; }
+.voice-panel summary { cursor: pointer; padding: 12px 0; font-size: 13px; }
+.voice-tabs button[aria-pressed=true] { background: var(--text); color: var(--panel); }
+.voice-panel .tts-actions { gap: 8px; }
+.voice-panel a.quiet { text-decoration: none; }
+#tts-status { margin: 16px 0; }
+#tts-error { margin-bottom: 16px; }

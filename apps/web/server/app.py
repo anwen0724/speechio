@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from speechio import ASRError, SpeechioError
+from speechio import SpeechioError, STTError
 from speechio.audio.files import audio_file_chunks, read_audio_info
 
 from .files import Uploads
@@ -51,7 +51,7 @@ def create_app(settings=None, *, engine_factory=None):
     settings = settings if settings is not None else Settings.load()
     service = SpeechService(settings, engine_factory)
     uploads = Uploads(settings)
-    synthesis = SynthesisService(settings, service)
+    synthesis = SynthesisService(settings, service, uploads)
 
     async def expire_uploads():
         while True:
@@ -126,7 +126,7 @@ def create_app(settings=None, *, engine_factory=None):
         debug = socket.query_params.get("debug") == "1"
         try:
             if debug and not settings.debug:
-                raise ASRError("DEBUG_DISABLED", "connect", "调试台未启用")
+                raise STTError("DEBUG_DISABLED", "connect", "调试台未启用")
             command = Command.model_validate(await socket.receive_json())
             if command.type != "start":
                 raise ValueError("第一条消息必须是 start")
@@ -197,7 +197,7 @@ def create_app(settings=None, *, engine_factory=None):
                                 chunks.close()
                                 chunks = None
                             await socket.send_json({"type": "ack", "command": command.type})
-                        except (ASRError, ValueError) as error:
+                        except (STTError, ValueError) as error:
                             if command.type == "end_input":
                                 raise
                             await socket.send_json(failure(error, fatal=False))

@@ -2,6 +2,7 @@
 [web]
 upload_limit_mb = 1024 # 按 MiB 计算，1024 MiB = 1 GiB
 upload_dir = ".runtime/web-uploads"
+voices_dir = "apps/web/data/voices" # 持久保存克隆音色，重启不清除
 
 [models.whisper-tiny]
 model_path = ".runtime/models/whisper-tiny"

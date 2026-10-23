@@ -310,33 +310,32 @@ export async function startPage(debug) {
     const modelCode = (model, prefix = '') => {
       if (remote(model)) {
         const timeout = config[`${prefix}timeout_seconds`] ?? model.timeout_seconds;
-        const taskTimeout = model.file_transcription ? `, task_timeout_seconds=${config.task_timeout_seconds ?? model.task_timeout_seconds}` : '';
-        return `RemoteModelConfig(provider=${pythonValue(model.provider)}, model=${pythonValue(model.model)}, api_key=os.environ["DASHSCOPE_API_KEY"], timeout_seconds=${timeout}${taskTimeout})`;
+        return `RemoteModelConfig(provider=${pythonValue(model.provider)}, model=${pythonValue(model.model)}, api_key=os.environ["DASHSCOPE_API_KEY"], timeout_seconds=${timeout})`;
       }
       const precisionKey = `${prefix}compute_type`;
       const precision = Object.hasOwn(config, precisionKey) ? config[precisionKey] : model.compute_type;
       const device = config[`${prefix}device`] ?? model.device;
       const index = device === 'cpu' ? 0 : (config[`${prefix}device_index`] ?? model.device_index);
-      return `LocalModelConfig(engine=${pythonValue(model.engine)}, model_path="填写本地模型目录", device=${pythonValue(device)}, device_index=${index}, compute_type=${pythonValue(precision)})`;
+      return `LocalModelConfig(adapter=${pythonValue(model.engine)}, model_path="填写本地模型目录", device=${pythonValue(device)}, device_index=${index}, compute_type=${pythonValue(precision)})`;
     };
-    const lines = ['import os', 'from speechio import LocalModelConfig, RemoteModelConfig, Transcriber, RealtimeConfig, SessionConfig', '', `model = ${modelCode(selected)}`];
+    const lines = ['import os', 'from speechio import LocalModelConfig, RemoteModelConfig, Transcriber, TranscriptionOptions, RealtimeConfig, SessionConfig', '', `model = ${modelCode(selected)}`];
     if (config.input_mode === 'file') {
       lines.push(`with Transcriber(model, max_audio_seconds=${config.max_audio_seconds ?? 'None'}) as transcriber:`,
-        `    result = transcriber.transcribe_file("audio.wav", language=${pythonValue(config.language)})`, '    print(result.text)');
+        `    result = transcriber.transcribe_file("audio.wav", options=TranscriptionOptions(language=${pythonValue(config.language)}), task_timeout_seconds=${config.task_timeout_seconds ?? 3600})`, '    print(result.text)');
     } else {
-      lines.push('from speechio.runtime.asr import ASRRuntime');
+      lines.push('from speechio import STTRuntime');
       if (config.realtime && config.realtime_model) {
         const realtime = state.publicConfig.models.find(model => model.id === config.realtime_model);
         lines.push(`realtime_model = ${modelCode(realtime, 'realtime_')}`);
       }
       const realtime = config.realtime
-        ? `RealtimeConfig(mode=${pythonValue(config.realtime_mode)}, interval=${config.interval}${config.realtime_model ? ', model=realtime_model' : ''})` : 'None';
-      lines.push(`with ASRRuntime(model, realtime=${realtime}) as runtime:`);
+        ? `RealtimeConfig(mode=${pythonValue(config.realtime_mode)}, interval_seconds=${config.interval}${config.realtime_model ? ', config=realtime_model' : ''})` : 'None';
+      lines.push(`with STTRuntime(model, realtime=${realtime}) as runtime:`);
       if (config.segmentation === 'auto') {
         lines.push('    from speechio import VadConfig', '    from speechio.bundled import default_vad_model',
-          `    session = runtime.create_auto_session(config=SessionConfig(language=${pythonValue(config.language)}, realtime=${config.realtime ? 'True' : 'False'}, completion_mode=${pythonValue(config.completion_mode)}), vad=VadConfig(model_path=default_vad_model()))`);
+          `    session = runtime.create_auto_session(config=SessionConfig(options=TranscriptionOptions(language=${pythonValue(config.language)}), realtime=${config.realtime ? 'True' : 'False'}, completion_mode=${pythonValue(config.completion_mode)}), vad=VadConfig(model_path=default_vad_model()))`);
       } else {
-        lines.push(`    session = runtime.create_session(SessionConfig(language=${pythonValue(config.language)}, realtime=${config.realtime ? 'True' : 'False'}, completion_mode=${pythonValue(config.completion_mode)}))`, '    session.start()');
+        lines.push(`    session = runtime.create_session(SessionConfig(options=TranscriptionOptions(language=${pythonValue(config.language)}), realtime=${config.realtime ? 'True' : 'False'}, completion_mode=${pythonValue(config.completion_mode)}))`, '    session.start()');
       }
       lines.push('    # 输入 16 kHz 单声道 int16 音频：session.feed_audio(pcm)',
         `    # 输入结束：session.${config.segmentation === 'auto' ? 'end_input' : 'end_turn'}()`,

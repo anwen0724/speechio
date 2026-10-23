@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from apps.web.server.app import create_app
 from apps.web.server.settings import Settings, SynthesisPreset
 from speechio import AudioChunk, AudioFormat, AudioResult, RemoteModelConfig, SynthesisOptions
-from speechio.adapters.contracts import BaseSynthesisEngine, SynthesisCapabilities
+from speechio.adapters.contracts import TTSAdapter, TTSCapabilities
 from tests.tts.test_stream import ControlledBackend
 
 
@@ -26,8 +26,8 @@ class VoiceBackend(ControlledBackend):
         self.queue.put(None)
 
 
-class VoiceEngine(BaseSynthesisEngine):
-    capabilities = SynthesisCapabilities(
+class VoiceEngine(TTSAdapter):
+    capabilities = TTSCapabilities(
         default_sample_rate=24000, synthesis=True, audio_streaming=True, text_streaming=True
     )
 

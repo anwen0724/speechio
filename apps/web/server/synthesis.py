@@ -11,10 +11,18 @@ from anyio import CancelScope
 from fastapi import HTTPException, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
-from speechio import SpeechioError, SynthesisOptions, Synthesizer, TTSError
+from speechio import (
+    RemoteModelConfig,
+    SpeechioError,
+    SynthesisOptions,
+    Synthesizer,
+    TTSError,
+    Voice,
+)
 
-from .protocol import SynthesisCommand, SynthesisConfig
+from .protocol import CloneVoiceRequest, ImportVoiceRequest, SynthesisCommand, SynthesisConfig
 from .settings import model_summary
+from .voices import Voices
 
 
 class SynthesisFiles:
@@ -56,10 +64,12 @@ class SynthesisFiles:
 class SynthesisService:
     """复用识别服务的任务占用；关闭未完成时不允许下一次任务进入。"""
 
-    def __init__(self, settings, gate):
+    def __init__(self, settings, gate, uploads):
         self.settings = settings
         self.gate = gate
         self.files = SynthesisFiles(settings.upload_dir)
+        self.voices = Voices(settings.voices_dir)
+        self.uploads = uploads
         self.synth = None
         self.key = None
 
@@ -75,9 +85,18 @@ class SynthesisService:
         preset = self.settings.synthesis_models[request.model]
         options = asdict(preset.options)
         options.update(request.model_dump(include=set(options), exclude_unset=True))
+        if request.saved_voice_id:
+            options["voice"] = self.voices.load(request.saved_voice_id, preset.config)
+        if request.reference_audio_token:
+            if not preset.capabilities.voice_cloning:
+                raise TTSError("CAPABILITY_UNSUPPORTED", "clone_voice", "所选模型不支持声音克隆")
+            # 本次音源替换默认音色，不能同时将默认 ID 交给核心组合接口。
+            options["voice"] = None
         selected = SynthesisOptions(**options)
         model = preset.config
         if request.timeout_seconds is not None:
+            if not isinstance(model, RemoteModelConfig):
+                raise ValueError("网络等待时间只适用于云端模型")
             model = replace(model, timeout_seconds=request.timeout_seconds)
         buffer_seconds = request.max_buffer_seconds or preset.max_buffer_seconds
         return model, selected, buffer_seconds
@@ -105,11 +124,52 @@ class SynthesisService:
             "mode": request.mode,
             "options": {
                 **asdict(options),
+                "voice": {"saved_voice_id": request.saved_voice_id}
+                if isinstance(options.voice, Voice)
+                else options.voice,
                 "sample_rate": options.sample_rate or caps.default_sample_rate,
             },
             "max_buffer_seconds": buffer_seconds,
         }
         return options, effective
+
+    async def clone(self, request, *, debug):
+        """占用同一任务槽，调用独立克隆并保存；断线也等待 SDK 释放。"""
+        config = SynthesisConfig(
+            model=request.model, mode="full", timeout_seconds=request.timeout_seconds
+        )
+        model, _, _ = self.resolve(config, debug=debug)
+        if not self.settings.synthesis_models[request.model].capabilities.voice_cloning:
+            raise TTSError("CAPABILITY_UNSUPPORTED", "clone_voice", "所选模型不支持声音克隆")
+        self.gate.claim("voice-clone")
+        path = None
+        work = None
+        started = monotonic()
+        try:
+            path = self.uploads.take(request.reference_audio_token)
+            await self.prepare(config, debug=debug)
+            work = asyncio.create_task(
+                asyncio.to_thread(
+                    self.synth.clone_voice, path, reference_text=request.reference_text
+                )
+            )
+            voice = await asyncio.shield(work)
+            record = self.voices.save(
+                voice, name=request.name, model_key=request.model, model=model
+            )
+            return {
+                "voice": record,
+                "elapsed_seconds": monotonic() - started,
+                "effective_config": model_summary(request.model, model, synthesis=True),
+            }
+        finally:
+            with CancelScope(shield=True):
+                if work is not None:
+                    await asyncio.gather(work, return_exceptions=True)
+                if path is not None:
+                    path.unlink(missing_ok=True)
+                await self.release()
+                self.gate.owner = None
 
     async def release(self):
         if self.synth is None:
@@ -128,6 +188,7 @@ class SynthesisService:
         """控制消息与音频读取并行等待；不取消正在执行 SDK 的线程。"""
         receive = work = None
         stream = output = path = token = None
+        reference_path = None
         claimed = success = cancelled = False
         metrics = {"chunks": 0, "bytes": 0, "first_audio_seconds": None}
         started = monotonic()
@@ -180,6 +241,8 @@ class SynthesisService:
                 raise ValueError("请输入需要合成的文字")
             self.gate.claim(socket)
             claimed = True
+            if config.reference_audio_token:
+                reference_path = self.uploads.take(config.reference_audio_token)
             options, effective = await self.prepare(config, debug=debug)
             rate = effective["options"]["sample_rate"]
             receive = asyncio.create_task(socket.receive())
@@ -191,7 +254,12 @@ class SynthesisService:
             if config.mode == "full":
                 await send(ready)
                 result = await wait_work(
-                    lambda: self.synth.synthesize(command.text, options=options)
+                    lambda: self.synth.synthesize(
+                        command.text,
+                        options=options,
+                        reference_audio=reference_path,
+                        reference_text=config.reference_text,
+                    )
                 )
                 write_audio(result.data, rate)
             else:
@@ -276,6 +344,8 @@ class SynthesisService:
                         success, error = False, exc
                 if output is not None:
                     output.close()
+                if reference_path is not None:
+                    reference_path.unlink(missing_ok=True)
                 if path is not None:
                     if success:
                         self.files.keep(token, path)
@@ -308,6 +378,53 @@ class SynthesisService:
 def install_synthesis_routes(app, service, same_origin):
     """挂载合成专用路由；沿用页面的同源与调试开关。"""
     from fastapi import WebSocket
+
+    @app.get("/api/voices")
+    async def voices(model: str):
+        preset = service.settings.synthesis_models.get(model)
+        if preset is None:
+            raise HTTPException(400, "请选择已配置的合成模型")
+        return {"voices": service.voices.list(preset.config)}
+
+    @app.post("/api/voices/clone")
+    async def clone(request: CloneVoiceRequest, debug: bool = False):
+        if debug and not service.settings.debug:
+            raise HTTPException(403, "调试台未启用")
+        try:
+            return await service.clone(request, debug=debug)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+
+    @app.get("/api/voices/{voice_id}/download")
+    async def download_voice(voice_id: str):
+        return service.voices.download(voice_id)
+
+    @app.post("/api/voices/import")
+    async def import_voice(request: ImportVoiceRequest):
+        preset = service.settings.synthesis_models.get(request.model)
+        if preset is None or not preset.capabilities.voice_cloning:
+            raise HTTPException(400, "请选择支持克隆音色的模型")
+        service.gate.claim("voice-import")
+        path = None
+        try:
+            path = service.uploads.take(request.file_token)
+            voice = service.voices.import_file(
+                path, name=request.name, model_key=request.model, model=preset.config
+            )
+            return {"voice": voice}
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        finally:
+            if path is not None:
+                path.unlink(missing_ok=True)
+            service.gate.owner = None
+
+    @app.delete("/api/voices/{voice_id}")
+    async def remove_voice(voice_id: str):
+        if service.gate.owner is not None:
+            raise HTTPException(409, "任务正在使用模型，请先结束任务")
+        service.voices.remove(voice_id)
+        return {"status": "ok"}
 
     @app.websocket("/api/synthesis")
     async def synthesis_socket(socket: WebSocket):

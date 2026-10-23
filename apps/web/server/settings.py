@@ -13,11 +13,17 @@ from speechio import (
     SpeechioError,
     SynthesisOptions,
     Synthesizer,
-    WakeConfig,
+    WakeWordConfig,
 )
+from speechio.models.factory import engine_capabilities
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.toml"
 DEFAULT_ENV_PATH = Path(__file__).resolve().parents[1] / ".env"
+
+
+def transcription_capabilities(model):
+    """读取核心适配器能力声明，不因缺少密钥阻止页面打开。"""
+    return engine_capabilities(model)
 
 
 class CredentialSettings(BaseSettings):
@@ -56,15 +62,15 @@ def model_summary(key, model, *, synthesis=False):
             "model": model.model,
             "timeout_seconds": model.timeout_seconds,
             **(
-                {"task_timeout_seconds": model.task_timeout_seconds}
-                if not synthesis and model.capabilities.file_transcription
+                {"task_timeout_seconds": 3600}
+                if not synthesis and transcription_capabilities(model).file_transcription
                 else {}
             ),
         }
     return {
         "id": key,
         "source": "local",
-        "engine": model.engine,
+        "engine": model.adapter,
         "device": model.device,
         "device_index": model.device_index,
         "compute_type": model.compute_type,
@@ -76,6 +82,9 @@ def load_model(value):
     options = dict(value)
     source = options.pop("source", "local")
     if source == "local":
+        # 兼容现有 Web 配置拼写；核心包统一使用 adapter。
+        if "engine" in options:
+            options["adapter"] = options.pop("engine")
         return LocalModelConfig(**options)
     if source != "remote":
         raise ValueError("模型 source 应为 local 或 remote")
@@ -124,6 +133,16 @@ class SynthesisPreset:
             "max_buffer_seconds": self.max_buffer_seconds,
             "capabilities": asdict(self.capabilities),
             "api_key_configured": bool(getattr(self.config, "api_key", None)),
+            "voice_inputs": {
+                "preset": isinstance(self.config, RemoteModelConfig)
+                or self.config.adapter != "qwen_tts",
+                "reference_text": getattr(self.config, "adapter", None) == "qwen_tts",
+                "reference_hint": (
+                    "参考录音需 5–60 秒、采样率至少 16 kHz；解码后的单声道 WAV 不超过 10 MiB。"
+                    if isinstance(self.config, RemoteModelConfig)
+                    else "上传清晰的单人录音；参考文字可选，应与录音内容一致。"
+                ),
+            },
         }
 
 
@@ -135,8 +154,10 @@ class Settings:
     debug: bool = False
     upload_limit_bytes: int = 1024 * 1024 * 1024
     upload_dir: Path = Path(".runtime/web-uploads")
-    wakes: dict[str, WakeConfig] = field(default_factory=dict)
+    wakes: dict[str, WakeWordConfig] = field(default_factory=dict)
     synthesis_models: dict[str, SynthesisPreset] = field(default_factory=dict)
+    voices_dir: Path = Path("apps/web/data/voices")
+    task_timeouts: dict[str, float] = field(default_factory=dict)
 
     def __post_init__(self):
         if not self.models and not self.synthesis_models:
@@ -144,7 +165,7 @@ class Settings:
         if self.upload_limit_bytes <= 0:
             raise ValueError("上传大小限制必须为正数")
         for model in self.models.values():
-            model.capabilities
+            transcription_capabilities(model)
 
     @classmethod
     def load(cls, path=None, *, debug=False):
@@ -162,7 +183,7 @@ class Settings:
         try:
             data = tomllib.loads(content)
             options = data.get("web", {})
-            models, synthesis_models = {}, {}
+            models, synthesis_models, task_timeouts = {}, {}, {}
             for key, value in data.get("models", {}).items():
                 value = dict(value)
                 task = value.pop("task", "transcription")
@@ -174,6 +195,7 @@ class Settings:
                         load_model(value), defaults, voices, buffer_seconds
                     )
                 elif task == "transcription":
+                    task_timeouts[key] = value.pop("task_timeout_seconds", 3600)
                     models[key] = load_model(value)
                 else:
                     raise ValueError("task 应为 transcription 或 synthesis")
@@ -183,8 +205,10 @@ class Settings:
                 upload_dir=Path(options.get("upload_dir", ".runtime/web-uploads")),
                 models=models,
                 synthesis_models=synthesis_models,
+                voices_dir=Path(options.get("voices_dir", "apps/web/data/voices")),
+                task_timeouts=task_timeouts,
                 wakes={
-                    key: WakeConfig(
+                    key: WakeWordConfig(
                         **{
                             name: tuple(value) if name in ("model_paths", "keywords") else value
                             for name, value in options.items()
@@ -208,14 +232,19 @@ class Settings:
             "models": [
                 {
                     **model_summary(key, model),
+                    **(
+                        {"task_timeout_seconds": self.task_timeouts.get(key, 3600)}
+                        if transcription_capabilities(model).file_transcription
+                        else {}
+                    ),
                     "devices": []
                     if isinstance(model, RemoteModelConfig)
-                    else (["cpu", "gpu"] if model.engine == "whisper" else ["cpu"]),
+                    else (["cpu", "gpu"] if model.adapter == "whisper" else ["cpu"]),
                     "compute_types": []
                     if isinstance(model, RemoteModelConfig)
                     else (
                         [None, "int8", "float16", "float32", "int8_float16"]
-                        if model.engine == "whisper"
+                        if model.adapter == "whisper"
                         else [None, "int8"]
                     ),
                     **(
@@ -223,12 +252,12 @@ class Settings:
                         if isinstance(model, RemoteModelConfig)
                         else {}
                     ),
-                    "snapshot": model.capabilities.snapshot,
-                    "transcription": model.capabilities.transcription,
-                    "file_transcription": model.capabilities.file_transcription,
-                    "url_transcription": model.capabilities.url_transcription,
-                    "streaming": model.capabilities.streaming,
-                    "word_timestamps": model.capabilities.word_timestamps,
+                    "snapshot": transcription_capabilities(model).snapshot,
+                    "transcription": transcription_capabilities(model).transcription,
+                    "file_transcription": transcription_capabilities(model).file_transcription,
+                    "url_transcription": transcription_capabilities(model).url_transcription,
+                    "streaming": transcription_capabilities(model).streaming,
+                    "word_timestamps": transcription_capabilities(model).word_timestamps,
                 }
                 for key, model in self.models.items()
             ],

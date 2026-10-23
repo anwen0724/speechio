@@ -94,7 +94,9 @@ class WebRemoteTests(unittest.TestCase):
                     if not failed:
                         socket.send_json({"type": "close"})
                 self.assertEqual(final, None if failed else "你好 hello")
-                self.assertEqual(model.task_timeout_seconds, 3600)
+                self.assertEqual(
+                    client.get("/api/config").json()["models"][0]["task_timeout_seconds"], 3600
+                )
             self.assertEqual(list(Path(directory).iterdir()), [])
 
     def test_independent_remote_timeouts_reach_engines_and_public_configuration(self):
@@ -220,7 +222,7 @@ class WebRemoteTests(unittest.TestCase):
             models={
                 "cloud": RemoteModelConfig(provider="bailian", model=FLASH, api_key="test-secret"),
                 "unconfigured": RemoteModelConfig(provider="bailian", model=FLASH),
-                "local": LocalModelConfig(engine="whisper", model_path="unused"),
+                "local": LocalModelConfig(adapter="whisper", model_path="unused"),
             },
             debug=True,
         )

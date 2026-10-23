@@ -6,13 +6,13 @@ from fastapi.testclient import TestClient
 
 from apps.web.server.app import create_app
 from apps.web.server.settings import Settings
-from speechio import ModelConfig
+from speechio import LocalModelConfig
 from tests.runtime.test_engine_injection import RecordingEngine
 
 
 class ModelOptionsTests(unittest.TestCase):
     def test_prepare_overrides_defaults_without_changing_saved_configuration(self):
-        original = ModelConfig(engine="whisper", model_path="test-model", compute_type="int8")
+        original = LocalModelConfig(adapter="whisper", model_path="test-model", compute_type="int8")
         settings = Settings(models={"main": original}, debug=True)
         received = []
 
@@ -42,8 +42,10 @@ class ModelOptionsTests(unittest.TestCase):
     def test_realtime_model_uses_its_own_overrides_and_returns_them_on_start(self):
         settings = Settings(
             models={
-                "main": ModelConfig(engine="whisper", model_path="main", compute_type="int8"),
-                "preview": ModelConfig(engine="whisper", model_path="preview", compute_type="int8"),
+                "main": LocalModelConfig(adapter="whisper", model_path="main", compute_type="int8"),
+                "preview": LocalModelConfig(
+                    adapter="whisper", model_path="preview", compute_type="int8"
+                ),
             },
             debug=True,
         )
@@ -84,7 +86,7 @@ class ModelOptionsTests(unittest.TestCase):
     def test_precision_inheritance_default_and_changes_control_model_reuse(self):
         settings = Settings(
             models={
-                "main": ModelConfig(engine="whisper", model_path="main", compute_type="int8"),
+                "main": LocalModelConfig(adapter="whisper", model_path="main", compute_type="int8"),
             },
             debug=True,
         )
@@ -110,8 +112,8 @@ class ModelOptionsTests(unittest.TestCase):
     def test_incompatible_overrides_are_rejected_before_loading(self):
         settings = Settings(
             models={
-                "native": ModelConfig(engine="nemotron", model_path="native"),
-                "main": ModelConfig(engine="whisper", model_path="main"),
+                "native": LocalModelConfig(adapter="nemotron", model_path="native"),
+                "main": LocalModelConfig(adapter="whisper", model_path="main"),
             },
             debug=True,
         )

@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from apps.web.server.app import create_app
 from apps.web.server.settings import Settings
-from speechio import ModelConfig
+from speechio import LocalModelConfig
 from tests.audio.encoded_samples import encoded_audio
 from tests.runtime.test_engine_injection import RecordingEngine
 
@@ -20,7 +20,7 @@ from tests.runtime.test_engine_injection import RecordingEngine
 def make_settings(**options):
     """路由测试显式提供模型，不读取开发者的本机配置。"""
     return Settings(
-        models={"whisper-tiny": ModelConfig(engine="whisper", model_path="test-model")},
+        models={"whisper-tiny": LocalModelConfig(adapter="whisper", model_path="test-model")},
         **options,
     )
 

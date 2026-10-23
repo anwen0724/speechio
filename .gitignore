@@ -19,3 +19,4 @@ AGENTS.md
 /config.toml
 /apps/web/config.toml
 /apps/web/.env
+/apps/web/data/

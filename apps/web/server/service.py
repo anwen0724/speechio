@@ -4,22 +4,23 @@ import asyncio
 from dataclasses import asdict, replace
 
 from speechio import (
-    ASRError,
     AudioFormat,
-    CandidateConfig,
+    OnDemandConfig,
     RealtimeConfig,
     RemoteModelConfig,
     SegmentationConfig,
     SessionConfig,
     StabilizationConfig,
+    STTError,
+    STTRuntime,
     Transcriber,
+    TranscriptionOptions,
     VadConfig,
 )
 from speechio.bundled import default_vad_model
-from speechio.runtime.asr import ASRRuntime
 
 from .protocol import event_message
-from .settings import model_summary
+from .settings import model_summary, transcription_capabilities
 
 
 class SpeechService:
@@ -36,31 +37,31 @@ class SpeechService:
     def claim(self, owner):
         """在事件循环内占用任务，禁止另一个页面接管会话。"""
         if self.owner is not None:
-            raise ASRError("WEB_BUSY", "start", "另一个页面正在使用模型，请先结束该任务")
+            raise STTError("WEB_BUSY", "start", "另一个页面正在使用模型，请先结束该任务")
         if self.runtime is not None and self.runtime.state == "closing":
-            raise ASRError("WEB_BUSY", "start", "模型仍在关闭，请等待后台推理返回")
+            raise STTError("WEB_BUSY", "start", "模型仍在关闭，请等待后台推理返回")
         self.owner = owner
 
     def validate(self, config, *, debug=False):
         """预设和高级操作在服务端验证，不能只依赖页面隐藏按钮。"""
         if config.model not in self.settings.models:
-            raise ASRError("INVALID_CONFIGURATION", "configure", "未知模型预设")
+            raise STTError("INVALID_CONFIGURATION", "configure", "未知模型预设")
         if config.realtime_model and config.realtime_model not in self.settings.models:
-            raise ASRError("INVALID_CONFIGURATION", "configure", "未知实时模型预设")
+            raise STTError("INVALID_CONFIGURATION", "configure", "未知实时模型预设")
         if config.wake and config.wake not in self.settings.wakes:
-            raise ASRError("INVALID_CONFIGURATION", "configure", "未知唤醒预设")
+            raise STTError("INVALID_CONFIGURATION", "configure", "未知唤醒预设")
         if not debug and (config.input_mode == "chunks" or config.candidates or config.correction):
-            raise ASRError("DEBUG_DISABLED", "configure", "该功能只对启用的调试台开放")
+            raise STTError("DEBUG_DISABLED", "configure", "该功能只对启用的调试台开放")
         model = self.resolve_model(config)
         # 文件模型不接收连续音频；在领取上传文件或准备资源前检查能力。
-        caps = model.capabilities
+        caps = transcription_capabilities(model)
         supported = (
             caps.transcription or caps.file_transcription
             if config.input_mode == "file"
             else caps.transcription
         )
         if not supported:
-            raise ASRError("BACKEND_INCOMPATIBLE", "configure", "模型不支持所选输入方式")
+            raise STTError("BACKEND_INCOMPATIBLE", "configure", "模型不支持所选输入方式")
         realtime_fields = {
             "realtime_device",
             "realtime_device_index",
@@ -70,15 +71,15 @@ class SpeechService:
         if config.model_fields_set & realtime_fields and (
             not config.realtime_model or not config.realtime or config.input_mode == "file"
         ):
-            raise ASRError("INVALID_CONFIGURATION", "configure", "独立实时参数需要启用独立实时模型")
+            raise STTError("INVALID_CONFIGURATION", "configure", "独立实时参数需要启用独立实时模型")
         realtime_model = (
             self.resolve_model(config, realtime=True) if config.realtime_model else model
         )
-        caps = realtime_model.capabilities
+        caps = transcription_capabilities(realtime_model)
         if config.realtime and config.input_mode != "file":
             supported = caps.snapshot if config.realtime_mode == "snapshot" else caps.streaming
             if not supported:
-                raise ASRError("BACKEND_INCOMPATIBLE", "configure", "模型不支持所选实时方式")
+                raise STTError("BACKEND_INCOMPATIBLE", "configure", "模型不支持所选实时方式")
 
     def resolve_model(self, config, *, realtime=False):
         """仅覆盖本次明确传入的字段；空精度表示引擎默认，不改变文件配置。"""
@@ -99,39 +100,45 @@ class SpeechService:
         overrides = {name: getattr(config, prefix + name) for name in fields}
         if isinstance(base, RemoteModelConfig):
             if fields - {"timeout_seconds", "task_timeout_seconds"}:
-                raise ASRError("INVALID_CONFIGURATION", "configure", "云端模型不接受本地设备或精度")
+                raise STTError("INVALID_CONFIGURATION", "configure", "云端模型不接受本地设备或精度")
             if "task_timeout_seconds" in fields and (
-                not base.capabilities.file_transcription or config.input_mode != "file"
+                not transcription_capabilities(base).file_transcription
+                or config.input_mode != "file"
             ):
-                raise ASRError(
+                raise STTError(
                     "INVALID_CONFIGURATION", "configure", "任务等待时间只适用于长音频文件模型"
                 )
             if not base.api_key:
-                raise ASRError(
+                raise STTError(
                     "INVALID_CONFIGURATION",
                     "configure",
                     "未配置云端密钥；请填写 config.toml 的 apikey，"
                     "或按 api_key_env 配置进程环境变量 / apps/web/.env 后重启服务",
                 )
+            overrides.pop("task_timeout_seconds", None)
             return replace(base, **overrides)
         if fields & {"timeout_seconds", "task_timeout_seconds"}:
-            raise ASRError("INVALID_CONFIGURATION", "configure", "远程请求超时只适用于云端模型")
+            raise STTError("INVALID_CONFIGURATION", "configure", "远程请求超时只适用于云端模型")
         model = replace(base, **overrides)
         if model.device not in ("cpu", "gpu") or model.device_index is None:
-            raise ASRError("INVALID_CONFIGURATION", "configure", "设备和设备序号不能留空")
+            raise STTError("INVALID_CONFIGURATION", "configure", "设备和设备序号不能留空")
         if model.device == "cpu":
             if "device_index" in fields and model.device_index != 0:
-                raise ASRError("INVALID_CONFIGURATION", "configure", "CPU 的设备序号应为 0")
+                raise STTError("INVALID_CONFIGURATION", "configure", "CPU 的设备序号应为 0")
             model = replace(model, device_index=0)
-        if model.engine == "nemotron" and (
+        if model.adapter == "nemotron" and (
             model.device != "cpu" or model.compute_type not in (None, "int8")
         ):
-            raise ASRError("INVALID_CONFIGURATION", "configure", "Nemotron INT8 仅支持 CPU 和 INT8")
+            raise STTError("INVALID_CONFIGURATION", "configure", "Nemotron INT8 仅支持 CPU 和 INT8")
         return model
 
     def effective_config(self, config):
         """返回服务端组合后的请求配置，不将请求精度宣称为硬件实测精度。"""
         main = model_summary(config.model, self.resolve_model(config))
+        if transcription_capabilities(self.resolve_model(config)).file_transcription:
+            main["task_timeout_seconds"] = (
+                config.task_timeout_seconds or self.settings.task_timeouts.get(config.model, 3600)
+            )
         realtime = None
         if config.realtime and config.input_mode != "file":
             realtime = (
@@ -176,35 +183,32 @@ class SpeechService:
             return
         await self.release()
         if config.input_mode == "file":
-            options = (
-                {"engine": self.engine_factory(model)}
+            self.batch = (
+                Transcriber.from_adapter(
+                    self.engine_factory(model), max_audio_seconds=config.max_audio_seconds
+                )
                 if self.engine_factory
-                else {
-                    "config": model,
-                }
+                else Transcriber(model, max_audio_seconds=config.max_audio_seconds)
             )
-            self.batch = Transcriber(**options, max_audio_seconds=config.max_audio_seconds)
             self.model_key = key
             return
-        realtime = (
-            RealtimeConfig(
-                mode=config.realtime_mode,
-                interval=config.interval,
-                model=realtime_model if self.engine_factory is None else None,
-                engine=self.engine_factory(realtime_model)
+        realtime = None
+        if config.realtime:
+            options = {"mode": config.realtime_mode, "interval_seconds": config.interval}
+            realtime = (
+                RealtimeConfig.from_adapter(self.engine_factory(realtime_model), **options)
                 if self.engine_factory and realtime_model is not None
-                else None,
+                else RealtimeConfig(config=realtime_model, **options)
             )
-            if config.realtime
-            else None
+        options = {
+            "realtime": realtime,
+            "on_demand": OnDemandConfig() if config.candidates else None,
+        }
+        self.runtime = (
+            STTRuntime.from_adapter(self.engine_factory(model), **options)
+            if self.engine_factory
+            else STTRuntime(model, **options)
         )
-        candidate = CandidateConfig() if config.candidates else None
-        options = {"realtime": realtime, "candidate": candidate}
-        if self.engine_factory:
-            options["engine"] = self.engine_factory(model)
-        else:
-            options["config"] = model
-        self.runtime = ASRRuntime(**options)
         self.model_key = key
         try:
             await asyncio.to_thread(self.runtime.prepare)
@@ -219,16 +223,16 @@ class SpeechService:
             self.batch = None
             self.model_key = None
             if result.status == "failed":
-                raise ASRError("CLEANUP_FAILED", "close", str(result.errors))
+                raise STTError("CLEANUP_FAILED", "close", str(result.errors))
         if self.runtime is None:
             return {"status": "ok"}
         result = await asyncio.to_thread(self.runtime.close)
         if result.status == "pending":
-            raise ASRError("CLOSE_PENDING", "close", "后台推理尚未退出，模型正在关闭")
+            raise STTError("CLOSE_PENDING", "close", "后台推理尚未退出，模型正在关闭")
         self.runtime = None
         self.model_key = None
         if result.status == "failed":
-            raise ASRError("CLEANUP_FAILED", "close", "; ".join(e.message for e in result.errors))
+            raise STTError("CLEANUP_FAILED", "close", "; ".join(e.message for e in result.errors))
         return asdict(result)
 
     async def open_run(self, config, audio_format=None):
@@ -236,11 +240,12 @@ class SpeechService:
         session_config = SessionConfig(
             format=audio_format
             or AudioFormat(sample_rate=config.sample_rate, channels=config.channels),
-            language=config.language,
+            options=TranscriptionOptions(
+                language=config.language, word_timestamps=config.word_timestamps
+            ),
             realtime=config.realtime,
             completion_mode=config.completion_mode,
             stabilization=StabilizationConfig() if config.realtime and config.stabilize else None,
-            word_timestamps=config.word_timestamps,
             max_audio_samples=config.max_audio_samples,
             max_pending_units=config.max_pending_units,
             retain_for_correction=config.correction,
@@ -274,8 +279,11 @@ class SpeechService:
         return await asyncio.to_thread(
             self.batch.transcribe_file,
             path,
-            language=config.language,
-            word_timestamps=config.word_timestamps,
+            task_timeout_seconds=config.task_timeout_seconds
+            or self.settings.task_timeouts.get(config.model, 3600),
+            options=TranscriptionOptions(
+                language=config.language, word_timestamps=config.word_timestamps
+            ),
         )
 
 
@@ -292,9 +300,9 @@ class ActiveRun:
 
     def feed(self, audio):
         if self.ended:
-            raise ASRError("INPUT_ENDED", "feed", "输入已停止")
+            raise STTError("INPUT_ENDED", "feed", "输入已停止")
         if isinstance(audio, bytes) and len(audio) % (2 * self.config.channels):
-            raise ASRError("INVALID_AUDIO", "feed", "音频必须是完整的 int16 采样帧")
+            raise STTError("INVALID_AUDIO", "feed", "音频必须是完整的 int16 采样帧")
         self.session.feed_audio(audio)
         self.input_samples += (
             len(audio) // (2 * self.config.channels) if isinstance(audio, bytes) else len(audio)
@@ -308,7 +316,7 @@ class ActiveRun:
                 if manual:
                     try:
                         self.session.end_turn()
-                    except ASRError as error:
+                    except STTError as error:
                         # 没有采样的手动段仍交付核心包的失败事件，随后结束等待。
                         if error.code != "INVALID_AUDIO" or self.session.active_turn is not None:
                             raise
@@ -317,7 +325,7 @@ class ActiveRun:
                 self.ended = True
         elif name == "end_turn":
             if self.ended:
-                raise ASRError("INPUT_ENDED", name, "输入已停止")
+                raise STTError("INPUT_ENDED", name, "输入已停止")
             try:
                 self.session.end_turn()
             finally:
@@ -335,10 +343,10 @@ class ActiveRun:
             if manual:
                 self.session.start()
         elif name == "candidate":
-            self.session.request_candidate()
+            self.session.request_transcription()
         elif name == "correct":
             if self.last_turn is None:
-                raise ASRError("NO_COMPLETED_TURN", name, "还没有可修正的完成段")
+                raise STTError("NO_COMPLETED_TURN", name, "还没有可修正的完成段")
             self.session.request_correction(self.last_turn)
 
     def poll(self):

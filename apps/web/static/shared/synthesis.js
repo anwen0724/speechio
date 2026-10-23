@@ -1,6 +1,7 @@
 /** 合成页面的控件和任务状态；模型调用始终由本机服务完成。 */
 import { request } from './client.js';
 import { AudioPlayback } from './playback.js';
+import { mountVoices } from './voices.js';
 
 const field = (name, title, input) => `<label class="field"><span class="field-title">${title}</span>${input.replace('NAME', `tts-${name}`)}</label>`;
 const select = (name, title, options = '') => field(name, title, `<select id="NAME">${options}</select>`);
@@ -9,7 +10,7 @@ const input = (name, title, attrs = '') => field(name, title, `<input id="NAME" 
 function layout(debug) {
   const settings = `${select('model', '合成模型')}
     ${input('voice', '音色 ID', 'list="tts-voices" placeholder="选择或输入音色 ID"')}<datalist id="tts-voices"></datalist>
-    <p class="help">音色建议来自配置，也可直接填写模型支持的其他音色 ID。</p>
+    <p class="help" id="tts-preset-note">音色建议来自配置，也可直接填写模型支持的其他音色 ID。</p>
     ${select('language', '合成语言', '<option value="">模型默认</option><option value="zh">中文</option><option value="en">English</option>')}
     ${input('speed', '语速', 'type="number" min="0.5" max="2" step="0.1" value="1"')}
     <details class="settings-group" ${debug ? 'open' : ''}><summary>更多设置</summary>
@@ -24,7 +25,10 @@ function layout(debug) {
     : '<option value="full">完整生成</option><option value="stream" selected>边生成边播放</option>';
   const content = `<div class="toolbar">${select('mode', '生成方式', modes)}
       ${!debug ? '<button class="quiet" id="tts-settings-open">合成设置</button>' : ''}</div>
-    <section class="input-card tts-input">
+    <div id="tts-voice-controls"></div>
+    <p class="tts-status" role="status" id="tts-status">请选择模型并输入文字</p>
+    <div class="alert" role="alert" id="tts-error" hidden></div>
+    <section class="input-card tts-input" id="tts-input">
       <label class="field" for="tts-text"><span class="field-title" id="tts-text-title">输入需要朗读的文字</span></label>
       <textarea id="tts-text" rows="7" maxlength="200000" placeholder="在这里输入或粘贴文字，让 SpeechIO 读给你听。"></textarea>
       <div class="toolbar"><span class="subtle" id="tts-count">0 字</span><button class="quiet" id="tts-clear">清空</button></div>
@@ -32,11 +36,9 @@ function layout(debug) {
         <button class="quiet" id="tts-send" hidden>发送这段文字</button><button class="quiet" id="tts-finish" hidden>结束文本输入</button>
         <button class="quiet" id="tts-cancel" disabled>取消生成</button></div>
       <p class="help" id="tts-mode-note"></p>
-      <p class="tts-status" role="status" id="tts-status">请选择模型并输入文字</p>
-      <div class="alert" id="tts-error" role="alert" hidden></div>
     </section>
     ${debug ? '<section class="metrics tts-metrics" id="tts-metrics"></section>' : ''}
-    <section class="tts-result"><div class="toolbar"><h2>生成的语音</h2><button class="quiet" id="tts-stop">停止试听</button></div>
+    <section class="tts-result" id="tts-result"><div class="toolbar"><h2>生成的语音</h2><button class="quiet" id="tts-stop">停止试听</button></div>
       <p class="help" id="tts-play-state">尚未播放</p><audio id="tts-player" controls hidden></audio>
       <div class="toolbar"><p class="help" id="tts-result-info">完成后可重播、拖动进度和下载 WAV。</p>
       <a class="quiet" id="tts-download" download="speechio.wav" hidden>下载 WAV</a></div>
@@ -50,7 +52,7 @@ function layout(debug) {
     <div class="${debug ? 'studio-title' : 'hero'}"><div><p class="eyebrow">TEXT TO SPEECH</p><h1>${debug ? '语音合成调试台' : '写下来，听见它。'}</h1><p class="help">${debug ? '观察文本输入、音频返回与资源释放。' : '把文字变成声音，试听，再带走。'}</p></div>
       ${debug ? '<div class="session-actions"><button class="quiet" id="tts-prepare">准备模型</button><button class="quiet" id="tts-release">释放模型</button></div>' : ''}</div>
     ${debug ? `<div class="studio-grid"><aside class="config-panel"><h2>合成设置</h2><div class="tts-settings">${settings}</div></aside><div class="studio-content">${content}</div></div>` : content}
-    <footer class="page-footer">SpeechIO · 结果在本机临时保留 30 分钟；累计最多 128 MiB，超额时先移除旧结果。</footer>
+    <footer class="page-footer">SpeechIO · 合成音频临时保留 30 分钟，累计最多 128 MiB；已保存音色长期保留在本机。</footer>
     </main>${!debug ? `<div class="backdrop" id="tts-backdrop" hidden></div><section class="drawer" id="tts-drawer" role="dialog" aria-modal="true" aria-label="合成设置" hidden>
       <div class="drawer-head"><h2>按你的方式朗读</h2><button id="tts-settings-close" aria-label="关闭合成设置">×</button></div>
       <p class="drawer-intro">配置作为默认值；这里的修改只用于本次页面请求。</p>${settings}
@@ -63,6 +65,7 @@ export function mountSynthesis(root, debug, models) {
   let active = false, ready = false, ended = false, socket = null, events = [], playback;
   let terminal = false;
   let cancelRequested = false;
+  let voices, referenceToken = null;
   const model = () => models.find(item => item.id === $('model').value);
   const mode = () => $('mode').value;
   const status = message => { $('status').textContent = message; };
@@ -83,13 +86,17 @@ export function mountSynthesis(root, debug, models) {
     return {
       model: $('model').value,
       mode: mode(),
-      voice: $('voice').value,
+      ...(voices?.source() === 'saved' ? { saved_voice_id: voices.savedId() }
+        : voices?.source() === 'reference' ? {
+          ...(referenceToken ? { reference_audio_token: referenceToken } : {}),
+          ...(referenceToken && voices.referenceText() ? { reference_text: voices.referenceText() } : {}),
+        } : { voice: $('voice').value || null }),
       language: $('language').value || null,
       speed: Number($('speed').value),
       instruction: $('instruction').value || null,
       sample_rate: Number($('sample-rate').value) || null,
       ...(debug ? {
-        timeout_seconds: Number($('timeout').value),
+        ...(model()?.source === 'remote' ? { timeout_seconds: Number($('timeout').value) } : {}),
         max_buffer_seconds: Number($('buffer').value),
       } : {}),
     };
@@ -98,18 +105,33 @@ export function mountSynthesis(root, debug, models) {
   function code() {
     if (!debug) return;
     const c = config(), m = model();
-    $('config').textContent = JSON.stringify(c, null, 2);
-    const py = value => value === null ? 'None' : JSON.stringify(value);
-    const options = ['voice', 'language', 'speed', 'instruction', 'sample_rate']
+    if (!m) return;
+    const cloning = voices?.cloning(), reference = voices?.source() === 'reference';
+    const py = value => value == null ? 'None' : JSON.stringify(value);
+    $('config').textContent = JSON.stringify(cloning ? {
+      model: c.model, reference_audio: '页面选择的参考音频',
+      reference_text: voices.referenceText(), timeout_seconds: c.timeout_seconds,
+    } : { ...c, ...(reference ? { reference_audio: '页面选择的参考音频' } : {}) }, null, 2);
+    const local = m.source === 'local';
+    const modelConfig = local
+      ? `LocalModelConfig(adapter=${py(m.engine)}, model_path="path/to/model", device=${py(m.device)}, compute_type=${py(m.compute_type)}, device_index=${m.device_index})`
+      : `RemoteModelConfig(provider=${py(m.provider)}, model=${py(m.model)}, api_key=os.environ["DASHSCOPE_API_KEY"], timeout_seconds=${c.timeout_seconds})`;
+    const optionFields = ['language', 'speed', 'instruction', 'sample_rate']
       .map(key => `    ${key}=${py(c[key])},`).join('\n');
-    const calls = {
-      full: `    audio = synth.synthesize(text, options=options)
-    audio.save("speech.wav")`,
-      stream: `    with synth.stream(text, options=options) as stream:
+    const voice = c.saved_voice_id ? 'Voice.load("saved.voice")' : py(c.voice);
+    const options = `options = SynthesisOptions(\n    voice=${voice},\n${optionFields}\n)`;
+    let call;
+    if (cloning) {
+      call = `    voice = synth.clone_voice("reference.wav", reference_text=${py(voices.referenceText())})\n    voice.save("saved.voice")`;
+    } else if (c.mode === 'full') {
+      const extra = reference ? `, reference_audio="reference.wav", reference_text=${py(voices.referenceText())}` : '';
+      call = `    audio = synth.synthesize(text, options=options${extra})\n    audio.save("speech.wav")`;
+    } else if (c.mode === 'stream') {
+      call = `    with synth.stream(text, options=options) as stream:
         for chunk in stream:
-            print(len(chunk.data))  # 在应用中播放或保存 PCM 音频`,
-      incremental: `    with synth.open_stream(options=options) as stream:
-        # 单独读取音频，避免等待下一段文本时积压音频。
+            print(len(chunk.data))  # 应用负责播放或保存 PCM 音频`;
+    } else {
+      call = `    with synth.open_stream(options=options) as stream:
         def receive_audio():
             for chunk in stream:
                 print(len(chunk.data))
@@ -123,31 +145,31 @@ export function mountSynthesis(root, debug, models) {
             reader.join()
         finally:
             stream.close()
-            reader.join()`,
-    };
-    $('code').textContent = `import os
-${c.mode === 'incremental' ? 'from threading import Thread\n' : ''}from speechio import RemoteModelConfig, SynthesisOptions, Synthesizer
+            reader.join()`;
+    }
+    $('code').textContent = `${local ? '' : 'import os\n'}${!cloning && c.mode === 'incremental' ? 'from threading import Thread\n' : ''}from speechio import ${local ? 'LocalModelConfig' : 'RemoteModelConfig'}, SynthesisOptions, Synthesizer, Voice
 
-config = RemoteModelConfig(
-    provider=${py(m?.provider || 'bailian')},
-    model=${py(m?.model || '')},
-    api_key=os.environ["DASHSCOPE_API_KEY"],
-    timeout_seconds=${c.timeout_seconds},
-)
-options = SynthesisOptions(
-${options}
-)
-text = "你好，欢迎使用 SpeechIO。"
-with Synthesizer(config, max_buffer_seconds=${c.max_buffer_seconds}) as synth:
-${calls[c.mode]}`;
+# 本地模型目录、参考录音和音色文件请替换成自己的路径。
+config = ${modelConfig}
+${cloning ? '' : `${options}\ntext = "你好，欢迎使用 SpeechIO。"\n`}with Synthesizer(config, max_buffer_seconds=${c.max_buffer_seconds}) as synth:
+${call}`;
   }
 
   function controls() {
+    const cloning = voices?.cloning();
+    const m = model();
+    const reference = voices?.source() === 'reference';
+    const capabilities = { full: 'synthesis', stream: 'audio_streaming', incremental: 'text_streaming' };
+    [...$('mode').options].forEach(option => {
+      option.disabled = !m?.capabilities[capabilities[option.value]] || (reference && option.value !== 'full');
+    });
+    if ($('mode').selectedOptions[0]?.disabled) $('mode').value = 'full';
     const incremental = mode() === 'incremental';
     root.querySelectorAll('.field input, .field select').forEach(el => { el.disabled = active; });
     $('text').disabled = active && (!incremental || ended);
     $('clear').disabled = $('text').disabled;
-    $('start').disabled = active || !model() || (!incremental && !$('text').value.trim());
+    $('start').disabled = active || !model() || (!incremental && !$('text').value.trim())
+      || (reference && !voices.hasReference()) || (voices?.source() === 'saved' && !voices.savedId());
     $('start').textContent = incremental ? '打开合成任务' : '生成语音';
     $('cancel').disabled = !active || terminal || cancelRequested;
     $('send').hidden = $('finish').hidden = !incremental;
@@ -162,6 +184,21 @@ ${calls[c.mode]}`;
       ? '先打开任务，再逐段输入并发送；全部发送后点击“结束文本输入”，继续接收剩余音频。不要长时间停顿，服务可能关闭空闲连接。'
       : mode() === 'full' ? '完整生成返回后再试听。取消时等待正在执行的核心调用退出。'
       : '提交完整文字，收到音频即试听；停止试听不取消生成，取消生成会同时停止试听。';
+    $('input').hidden = $('result').hidden = Boolean(cloning);
+    $('mode').closest('.field').hidden = Boolean(cloning);
+    $('voice').closest('.field').hidden = Boolean(cloning) || voices?.source() !== 'preset';
+    $('preset-note').hidden = Boolean(cloning) || voices?.source() !== 'preset';
+    for (const [name, capability] of [
+      ['language', 'language_selection'], ['speed', 'speed_control'],
+      ['instruction', 'instruction_control'],
+    ]) $(name).closest('.field').hidden = Boolean(cloning) || !m?.capabilities[capability];
+    $('sample-rate').closest('.field').hidden = Boolean(cloning);
+    if (debug) {
+      $('timeout').closest('.field').hidden = m?.source !== 'remote';
+      $('buffer').closest('.field').hidden = Boolean(cloning);
+      $('buffer').closest('.field').nextElementSibling.hidden = Boolean(cloning);
+    }
+    voices?.setBusy(active);
     code();
   }
 
@@ -181,19 +218,8 @@ ${calls[c.mode]}`;
       $('timeout').value = m.timeout_seconds;
       $('buffer').value = m.max_buffer_seconds;
     }
-    const cap = m.capabilities;
-    for (const [id, allowed] of [
-      ['language', cap.language_selection], ['speed', cap.speed_control],
-      ['instruction', cap.instruction_control],
-    ]) $(id).closest('.field').hidden = !allowed;
-    const capabilities = { full: 'synthesis', stream: 'audio_streaming', incremental: 'text_streaming' };
-    [...$('mode').options].forEach(option => {
-      option.disabled = !cap[capabilities[option.value]];
-    });
-    if ($('mode').selectedOptions[0].disabled) {
-      $('mode').value = [...$('mode').options].find(option => !option.disabled)?.value || '';
-    }
-    $('model-note').textContent = m.api_key_configured ? '密钥已配置。语速与音色是否适用，由所选模型检查。' : '密钥未配置：请填写 config.toml 的 apikey 或 apps/web/.env，保存后重启服务。';
+    $('model-note').textContent = m.source === 'local' ? '使用服务端配置的本地模型目录与设备。' : m.api_key_configured ? '密钥已配置。语速与音色是否适用，由所选模型检查。' : '密钥未配置：请填写 config.toml 的 apikey 或 apps/web/.env，保存后重启服务。';
+    voices.modelChanged();
     controls();
   }
 
@@ -254,6 +280,12 @@ ${calls[c.mode]}`;
       metrics({ chunks: 0, bytes: 0 });
     }
     try {
+      voices.stopPreview();
+      if (voices.source() === 'reference') {
+        status('正在上传参考音频…');
+        referenceToken = await voices.uploadReference();
+        code();
+      }
       if (mode() !== 'full') {
         try {
           await playback.start(Number($('sample-rate').value) || model().capabilities.default_sample_rate);
@@ -266,6 +298,7 @@ ${calls[c.mode]}`;
       if (cancelRequested) {
         await playback.stop();
         active = false;
+        await discardReference();
         status('已取消，尚未提交合成任务');
         controls();
         return;
@@ -322,7 +355,7 @@ ${calls[c.mode]}`;
         controls();
       };
       socket.onerror = () => error(new Error('无法连接本机合成服务'));
-      socket.onclose = () => {
+      socket.onclose = async () => {
         if (!terminal) {
           status('连接已断开');
           void playback.stop();
@@ -331,15 +364,35 @@ ${calls[c.mode]}`;
         log({ type: 'connection_closed' });
         active = ready = false;
         socket = null;
+        await discardReference();
         controls();
       };
     } catch (exc) {
       active = false;
+      await discardReference();
       controls();
       await playback.stop();
       throw exc;
     }
   }
+
+  async function discardReference() {
+    const token = referenceToken;
+    referenceToken = null;
+    if (token) await request(`/api/uploads/${token}`, { method: 'DELETE' }).catch(() => {});
+  }
+
+  voices = mountVoices($('voice-controls'), {
+    model, debug, changed: controls, error, log, status,
+    busy(value) { active = value; if (value) $('error').hidden = true; controls(); },
+    cloneOptions: () => debug && model()?.source === 'remote' ? { timeout_seconds: Number($('timeout').value) } : {},
+    result(value) {
+      if (debug) {
+        $('effective').textContent = JSON.stringify(value.effective_config, null, 2);
+        $('metrics').textContent = `克隆并保存用时 ${value.elapsed_seconds.toFixed(2)} 秒`;
+      }
+    },
+  });
 
   $('model').replaceChildren(...models.map(item => new Option(item.id, item.id)));
   $('model').onchange = defaults;
@@ -429,6 +482,7 @@ ${calls[c.mode]}`;
   return {
     busy: () => active,
     hide: () => {
+      voices.stopPreview();
       $('player').pause();
       void playback.stop();
     },
