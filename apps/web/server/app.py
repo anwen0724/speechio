@@ -15,13 +15,14 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from speechio import ASRError
+from speechio import ASRError, SpeechioError
 from speechio.audio.files import audio_file_chunks, read_audio_info
 
 from .files import Uploads
 from .protocol import Command, RunConfig
 from .service import SpeechService
 from .settings import Settings
+from .synthesis import SynthesisService, install_synthesis_routes
 
 LOGGER = logging.getLogger(__name__)
 STATIC = Path(__file__).resolve().parents[1] / "static"
@@ -50,11 +51,13 @@ def create_app(settings=None, *, engine_factory=None):
     settings = settings if settings is not None else Settings.load()
     service = SpeechService(settings, engine_factory)
     uploads = Uploads(settings)
+    synthesis = SynthesisService(settings, service)
 
     async def expire_uploads():
         while True:
             await asyncio.sleep(30)
             uploads.expire()
+            synthesis.files.expire()
 
     @asynccontextmanager
     async def lifespan(app):
@@ -65,7 +68,13 @@ def create_app(settings=None, *, engine_factory=None):
             expiry.cancel()
             await asyncio.gather(expiry, return_exceptions=True)
             uploads.expire(all_files=True)
-            await service.release()
+            try:
+                await service.release()
+            finally:
+                try:
+                    await synthesis.release()
+                finally:
+                    synthesis.files.expire(all_files=True)
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.add_middleware(
@@ -84,7 +93,7 @@ def create_app(settings=None, *, engine_factory=None):
         )
         return response
 
-    @app.exception_handler(ASRError)
+    @app.exception_handler(SpeechioError)
     async def asr_error(request, error):
         return JSONResponse(failure(error), status_code=409 if error.code == "WEB_BUSY" else 400)
 
@@ -92,6 +101,8 @@ def create_app(settings=None, *, engine_factory=None):
     async def configuration():
         model = service.runtime or service.batch
         return {**settings.public(), "model_state": model.state if model else "unprepared"}
+
+    install_synthesis_routes(app, synthesis, same_origin)
 
     @app.post("/api/uploads")
     async def upload(request: Request):

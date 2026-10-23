@@ -1,13 +1,20 @@
 """本机配置负责路径与密钥，浏览器只选择公开的预设 ID。"""
 
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from pydantic import Field, SecretStr, create_model
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from speechio import ASRError, LocalModelConfig, RemoteModelConfig, WakeConfig
+from speechio import (
+    LocalModelConfig,
+    RemoteModelConfig,
+    SpeechioError,
+    SynthesisOptions,
+    Synthesizer,
+    WakeConfig,
+)
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.toml"
 DEFAULT_ENV_PATH = Path(__file__).resolve().parents[1] / ".env"
@@ -39,7 +46,7 @@ class CredentialSettings(BaseSettings):
         )
 
 
-def model_summary(key, model):
+def model_summary(key, model, *, synthesis=False):
     """公开本次请求采用的模型参数，不暴露服务器路径。"""
     if isinstance(model, RemoteModelConfig):
         return {
@@ -48,6 +55,11 @@ def model_summary(key, model):
             "provider": model.provider,
             "model": model.model,
             "timeout_seconds": model.timeout_seconds,
+            **(
+                {"task_timeout_seconds": model.task_timeout_seconds}
+                if not synthesis and model.capabilities.file_transcription
+                else {}
+            ),
         }
     return {
         "id": key,
@@ -91,17 +103,43 @@ def load_model(value):
 
 
 @dataclass
+class SynthesisPreset:
+    """Web 的合成默认值与音色建议；不把应用字段传给核心模型配置。"""
+
+    config: LocalModelConfig | RemoteModelConfig
+    options: SynthesisOptions
+    voices: tuple[str, ...] = ()
+    max_buffer_seconds: float = 10.0
+
+    def __post_init__(self):
+        synth = Synthesizer(self.config, max_buffer_seconds=self.max_buffer_seconds)
+        self.capabilities = synth.capabilities
+        synth.close()
+
+    def public(self, key):
+        return {
+            **model_summary(key, self.config, synthesis=True),
+            "defaults": asdict(self.options),
+            "voices": self.voices,
+            "max_buffer_seconds": self.max_buffer_seconds,
+            "capabilities": asdict(self.capabilities),
+            "api_key_configured": bool(getattr(self.config, "api_key", None)),
+        }
+
+
+@dataclass
 class Settings:
     """一个服务进程的配置；Web 依赖不进入 speechio 发布包。"""
 
     models: dict[str, LocalModelConfig | RemoteModelConfig]
     debug: bool = False
-    upload_limit_bytes: int = 100 * 1024 * 1024
+    upload_limit_bytes: int = 1024 * 1024 * 1024
     upload_dir: Path = Path(".runtime/web-uploads")
     wakes: dict[str, WakeConfig] = field(default_factory=dict)
+    synthesis_models: dict[str, SynthesisPreset] = field(default_factory=dict)
 
     def __post_init__(self):
-        if not self.models:
+        if not self.models and not self.synthesis_models:
             raise ValueError("配置中至少需要一个模型，请填写 [models.模型名称]")
         if self.upload_limit_bytes <= 0:
             raise ValueError("上传大小限制必须为正数")
@@ -124,11 +162,27 @@ class Settings:
         try:
             data = tomllib.loads(content)
             options = data.get("web", {})
+            models, synthesis_models = {}, {}
+            for key, value in data.get("models", {}).items():
+                value = dict(value)
+                task = value.pop("task", "transcription")
+                if task == "synthesis":
+                    defaults = SynthesisOptions(**value.pop("synthesis", {}))
+                    voices = tuple(value.pop("voices", ()))
+                    buffer_seconds = value.pop("max_buffer_seconds", 10.0)
+                    synthesis_models[key] = SynthesisPreset(
+                        load_model(value), defaults, voices, buffer_seconds
+                    )
+                elif task == "transcription":
+                    models[key] = load_model(value)
+                else:
+                    raise ValueError("task 应为 transcription 或 synthesis")
             return cls(
                 debug=debug,
-                upload_limit_bytes=int(options.get("upload_limit_mb", 100) * 1024 * 1024),
+                upload_limit_bytes=int(options.get("upload_limit_mb", 1024) * 1024 * 1024),
                 upload_dir=Path(options.get("upload_dir", ".runtime/web-uploads")),
-                models={key: load_model(value) for key, value in data.get("models", {}).items()},
+                models=models,
+                synthesis_models=synthesis_models,
                 wakes={
                     key: WakeConfig(
                         **{
@@ -139,7 +193,7 @@ class Settings:
                     for key, options in data.get("wakes", {}).items()
                 },
             )
-        except (ValueError, TypeError, AttributeError, ASRError) as exc:
+        except (ValueError, TypeError, AttributeError, SpeechioError) as exc:
             # TOML 语法和外部字段错误带上来源，不退回另一份模型列表。
             raise ValueError(f"配置文件无效 {path}：{exc}") from exc
 
@@ -148,6 +202,9 @@ class Settings:
         return {
             "debug": self.debug,
             "upload_limit_bytes": self.upload_limit_bytes,
+            "synthesis_models": [
+                preset.public(key) for key, preset in self.synthesis_models.items()
+            ],
             "models": [
                 {
                     **model_summary(key, model),
@@ -167,6 +224,9 @@ class Settings:
                         else {}
                     ),
                     "snapshot": model.capabilities.snapshot,
+                    "transcription": model.capabilities.transcription,
+                    "file_transcription": model.capabilities.file_transcription,
+                    "url_transcription": model.capabilities.url_transcription,
                     "streaming": model.capabilities.streaming,
                     "word_timestamps": model.capabilities.word_timestamps,
                 }

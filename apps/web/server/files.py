@@ -1,5 +1,6 @@
 """有界文件上传：客户端持有随机令牌，不选择服务器文件路径。"""
 
+import re
 from time import monotonic
 from uuid import uuid4
 
@@ -25,10 +26,14 @@ class Uploads:
         self.expire()
         if self.receiving or len(self.pending) >= 4:
             raise HTTPException(409, "还有未处理的上传，请先处理或删除")
+        # 仅接收扩展名，服务器始终生成文件名，不能让客户端指定路径。
+        extension = request.headers.get("X-Audio-Extension", ".audio").lower()
+        if not re.fullmatch(r"\.[a-z0-9]{1,10}", extension):
+            raise HTTPException(400, "音频扩展名无效")
         self.receiving = True
         token = uuid4().hex
         directory = self.settings.upload_dir
-        path = directory / f"{token}.audio"
+        path = directory / f"{token}{extension}"
         try:
             directory.mkdir(parents=True, exist_ok=True)
             size = 0

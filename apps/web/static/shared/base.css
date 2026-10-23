@@ -247,3 +247,19 @@ body[data-app=debug] .alert { background: #32241f; border-color: #684337; color:
 
 .running .wave i { animation: none; }
 .wave i { height: calc(4px + var(--level, 0) * var(--height)); transition: height .08s; }
+
+.feature-nav { display: flex; align-items: center; justify-content: center; gap: 18px; padding: 16px 24px 0; flex-wrap: wrap; }
+.tts-input textarea { width: 100%; resize: vertical; min-height: 170px; padding: 18px; border: 1px solid var(--line); border-radius: 10px; background: var(--soft); color: var(--text); font: inherit; line-height: 1.8; }
+.tts-input textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.tts-input .toolbar { margin: 12px 0; }
+.tts-actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin: 14px 0; }
+.tts-status { margin: 18px 0 0; font-size: 13px; color: var(--text); }
+.tts-settings { padding: 20px; }
+.tts-result { margin-top: 22px; padding: 22px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+.tts-result h2 { font-size: 16px; font-weight: 550; }
+.tts-result audio { width: 100%; margin: 18px 0; }
+.tts-metrics { margin-top: 18px; }
+#tts-mode { min-width: 170px; }
+#tts-events summary { display: block; color: var(--text); }
+#tts-content .help { line-height: 1.8; }
+#tts-content .hero h1 { margin-bottom: 14px; }

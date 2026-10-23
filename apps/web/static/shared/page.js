@@ -2,6 +2,7 @@
 import { mount } from './ui.js';
 import { SpeechClient, request } from './client.js';
 import { Microphone } from './audio.js';
+import { mountFeatures } from './features.js';
 
 export async function startPage(debug) {
   mount(debug);
@@ -10,6 +11,7 @@ export async function startPage(debug) {
     mode: 'live', phase: 'idle', client: null, microphone: null, file: null,
     fileUrl: null, token: null, rows: new Map(), events: [], comparison: {},
     receivedSeconds: 0, config: null, publicConfig: null, completionMessage: null,
+    waitTimer: null,
   };
   const remote = model => model?.source === 'remote';
   const backend = model => `${model.source}:${remote(model) ? model.provider : model.engine}`;
@@ -25,6 +27,15 @@ export async function startPage(debug) {
   function options(element, entries, preferred) {
     element.replaceChildren(...entries.map(([value, label]) => new Option(label, value)));
     if (entries.some(([value]) => value === preferred)) element.value = preferred;
+  }
+
+  // 主模型按输入能力筛选；后端和模型都保留仍然可用的当前选择。
+  function refreshModels() {
+    const models = state.publicConfig.models.filter(model => state.mode === 'file'
+      ? model.transcription || model.file_transcription : model.transcription);
+    options($('#engine'), [...new Map(models.map(model => [backend(model), backendLabel(model)]))], $('#engine').value);
+    options($('#model'), models.filter(model => backend(model) === $('#engine').value)
+      .map(model => [model.id, model.id]), $('#model').value);
   }
 
   function showError(error) {
@@ -114,6 +125,14 @@ export async function startPage(debug) {
     const changed = device.dataset.model !== model.id;
     const locked = busy() || state.phase === 'finished';
     const cloud = remote(model);
+    if (!prefix) {
+      $('#file-task-runtime').hidden = state.mode !== 'file' || !model.file_transcription;
+      const taskTimeout = $('#task-timeout');
+      taskTimeout.min = '0.01';
+      taskTimeout.placeholder = '填写正数';
+      taskTimeout.disabled = locked;
+      if (changed && model.file_transcription) taskTimeout.value = model.task_timeout_seconds;
+    }
     device.closest('.field').hidden = cloud;
     if (debug) {
       $(`#${prefix}runtime-fields`).hidden = cloud;
@@ -150,7 +169,11 @@ export async function startPage(debug) {
   function modelOverrides(prefix = '', fieldPrefix = '') {
     const model = selectedModel(prefix);
     if (remote(model)) {
-      return debug ? { [`${fieldPrefix}timeout_seconds`]: number(`#${prefix}timeout`, null) } : {};
+      return {
+        ...(debug ? { [`${fieldPrefix}timeout_seconds`]: number(`#${prefix}timeout`, null) } : {}),
+        ...(!prefix && state.mode === 'file' && model.file_transcription
+          ? { task_timeout_seconds: number('#task-timeout', null) } : {}),
+      };
     }
     const result = { [`${fieldPrefix}device`]: $(`#${prefix}device`).value };
     if (debug) {
@@ -166,7 +189,7 @@ export async function startPage(debug) {
     if (!config) return;
     const main = config.completion_source === 'streaming' ? config.realtime : config.main;
     $('#model-summary').textContent = remote(main)
-      ? `${main.id} · 云端 · 超时 ${main.timeout_seconds} 秒`
+      ? `${main.id} · 云端 · ${main.task_timeout_seconds == null ? `请求超时 ${main.timeout_seconds}` : `任务最多等待 ${main.task_timeout_seconds}`} 秒`
       : `${main.id} · ${main.device.toUpperCase()} · ${main.compute_type ?? '引擎默认'}`;
     if (debug) $('#effective-config').textContent = JSON.stringify(config, null, 2);
   }
@@ -187,9 +210,9 @@ export async function startPage(debug) {
       interval: number('#interval', .2), stabilize: checked('#stabilize', true),
       word_timestamps: checked('#timestamps', true) && selected.word_timestamps,
       silence: number('#silence', .8), vad_sensitivity: number('#vad', .4),
-      wake: checked('#wake') && !$('#segmentation').selectedIndex ? $('#keyword').value : null,
+      wake: state.mode !== 'file' && checked('#wake') && !$('#segmentation').selectedIndex ? $('#keyword').value : null,
       wake_sensitivity: number('#wake-sensitivity', .5), wake_timeout: number('#wake-timeout', 5),
-      candidates: checked('#candidates'), correction: checked('#correction'),
+      candidates: state.mode !== 'file' && checked('#candidates'), correction: state.mode !== 'file' && checked('#correction'),
       max_audio_samples: number('#buffer', 480000), max_pending_units: number('#pending', 8),
       max_audio_seconds: number('#max-seconds', null),
       chunk_ms: number('#chunk', 100), pace: $('#pace')?.selectedIndex ? 'fast' : 'realtime',
@@ -199,6 +222,17 @@ export async function startPage(debug) {
   function syncCapabilities() {
     if (!state.publicConfig) return;
     const selected = state.publicConfig.models.find(model => model.id === $('#model').value);
+    if (!selected) {
+      $('#compatibility').textContent = '当前输入方式没有可用模型，请切换输入方式或配置模型后重启服务。';
+      $('#model-summary').textContent = '没有可用模型';
+      $('#file-task-runtime').hidden = true;
+      $('#remote-note').hidden = true;
+      if (debug) {
+        $('#config-preview').textContent = '';
+        $('#code-preview').textContent = '';
+      }
+      return;
+    }
     syncModelControls(selected);
     const realtime = (debug && selectedModel('realtime-')) || selected;
     const canPreview = realtime.snapshot || realtime.streaming;
@@ -211,7 +245,7 @@ export async function startPage(debug) {
     partials.disabled = !canPreview || state.mode === 'file' || busy() || state.phase === 'finished';
     const streaming = state.mode !== 'file' && partials.checked && realtime.streaming;
     const reuseStream = streaming && !(debug && checked('#retranscribe'));
-    const capability = selected.streaming ? '原生流式' : selected.snapshot ? '快照实时' : '仅整段识别';
+    const capability = selected.file_transcription ? '长音频文件识别' : selected.streaming ? '原生流式' : selected.snapshot ? '快照实时' : '仅整段识别';
     $('#compatibility').textContent = `${backendLabel(selected)} · ${capability} · ${selected.word_timestamps ? '词时间戳以返回结果为准' : '无词时间戳'}${remote(selected) && !selected.api_key_configured ? ' · 密钥未配置，请填写 config.toml 的 apikey 或 apps/web/.env 后重启服务' : ''}`;
     if (debug) {
       options($('#realtime-mode'), realtime.streaming ? [['streaming', '原生流式']]
@@ -238,10 +272,11 @@ export async function startPage(debug) {
     $('#remote-note').hidden = !cloud;
     const notes = [];
     if (cloud) notes.push('音频将由本机服务发送至百炼识别。');
-    if (remote(selected) && !reuseStream) notes.push('整段识别最多 300 秒，HTTP 还受编码后大小限制；超限不会自动切分。');
+    if (remote(selected) && !selected.streaming && !selected.file_transcription) notes.push('短音频模型最多 300 秒，还受 HTTP 编码后大小限制；超限不会自动切分。');
+    if (selected.file_transcription) notes.push('长音频文件模型支持最长 12 小时、最大 1 GiB 的文件；还受本机上传上限约束。提交后等待最终结果，不逐字显示。关闭页面不会撤销已经提交的云端任务。');
     if (cloudPreview && reuseStream) notes.push('最终文字直接采用流式任务的最终结果，不会自动再次识别整段音频。');
     if (streaming && !reuseStream && remote(selected)) notes.push('已开启重识别：结束后主模型将额外识别整段音频，可能增加费用。');
-    if (debug && remote(selected)) notes.push('主动请求候选或修正会增加识别请求。');
+    if (debug && remote(selected) && state.mode !== 'file') notes.push('主动请求候选或修正会增加识别请求。');
     if (cloudPreview && !realtime.api_key_configured) notes.push('实时模型密钥未配置，请填写 config.toml 的 apikey 或 apps/web/.env 后重启服务。');
     $('#remote-note').textContent = notes.join(' ');
     $('#audio-location').textContent = `${debug ? '本机单任务' : 'SpeechIO 示例应用'} · ${cloud ? '音频发送至百炼识别' : '音频由本机服务处理'}`;
@@ -259,7 +294,8 @@ export async function startPage(debug) {
     }
     $('#input-policy').textContent = manual ? '手动分段 · 不启用唤醒' : `自动分段 · 停顿 ${$('#silence').value} 秒${$('#wake').checked ? ' · 唤醒已启用' : ''}`;
     if (state.mode === 'file') $('#input-policy').textContent = '整段文件转写';
-    $('#timer').hidden = state.mode === 'file';
+    $('#timer').hidden = false;
+    $('#timer').title = state.mode === 'file' ? '本次文件上传与识别已用时间' : '已输入音频时长';
     $('#model-summary').textContent = `${selected.id} · ${$('#language').value}`;
     updatePreview();
   }
@@ -274,7 +310,8 @@ export async function startPage(debug) {
     const modelCode = (model, prefix = '') => {
       if (remote(model)) {
         const timeout = config[`${prefix}timeout_seconds`] ?? model.timeout_seconds;
-        return `RemoteModelConfig(provider=${pythonValue(model.provider)}, model=${pythonValue(model.model)}, api_key=os.environ["DASHSCOPE_API_KEY"], timeout_seconds=${timeout})`;
+        const taskTimeout = model.file_transcription ? `, task_timeout_seconds=${config.task_timeout_seconds ?? model.task_timeout_seconds}` : '';
+        return `RemoteModelConfig(provider=${pythonValue(model.provider)}, model=${pythonValue(model.model)}, api_key=os.environ["DASHSCOPE_API_KEY"], timeout_seconds=${timeout}${taskTimeout})`;
       }
       const precisionKey = `${prefix}compute_type`;
       const precision = Object.hasOwn(config, precisionKey) ? config[precisionKey] : model.compute_type;
@@ -311,14 +348,15 @@ export async function startPage(debug) {
   function updateControls() {
     const active = busy();
     const connected = state.phase === 'finished';
-    $('#start').disabled = !state.publicConfig || ['preparing', 'draining', 'stopping', 'closing'].includes(state.phase) || connected || (state.mode !== 'live' && !state.file && !active);
+    const hasModel = state.publicConfig && selectedModel();
+    $('#start').disabled = !hasModel || ['preparing', 'draining', 'stopping', 'closing'].includes(state.phase) || connected || (state.mode !== 'live' && !state.file && !active);
     $('#start-label').textContent = state.phase === 'recording' ? (state.mode === 'file' ? '识别中…' : '停止输入') : state.phase === 'preparing' ? '准备中…' : state.phase === 'draining' ? '处理剩余音频…' : state.mode === 'live' ? '开始录音' : '开始转写';
     if (state.mode === 'file' && active) $('#start').disabled = true;
     $('#end-turn').disabled = state.phase !== 'recording' || state.mode === 'file';
-    for (const element of document.querySelectorAll('.field input, .field select, .toggle input, [data-mode], #file-picker, #microphone')) element.disabled = active || connected;
+    for (const element of (document.querySelector('#asr-content') || document).querySelectorAll('.field input, .field select, .toggle input, [data-mode], #file-picker, #microphone')) element.disabled = active || connected;
     document.body.classList.toggle('running', state.phase === 'recording');
     if (debug) {
-      $('#prepare').disabled = active || connected;
+      $('#prepare').disabled = !hasModel || active || connected;
       $('#release').disabled = active || connected;
       $('#cancel-turn').disabled = state.phase !== 'recording' || state.mode === 'file';
       $('#reset').disabled = !state.client || state.mode === 'file' || state.phase === 'preparing';
@@ -332,6 +370,10 @@ export async function startPage(debug) {
 
   function phase(name, message) {
     state.phase = name;
+    if (['idle', 'error', 'finished', 'closing'].includes(name)) {
+      clearInterval(state.waitTimer);
+      state.waitTimer = null;
+    }
     $('#status').textContent = message;
     updateControls();
   }
@@ -425,6 +467,13 @@ export async function startPage(debug) {
     state.comparison = {};
     state.receivedSeconds = 0;
     state.completionMessage = null;
+    $('#timer').textContent = '00:00';
+    if (state.mode === 'file') {
+      const started = performance.now();
+      state.waitTimer = setInterval(() => {
+        $('#timer').textContent = clock((performance.now() - started) / 1000);
+      }, 1000);
+    }
     renderResults();
     phase('preparing', '正在准备输入与识别配置');
     try {
@@ -437,7 +486,11 @@ export async function startPage(debug) {
       } else {
         if (!state.file) throw new Error('请先选择音频文件');
         if (state.file.size > state.publicConfig.upload_limit_bytes) throw new Error('文件超过本机服务的上传大小限制');
-        const upload = await request('/api/uploads', { method: 'POST', body: state.file });
+        phase('preparing', '正在上传文件到本机服务');
+        const extension = state.file.name.match(/\.[a-z0-9]{1,10}$/i)?.[0].toLowerCase() ?? '.audio';
+        const upload = await request('/api/uploads', {
+          method: 'POST', headers: { 'X-Audio-Extension': extension }, body: state.file,
+        });
         state.token = upload.token;
       }
       state.config = config;
@@ -454,7 +507,8 @@ export async function startPage(debug) {
       state.client = client;
       await client.start(config, state.token, debug);
       state.token = null;
-      phase('recording', state.mode === 'live' ? '正在接收音频' : '正在识别文件');
+      phase('recording', state.mode === 'live' ? '正在接收音频' : selectedModel().file_transcription
+        ? '正在处理云端文件任务，等待最终结果（计时为已用时间）' : '正在识别文件');
       showEffective(state.lastEffective);
       state.microphone?.start(bytes => {
         client.audio(bytes);
@@ -529,6 +583,8 @@ export async function startPage(debug) {
       $('#file-input').hidden = state.mode === 'live';
       document.querySelectorAll('[data-live-only]').forEach(element => { element.hidden = state.mode === 'file'; });
       document.querySelectorAll('[data-file-only]').forEach(element => { element.hidden = state.mode === 'live'; });
+      document.querySelectorAll('[data-chunks-only]').forEach(element => { element.hidden = state.mode !== 'chunks'; });
+      refreshModels();
       updateControls();
     };
   });
@@ -536,9 +592,8 @@ export async function startPage(debug) {
     element.addEventListener('change', () => { syncCapabilities(); renderResults(); });
   });
   $('#engine').onchange = () => {
-    const models = state.publicConfig.models.filter(model => backend(model) === $('#engine').value);
-    options($('#model'), models.map(model => [model.id, model.id]));
-    syncCapabilities();
+    refreshModels();
+    updateControls();
   };
 
   if (debug) {
@@ -607,6 +662,7 @@ export async function startPage(debug) {
   }
 
   window.addEventListener('pagehide', () => {
+    clearInterval(state.waitTimer);
     void state.microphone?.dispose();
     state.client?.socket?.close();
     if (state.fileUrl) URL.revokeObjectURL(state.fileUrl);
@@ -616,13 +672,21 @@ export async function startPage(debug) {
   try {
     state.publicConfig = await request('/api/config');
     const models = state.publicConfig.models;
-    options($('#engine'), [...new Map(models.map(model => [backend(model), backendLabel(model)]))]);
-    options($('#model'), models.filter(model => backend(model) === $('#engine').value).map(model => [model.id, model.id]));
+    refreshModels();
+    $('#upload-limit').textContent = `本机上传上限：${state.publicConfig.upload_limit_bytes / 1024 / 1024} MiB（1024 MiB = 1 GiB）`;
     options($('#keyword'), state.publicConfig.wakes.map(wake => [wake.id, wake.id]));
     if (debug) options($('#realtime-model'), [['', '共用主模型'], ...models.filter(model => model.streaming || model.snapshot).map(model => [model.id, `${model.id} · ${backendLabel(model)}`])]);
     if (debug) $('#model-state').textContent = `模型 ${state.publicConfig.model_state}`;
+    if (!models.some(model => model.transcription)) $('[data-mode="file"]').click();
     $('#other-page').hidden = !debug && !state.publicConfig.debug;
     phase('idle', '已就绪，可以开始');
     log({ type: 'connected', message: '已读取本机服务配置' });
+    mountFeatures(debug, state.publicConfig, busy, async () => {
+      if (state.phase !== 'finished' || !state.client?.socket) return;
+      const socket = state.client.socket;
+      const closed = new Promise(resolve => socket.addEventListener('close', resolve, { once: true }));
+      await closeSession();
+      await closed;
+    });
   } catch (error) { showError(error); }
 }

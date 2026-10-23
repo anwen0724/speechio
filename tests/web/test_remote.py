@@ -11,11 +11,92 @@ from fastapi.testclient import TestClient
 from apps.web.server.app import create_app
 from apps.web.server.settings import Settings
 from speechio import LocalModelConfig, RemoteModelConfig
+from tests.audio.encoded_samples import encoded_audio
 from tests.runtime.test_engine_injection import RecordingEngine, RecordingStreamingEngine
 from tests.runtime.test_remote import FLASH, STREAMING, http_service
+from tests.runtime.test_remote_file import MODEL as FILE_MODEL
+from tests.runtime.test_remote_file import file_service
 
 
 class WebRemoteTests(unittest.TestCase):
+    def test_file_model_is_public_but_rejected_for_continuous_input(self):
+        model = RemoteModelConfig(provider="bailian", model=FILE_MODEL, api_key="test-secret")
+        with TestClient(create_app(Settings(models={"long": model}, debug=True))) as client:
+            public = client.get("/api/config")
+            self.assertEqual(public.json()["upload_limit_bytes"], 1024**3)
+            capabilities = public.json()["models"][0]
+            self.assertTrue(capabilities["file_transcription"])
+            self.assertFalse(capabilities["transcription"])
+            self.assertEqual(capabilities["task_timeout_seconds"], 3600)
+            self.assertNotIn("test-secret", public.text)
+            for mode in ("live", "chunks"):
+                with self.subTest(mode=mode):
+                    response = client.post(
+                        "/api/debug/prepare",
+                        json={
+                            "model": "long",
+                            "input_mode": mode,
+                            "realtime": False,
+                        },
+                    )
+                    self.assertEqual(response.status_code, 400, response.text)
+
+    def test_long_audio_upload_returns_final_result_and_cleans_file(self):
+        self.check_long_audio_upload()
+
+    def test_long_audio_failure_reports_error_and_cleans_file(self):
+        self.check_long_audio_upload(failed=True)
+
+    def check_long_audio_upload(self, *, failed=False):
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            file_service(states=("FAILED",) if failed else ("SUCCEEDED",)) as (url, _),
+        ):
+            model = RemoteModelConfig(
+                provider="bailian", model=FILE_MODEL, api_key="test-secret", base_url=url
+            )
+            settings = Settings(models={"long": model}, upload_dir=Path(directory))
+            with TestClient(create_app(settings)) as client:
+                response = client.post(
+                    "/api/uploads",
+                    content=encoded_audio(),
+                    headers={"X-Audio-Extension": ".m4a"},
+                )
+                self.assertEqual(response.status_code, 200, response.text)
+                with client.websocket_connect("/api/session") as socket:
+                    socket.send_json(
+                        {
+                            "type": "start",
+                            "file_token": response.json()["token"],
+                            "config": {
+                                "model": "long",
+                                "input_mode": "file",
+                                "task_timeout_seconds": 120,
+                            },
+                        }
+                    )
+                    ready = socket.receive_json()
+                    self.assertEqual(ready["type"], "ready", ready)
+                    self.assertEqual(ready["effective_config"]["main"]["task_timeout_seconds"], 120)
+                    final = None
+                    while True:
+                        event = socket.receive_json()
+                        if failed and event["type"] == "error":
+                            self.assertTrue(event["fatal"])
+                            self.assertNotIn("test-secret", str(event))
+                            break
+                        self.assertNotEqual(event["type"], "error", event)
+                        if event.get("kind") == "final":
+                            final = event["result"]["text"]
+                        if event["type"] == "finished":
+                            self.assertFalse(failed, "失败任务必须报告错误")
+                            break
+                    if not failed:
+                        socket.send_json({"type": "close"})
+                self.assertEqual(final, None if failed else "你好 hello")
+                self.assertEqual(model.task_timeout_seconds, 3600)
+            self.assertEqual(list(Path(directory).iterdir()), [])
+
     def test_independent_remote_timeouts_reach_engines_and_public_configuration(self):
         for mode in ("auto", "final"):
             with self.subTest(completion_mode=mode):
@@ -152,6 +233,8 @@ class WebRemoteTests(unittest.TestCase):
             for fields in (
                 {"model": "cloud", "device": "cpu"},
                 {"model": "local", "timeout_seconds": 10},
+                {"model": "local", "task_timeout_seconds": 10},
+                {"model": "cloud", "task_timeout_seconds": 10},
                 {"model": "cloud", "realtime_timeout_seconds": 10},
                 {"model": "unconfigured"},
             ):

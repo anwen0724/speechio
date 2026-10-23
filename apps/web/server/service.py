@@ -52,6 +52,15 @@ class SpeechService:
         if not debug and (config.input_mode == "chunks" or config.candidates or config.correction):
             raise ASRError("DEBUG_DISABLED", "configure", "该功能只对启用的调试台开放")
         model = self.resolve_model(config)
+        # 文件模型不接收连续音频；在领取上传文件或准备资源前检查能力。
+        caps = model.capabilities
+        supported = (
+            caps.transcription or caps.file_transcription
+            if config.input_mode == "file"
+            else caps.transcription
+        )
+        if not supported:
+            raise ASRError("BACKEND_INCOMPATIBLE", "configure", "模型不支持所选输入方式")
         realtime_fields = {
             "realtime_device",
             "realtime_device_index",
@@ -78,13 +87,25 @@ class SpeechService:
         prefix = "realtime_" if realtime else ""
         fields = {
             name
-            for name in ("device", "device_index", "compute_type", "timeout_seconds")
+            for name in (
+                "device",
+                "device_index",
+                "compute_type",
+                "timeout_seconds",
+                "task_timeout_seconds",
+            )
             if prefix + name in config.model_fields_set
         }
         overrides = {name: getattr(config, prefix + name) for name in fields}
         if isinstance(base, RemoteModelConfig):
-            if fields - {"timeout_seconds"}:
+            if fields - {"timeout_seconds", "task_timeout_seconds"}:
                 raise ASRError("INVALID_CONFIGURATION", "configure", "云端模型不接受本地设备或精度")
+            if "task_timeout_seconds" in fields and (
+                not base.capabilities.file_transcription or config.input_mode != "file"
+            ):
+                raise ASRError(
+                    "INVALID_CONFIGURATION", "configure", "任务等待时间只适用于长音频文件模型"
+                )
             if not base.api_key:
                 raise ASRError(
                     "INVALID_CONFIGURATION",
@@ -93,7 +114,7 @@ class SpeechService:
                     "或按 api_key_env 配置进程环境变量 / apps/web/.env 后重启服务",
                 )
             return replace(base, **overrides)
-        if "timeout_seconds" in fields:
+        if fields & {"timeout_seconds", "task_timeout_seconds"}:
             raise ASRError("INVALID_CONFIGURATION", "configure", "远程请求超时只适用于云端模型")
         model = replace(base, **overrides)
         if model.device not in ("cpu", "gpu") or model.device_index is None:

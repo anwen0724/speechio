@@ -87,6 +87,7 @@ class WebSettingsTests(unittest.TestCase):
                 config = client.get("/api/config").json()
             self.assertEqual([model["id"] for model in config["models"]], ["native"])
             self.assertEqual(config["models"][0]["engine"], "nemotron")
+            self.assertEqual(config["upload_limit_bytes"], 1024**3)
             self.assertNotIn("model_path", config["models"][0])
 
     def test_invalid_configuration_stops_startup_with_file_context(self):

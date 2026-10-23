@@ -185,6 +185,25 @@ class WebAppTests(unittest.TestCase):
                 self.assertEqual(response.status_code, 413)
                 self.assertEqual(list(Path(directory).iterdir()), [])
 
+    def test_upload_extension_cannot_supply_a_server_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with TestClient(create_app(make_settings(upload_dir=Path(directory)))) as client:
+                invalid = client.post(
+                    "/api/uploads",
+                    content=b"audio",
+                    headers={"X-Audio-Extension": "../../recording.m4a"},
+                )
+                self.assertEqual(invalid.status_code, 400)
+                self.assertEqual(list(Path(directory).iterdir()), [])
+                valid = client.post(
+                    "/api/uploads",
+                    content=b"audio",
+                    headers={"X-Audio-Extension": ".m4a"},
+                )
+                self.assertEqual(valid.status_code, 200)
+                client.delete(f"/api/uploads/{valid.json()['token']}")
+                self.assertEqual(list(Path(directory).iterdir()), [])
+
     def test_disconnect_closes_owned_engine_and_allows_next_task(self):
         closed = Event()
 

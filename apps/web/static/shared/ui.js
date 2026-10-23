@@ -44,6 +44,7 @@ function modelSettings() {
     </div>
     ${debug ? runtimeFields() : ''}
     ${debug ? `<div id="remote-runtime" hidden>${numberField('timeout', '远程请求超时（秒）', '30', '仅修改本次请求，不写回配置文件。')}</div>` : ''}
+    <div id="file-task-runtime" hidden>${numberField('task-timeout', '识别任务最长等待时间（秒）', '3600', '等待云端任务完成的时间；不是音频时长上限。仅对本次运行生效。')}</div>
     <p class="help" id="compatibility">配置文件提供默认值，页面设置用于本次运行。</p>
     <p class="help" id="remote-note" hidden></p>`;
 }
@@ -71,7 +72,7 @@ function outputSettings() {
 function debugSettings() {
   return `<aside class="config-panel"><h2>参数配置 <span class="badge">下一次运行生效</span></h2>
     <details open><summary>01　引擎与模型</summary>${modelSettings()}</details>
-    <details><summary>02　实时识别</summary>
+    <details data-live-only><summary>02　实时识别</summary>
       ${selectField('realtime-mode', '实时处理方式', ['快照识别', '原生流式（取决于引擎）'], '快照：定时识别当前积累的音频；原生流式：引擎持续接收音频。')}
       ${selectField('realtime-model', '实时识别模型', ['共用主模型'])}
       ${toggle('retranscribe', '结束后用主模型重新识别')}
@@ -86,22 +87,22 @@ function debugSettings() {
       ${toggle('stabilize', '稳定临时文字', true)}
       <p class="help">稳定文字：减少已经显示的文字来回变化。只影响临时文字的显示，不修改最终结果。</p>
     </details>
-    <details><summary>03　检测、分段与唤醒</summary>${sessionSettings()}
+    <details data-live-only><summary>03　检测、分段与唤醒</summary>${sessionSettings()}
       ${numberField('vad', '语音检测灵敏度（0–1）', '0.4', '语音检测用于区分说话与静音。')}
       ${selectField('wake-backend', '唤醒后端', ['OpenWakeWord', 'Porcupine'])}
       ${numberField('wake-sensitivity', '唤醒灵敏度（0–1）', '0.5')}
       ${numberField('wake-timeout', '唤醒后等待说话（秒）', '5')}
     </details>
-    <details><summary>04　候选与修正</summary>
+    <details data-live-only><summary>04　候选与修正</summary>
       ${toggle('candidates', '启用候选结果')}
       ${toggle('correction', '保留音频以便修正')}
       <p class="help">候选是确认前的备选文本；修正是对已完成结果的后续更新。在右侧“结果对照”中查看。</p>
     </details>
     <details><summary>05　容量与结果</summary>${outputSettings()}
-      ${numberField('buffer', '会话音频上限（采样点）', '480000', '16 kHz 单声道下，480000 个采样点约为 30 秒音频。')}
-      ${numberField('pending', '待处理段数上限', '8')}
+      <div data-live-only>${numberField('buffer', '会话音频上限（采样点）', '480000', '16 kHz 单声道下，480000 个采样点约为 30 秒音频。')}
+      ${numberField('pending', '待处理段数上限', '8')}</div>
     </details>
-    <details><summary>06　文件分块输入</summary>
+    <details data-chunks-only hidden><summary>06　文件分块输入</summary>
       ${numberField('chunk', '每块音频时长（毫秒）', '100')}
       ${selectField('pace', '送入速度', ['按音频原速', '尽快送入'])}
       <p class="help">将同一文件分段送入，复现连续输入。每块音频都通过核心包的连续输入接口处理。</p>
@@ -130,6 +131,7 @@ function inputCard() {
     <div id="file-input" hidden>
       <label class="upload" id="drop-zone">${icon('upload')}<span>拖入音频，或选择文件</span>
         <span class="subtle">上传到本机服务识别，处理结束后删除临时文件。</span>
+        <span class="subtle" id="upload-limit"></span>
         <span class="subtle">WAV、FLAC、MP3、AIFF、M4A、AAC、OGG、Opus、WebM、MP4；视频文件只读取第一条音轨</span>
         <input id="file-picker" type="file" accept=".wav,.flac,.mp3,.aiff,.aif,.m4a,.aac,.ogg,.opus,.webm,.mp4" aria-label="选择音频文件">
       </label>
@@ -174,8 +176,8 @@ function resultCard() {
 }
 
 const header = `<header class="topbar">
-  <div class="brand"><span class="brand-mark">sı</span>${debug ? 'SpeechIO Studio' : 'SpeechIO'}<small>${debug ? 'DEVELOPER WORKSPACE' : '语音转写'}</small></div>
-  <div class="prototype-tools"><span>本机运行</span><a id="other-page" href="${debug ? "/" : "/debug"}">${debug ? "语音转写" : "调试台"} ↗</a></div>
+  <div class="brand"><span class="brand-mark">sı</span>${debug ? 'SpeechIO Studio' : 'SpeechIO'}<small>${debug ? 'DEVELOPER WORKSPACE' : '语音工具'}</small></div>
+  <div class="prototype-tools"><span>本机运行</span><a id="other-page" href="${debug ? "/" : "/debug"}">${debug ? "示例应用" : "调试台"} ↗</a></div>
 </header>`;
 
 if (debug) {
@@ -218,7 +220,7 @@ if (debug) {
   <section class="drawer" id="drawer" role="dialog" aria-modal="true" aria-label="识别设置" hidden>
     <div class="drawer-head"><h2>按你的方式识别</h2><button id="close-settings" aria-label="关闭设置">×</button></div>
     <p class="drawer-intro">调整下一次转写使用的配置。正在录音时，先结束录音再修改。</p>
-    ${modelSettings()}<section class="settings-group"><h3>录音与分段</h3>${sessionSettings()}</section>
+    ${modelSettings()}<section class="settings-group" data-live-only><h3>录音与分段</h3>${sessionSettings()}</section>
     <details class="settings-group" open><summary>更多设置</summary>${outputSettings()}</details>
     <div class="drawer-foot"><span class="subtle">配置保留在当前页面</span><button class="primary" id="done-settings">完成</button></div>
   </section>`;

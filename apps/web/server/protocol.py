@@ -15,6 +15,7 @@ class RunConfig(BaseModel):
     device_index: int | None = Field(default=None, ge=0, strict=True)
     compute_type: str | None = Field(default=None, min_length=1)
     timeout_seconds: float | None = Field(default=None, gt=0)
+    task_timeout_seconds: float | None = Field(default=None, gt=0)
     language: str | None = "zh"
     input_mode: Literal["live", "file", "chunks"] = "live"
     segmentation: Literal["auto", "manual"] = "auto"
@@ -51,6 +52,30 @@ class RunConfig(BaseModel):
         if self.correction and not self.candidates:
             raise ValueError("修正需要启用候选结果")
         return self
+
+
+class SynthesisConfig(BaseModel):
+    """本次合成覆盖项；未传字段沿用服务端预设。"""
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    model: str
+    mode: Literal["full", "stream", "incremental"] = "stream"
+    voice: str | None = None
+    language: str | None = None
+    speed: float | None = Field(default=None, gt=0)
+    instruction: str | None = None
+    sample_rate: int | None = Field(default=None, gt=0)
+    timeout_seconds: float | None = Field(default=None, gt=0)
+    max_buffer_seconds: float | None = Field(default=None, gt=0)
+
+
+class SynthesisCommand(BaseModel):
+    """完整文本与增量文本共用一条连接；音频以二进制返回。"""
+
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["start", "text", "finish_input", "cancel"]
+    config: SynthesisConfig | None = None
+    text: str = Field(default="", max_length=200_000)
 
 
 class Command(BaseModel):
