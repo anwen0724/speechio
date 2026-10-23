@@ -12,6 +12,7 @@ from fastapi import HTTPException, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
 from speechio import (
+    LocalModelConfig,
     RemoteModelConfig,
     SpeechioError,
     SynthesisOptions,
@@ -94,6 +95,11 @@ class SynthesisService:
             options["voice"] = None
         selected = SynthesisOptions(**options)
         model = preset.config
+        if request.device is not None:
+            if not isinstance(model, LocalModelConfig):
+                raise ValueError("运行设备只适用于本地模型")
+            # 替换本次配置对象，不改写服务端默认值，也不自动回退到 CPU。
+            model = replace(model, device=request.device)
         if request.timeout_seconds is not None:
             if not isinstance(model, RemoteModelConfig):
                 raise ValueError("网络等待时间只适用于云端模型")
@@ -147,6 +153,7 @@ class SynthesisService:
         started = monotonic()
         try:
             path = self.uploads.take(request.reference_audio_token)
+            destination = self.voices.prepare_directory(request.save_dir)
             await self.prepare(config, debug=debug)
             work = asyncio.create_task(
                 asyncio.to_thread(
@@ -155,7 +162,7 @@ class SynthesisService:
             )
             voice = await asyncio.shield(work)
             record = self.voices.save(
-                voice, name=request.name, model_key=request.model, model=model
+                voice, name=request.name, model_key=request.model, model=model, save_dir=destination
             )
             return {
                 "voice": record,
@@ -379,12 +386,16 @@ def install_synthesis_routes(app, service, same_origin):
     """挂载合成专用路由；沿用页面的同源与调试开关。"""
     from fastapi import WebSocket
 
+    @app.get("/api/voice-directories")
+    def voice_directories(path: str | None = None):
+        return service.voices.directories(path)
+
     @app.get("/api/voices")
     async def voices(model: str):
         preset = service.settings.synthesis_models.get(model)
         if preset is None:
             raise HTTPException(400, "请选择已配置的合成模型")
-        return {"voices": service.voices.list(preset.config)}
+        return {"voices": service.voices.list(preset.config), "save_dir": service.voices.save_dir}
 
     @app.post("/api/voices/clone")
     async def clone(request: CloneVoiceRequest, debug: bool = False):

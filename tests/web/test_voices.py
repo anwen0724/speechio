@@ -67,6 +67,55 @@ def synthesize(client, config):
 
 
 class VoiceWebTests(unittest.TestCase):
+    def test_directory_picker_lists_folders_and_rejects_relative_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings = synthesis_settings(directory)
+            settings.voices_dir = Path(directory) / "registry"
+            folder = Path(directory) / "音色"
+            folder.mkdir()
+            (Path(directory) / "sample.txt").write_text("example")
+            with TestClient(create_app(settings)) as client:
+                response = client.get("/api/voice-directories", params={"path": directory})
+                self.assertEqual(response.status_code, 200, response.text)
+                result = response.json()
+                self.assertEqual(result["path"], str(Path(directory).resolve()))
+                self.assertEqual(result["directories"], [{"name": "音色", "path": str(folder)}])
+                self.assertEqual(
+                    client.get("/api/voice-directories", params={"path": "relative"}).status_code,
+                    400,
+                )
+
+    def test_selected_directory_is_used_and_remembered_after_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings = synthesis_settings(directory)
+            settings.voices_dir = Path(directory) / "registry"
+            destination = Path(directory) / "我的音色"
+            with patch(
+                "speechio.models.factory.build_synthesis_engine",
+                side_effect=lambda _: CloneAdapter(),
+            ):
+                with TestClient(create_app(settings)) as client:
+                    result = client.post(
+                        "/api/voices/clone",
+                        json={
+                            "model": "voice",
+                            "name": "新音色",
+                            "reference_audio_token": upload(client),
+                            "save_dir": str(destination),
+                        },
+                    )
+                    self.assertEqual(result.status_code, 200, result.text)
+                    record = result.json()["voice"]
+                    saved = Path(record["file_path"])
+                    self.assertEqual(saved.parent, destination)
+                    self.assertEqual(Voice.load(saved).data, b"test-voice")
+                with TestClient(create_app(settings)) as client:
+                    listing = client.get("/api/voices?model=voice").json()
+                    self.assertEqual(listing["save_dir"], str(destination))
+                    self.assertEqual(listing["voices"][0]["file_path"], str(saved))
+                    result = synthesize(client, {"saved_voice_id": record["id"]})
+                    self.assertEqual(result["type"], "completed", result)
+
     def test_import_download_and_remove_voice_without_model_calls(self):
         with tempfile.TemporaryDirectory() as directory:
             settings = synthesis_settings(directory)

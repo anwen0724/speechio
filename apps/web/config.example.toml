@@ -82,3 +82,17 @@ speed = 1.0
 # language = "zh" # 不填交给模型决定；英文填写 en。
 # instruction = "自然、清晰地朗读"
 # sample_rate = 24000 # 不填使用核心适配器声明的默认值。
+
+# 本地 Kokoro：先准备模型目录，并安装 speechio 的 tts-kokoro 可选依赖。
+# 音色列表由 Web 读取 model_path/voices/*.pt，无需手写 voices 名单。
+# [models."kokoro-v1.1-zh"]
+# task = "synthesis"
+# adapter = "kokoro"
+# model_path = ".runtime/models/kokoro-v1.1-zh"
+# device = "cpu" # 页面可为本次合成选择 gpu；需要 GPU 版 PyTorch。
+# compute_type = "float32"
+#
+# [models."kokoro-v1.1-zh".synthesis]
+# voice = "zf_001"
+# speed = 1.0
+# 不指定 language 时，核心适配器根据音色选择中文或英文。

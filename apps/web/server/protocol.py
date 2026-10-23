@@ -59,6 +59,7 @@ class SynthesisConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     model: str
+    device: Literal["cpu", "gpu"] | None = None
     mode: Literal["full", "stream", "incremental"] = "stream"
     voice: str | None = None
     saved_voice_id: str | None = None
@@ -97,6 +98,7 @@ class CloneVoiceRequest(BaseModel):
     reference_audio_token: str
     reference_text: str | None = None
     timeout_seconds: float | None = Field(default=None, gt=0)
+    save_dir: str | None = Field(default=None, min_length=1)
 
 
 class ImportVoiceRequest(BaseModel):

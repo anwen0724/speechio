@@ -126,10 +126,22 @@ class SynthesisPreset:
         synth.close()
 
     def public(self, key):
+        # Kokoro 音色由模型目录提供；页面不维护另一份固定名单。
+        local = isinstance(self.config, LocalModelConfig)
+        voices = self.voices
+        if local and self.config.adapter == "kokoro":
+            voices = tuple(
+                sorted(
+                    path.stem
+                    for path in (Path(self.config.model_path).expanduser() / "voices").glob("*.pt")
+                    if path.is_file()
+                )
+            )
         return {
             **model_summary(key, self.config, synthesis=True),
             "defaults": asdict(self.options),
-            "voices": self.voices,
+            "voices": voices,
+            "devices": ["cpu", "gpu"] if local else [],
             "max_buffer_seconds": self.max_buffer_seconds,
             "capabilities": asdict(self.capabilities),
             "api_key_configured": bool(getattr(self.config, "api_key", None)),
