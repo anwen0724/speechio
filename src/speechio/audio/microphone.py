@@ -6,9 +6,9 @@ from dataclasses import dataclass, replace
 from math import isfinite
 from threading import Condition, Event, Thread
 
-from speechio.audio.conversion import AudioFormat
+from speechio.audio.formats import AudioFormat
 from speechio.errors import ASRError
-from speechio.results import CloseError, CloseResult
+from speechio.resources import CloseError, CloseResult
 
 SAMPLE_RATES = (8000, 9600, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000)
 

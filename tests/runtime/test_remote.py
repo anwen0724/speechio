@@ -74,6 +74,99 @@ def http_service(response, status=200):
 
 
 class RemoteTests(unittest.TestCase):
+    def test_finish_wait_extends_only_when_recognition_progresses(self):
+        """替代外部连接和时钟，确定性验证跨越总时限的尾部处理。"""
+        for outcome in ("progress", "heartbeat", "duplicate"):
+            with self.subTest(outcome=outcome):
+                now = [0.0]
+
+                class Connection:
+                    def __init__(self):
+                        self.task_id = None
+                        self.started = False
+                        self.ending = False
+                        self.closed = False
+                        self.event_index = 0
+
+                    def __enter__(self):
+                        return self
+
+                    def __exit__(self, *args):
+                        self.closed = True
+
+                    def send(self, message):
+                        if isinstance(message, bytes):
+                            return
+                        header = json.loads(message)["header"]
+                        self.task_id = header["task_id"]
+                        self.ending = header["action"] == "finish-task"
+
+                    def recv(self, timeout):
+                        if not self.started:
+                            self.started = True
+                            event, output = "task-started", {}
+                        elif not self.ending:
+                            raise TimeoutError
+                        else:
+                            # 每隔 20 秒一个事件；结果完整结束共需 60 秒。
+                            if timeout < 20:
+                                now[0] += timeout
+                                raise TimeoutError
+                            now[0] += 20
+                            self.event_index += 1
+                            event, output = "task-finished", {}
+                            if self.event_index < 3:
+                                sentence = {
+                                    "sentence_id": 1,
+                                    "text": "你好" if self.event_index == 2 else "你",
+                                    "sentence_end": self.event_index == 2,
+                                }
+                                if outcome == "heartbeat":
+                                    sentence = {"heartbeat": True}
+                                elif outcome == "duplicate":
+                                    sentence = {
+                                        "sentence_id": 1,
+                                        "text": "你",
+                                        "sentence_end": False,
+                                    }
+                                event = "result-generated"
+                                output = {"sentence": sentence}
+                        return json.dumps(
+                            {
+                                "header": {"event": event, "task_id": self.task_id},
+                                "payload": {"output": output},
+                            }
+                        )
+
+                connection = Connection()
+                config = RemoteModelConfig(
+                    provider="bailian",
+                    model=STREAMING,
+                    api_key="test-secret",
+                    base_url="http://127.0.0.1:1",
+                    timeout_seconds=30,
+                )
+                with (
+                    patch(
+                        "speechio.engines.remote.bailian_stream._DirectConnection",
+                        return_value=connection,
+                    ),
+                    patch(
+                        "speechio.engines.remote.bailian_stream.monotonic",
+                        side_effect=lambda: now[0],
+                    ),
+                ):
+                    if outcome == "progress":
+                        result = transcribe_audio(bytes(3200), config=config)
+                        self.assertEqual(result.text, "你好")
+                        self.assertEqual(now[0], 60)
+                    else:
+                        with self.assertRaises(ASRError) as caught:
+                            transcribe_audio(bytes(3200), config=config)
+                        self.assertEqual(caught.exception.code, "REMOTE_TIMEOUT")
+                        self.assertEqual(now[0], 30 if outcome == "heartbeat" else 50)
+                    self.assertTrue(connection.closed)
+
     def test_websocket_redirect_does_not_forward_credentials(self):
         forwarded = []
 
@@ -255,14 +348,20 @@ class RemoteTests(unittest.TestCase):
                         timeout_seconds=0.5,
                     )
                     if expected is None:
-                        result = transcribe_audio(bytes(3210), config=config)
+                        # 文件整段也可使用流式模型，超过五分钟仍应完整发送。
+                        pcm = bytes(301 * 16000 * 2)
+                        with self.assertRaises(ASRError) as limited:
+                            transcribe_audio(pcm, config=config, max_audio_seconds=300)
+                        self.assertEqual(limited.exception.code, "AUDIO_CAPACITY_EXCEEDED")
+                        result = transcribe_audio(pcm, config=config)
                         self.assertEqual(result.text, "hello")
                     else:
+                        pcm = bytes(3210)
                         with self.assertRaises(ASRError) as caught:
-                            transcribe_audio(bytes(3210), config=config)
+                            transcribe_audio(pcm, config=config)
                         self.assertEqual(caught.exception.code, expected)
                         self.assertNotIn("test-secret", str(caught.exception))
-                    self.assertEqual(b"".join(received), bytes(3210))
+                    self.assertEqual(b"".join(received), pcm)
                     self.assertEqual(len(commands), 2)
                     self.assertTrue(closed.wait(3))
 

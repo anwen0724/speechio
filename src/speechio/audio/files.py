@@ -6,13 +6,9 @@ from pathlib import Path
 
 import numpy as np
 
-from speechio.audio.conversion import (
-    SAMPLE_RATE,
-    AudioConverter,
-    validate_max_audio_seconds,
-)
 from speechio.audio.decoding import AudioFileInfo, open_audio_source
 from speechio.errors import ASRError
+from speechio.stt.input import SAMPLE_RATE, AudioConverter, validate_max_audio_seconds
 
 
 def read_audio_info(path) -> AudioFileInfo:

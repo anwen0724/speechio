@@ -3,7 +3,7 @@
 from os import PathLike
 from pathlib import Path
 
-from speechio.runtime.models.prepare import download_asr_model
+from speechio.models.prepare import download_asr_model
 
 
 def download_model(*, engine: str, model_id: str, destination: str | PathLike) -> Path:

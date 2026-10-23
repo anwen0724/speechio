@@ -1,42 +1,62 @@
-"""独立 ASR SDK；按音频、会话、分句、后端与运行时组织实现。"""
+"""语音识别与语音合成 SDK；不管理应用业务或播放设备。"""
 
-from speechio.api import StreamTranscriber, transcribe_audio, transcribe_stream
-from speechio.audio.conversion import AudioFormat, AudioFrame
+from speechio.adapters.contracts import (
+    BaseSynthesisEngine,
+    BaseTranscriptionEngine,
+    EngineCapabilities,
+    StreamingSession,
+    SynthesisCapabilities,
+)
+from speechio.audio.formats import AudioFormat
 from speechio.audio.microphone import (
     InputDevice,
     MicrophoneConfig,
     MicrophoneInput,
     list_input_devices,
 )
-from speechio.config import LocalModelConfig, RemoteModelConfig
-from speechio.engines.base import (
-    BaseTranscriptionEngine,
-    EngineCapabilities,
-    StreamingSession,
-)
-from speechio.errors import ASRError
-from speechio.results import CloseResult, Transcript, WordTimestamp
-from speechio.runtime.asr import RuntimeLimits
-from speechio.runtime.candidates import CandidateConfig
-from speechio.runtime.realtime import RealtimeConfig
-from speechio.runtime.transcriber import ModelConfig, Transcriber
-from speechio.segmentation.gate import SegmentationConfig
-from speechio.segmentation.vad import VadConfig
-from speechio.segmentation.wakeword import WakeConfig
-from speechio.session.automatic import LiveSession
-from speechio.session.session import (
+from speechio.audio.results import AudioChunk, AudioResult
+from speechio.errors import ASRError, SpeechioError, TTSError
+from speechio.models.config import LocalModelConfig, RemoteModelConfig
+from speechio.resources import CloseResult
+from speechio.stt.api import StreamTranscriber, transcribe_audio, transcribe_stream, transcribe_url
+from speechio.stt.input import AudioFrame
+from speechio.stt.results import Transcript, WordTimestamp
+from speechio.stt.runtime.asr import RuntimeLimits
+from speechio.stt.runtime.candidates import CandidateConfig
+from speechio.stt.runtime.realtime import RealtimeConfig
+from speechio.stt.segmentation.gate import SegmentationConfig
+from speechio.stt.segmentation.vad import VadConfig
+from speechio.stt.segmentation.wakeword import WakeConfig
+from speechio.stt.session.automatic import LiveSession
+from speechio.stt.session.session import (
     AudioSnapshot,
     Session,
     SessionConfig,
     SessionEvent,
     TurnRef,
 )
-from speechio.text.endpoint import EndpointConfig
-from speechio.text.realtime_merge import RealtimeMergeConfig
-from speechio.text.stabilizer import StabilizationConfig
+from speechio.stt.text.endpoint import EndpointConfig
+from speechio.stt.text.realtime_merge import RealtimeMergeConfig
+from speechio.stt.text.stabilizer import StabilizationConfig
+from speechio.stt.transcriber import ModelConfig, Transcriber
+from speechio.tts.api import synthesize
+from speechio.tts.options import SynthesisOptions
+from speechio.tts.stream import SynthesisStream
+from speechio.tts.synthesizer import Synthesizer
 
 __all__ = [
+    "synthesize",
+    "Synthesizer",
+    "SynthesisOptions",
+    "SynthesisStream",
+    "SynthesisCapabilities",
+    "BaseSynthesisEngine",
+    "AudioResult",
+    "AudioChunk",
+    "SpeechioError",
+    "TTSError",
     "transcribe_audio",
+    "transcribe_url",
     "transcribe_stream",
     "Transcriber",
     "StreamTranscriber",

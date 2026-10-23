@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 
-from speechio.runtime.models.pinned import NEMOTRON_MODELS
+from speechio.models.pinned import NEMOTRON_MODELS
 
 
 @dataclass(frozen=True)

@@ -6,9 +6,9 @@ from pathlib import Path
 
 from speechio.errors import ASRError
 from speechio.model_manifests import nemotron_manifests
-from speechio.runtime.models.files import check_model_files
-from speechio.runtime.models.manifest import sha256_file
-from speechio.runtime.models.prepare import prepare_nemotron
+from speechio.models.files import check_model_files
+from speechio.models.manifest import sha256_file
+from speechio.models.prepare import prepare_nemotron
 
 
 class ModelInstallError(RuntimeError):

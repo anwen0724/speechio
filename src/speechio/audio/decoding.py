@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from speechio.audio.conversion import AudioFormat
+from speechio.audio.formats import AudioFormat
 from speechio.errors import ASRError
 
 
