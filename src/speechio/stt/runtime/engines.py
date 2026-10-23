@@ -12,15 +12,15 @@ class EngineResources:
         self._owners = [(primary, primary_lock)]
         self._assigned = set()
 
-    def assign(self, *, model=None, engine=None):
+    def assign(self, *, config=None, adapter=None):
         """缺省共用主实例；注入按身份共享，显式本地配置创建独立实例。"""
-        if model is None:
-            selected = engine if engine is not None else self._owners[0][0].engine
+        if config is None:
+            selected = adapter if adapter is not None else self._owners[0][0]._adapter
             for owner, lock in self._owners:
-                if owner.engine is selected:
+                if owner._adapter is selected:
                     self._assigned.add(owner)
                     return owner, lock
-        owner = Transcriber(model, engine=engine)
+        owner = Transcriber(config) if adapter is None else Transcriber.from_adapter(adapter)
         owned = owner, Lock()
         self._owners.append(owned)
         self._assigned.add(owner)

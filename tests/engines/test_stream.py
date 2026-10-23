@@ -5,8 +5,8 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from speechio.engines.stream import NativeStream
-from speechio.errors import ASRError
+from speechio.adapters.local.stream import NativeStream
+from speechio.errors import STTError
 
 
 class RuntimeStream:
@@ -47,7 +47,7 @@ class StreamTests(unittest.TestCase):
         stream = NativeStream(RuntimeRecognizer(), language="zh-CN")
         for audio, rate in [(np.zeros((2, 2)), None), ([1], "16000"), ([1], 16000.0)]:
             with self.subTest(rate=rate, shape=np.shape(audio)):
-                with self.assertRaises(ASRError):
+                with self.assertRaises(STTError):
                     stream.accept_audio(audio, sample_rate=rate)
                 self.assertEqual(stream.accepted_samples, 0)
         stream.accept_audio([])
@@ -65,7 +65,7 @@ class StreamTests(unittest.TestCase):
         self.assertEqual(final.language_source, "detected")
         self.assertIsNone(final.language_probability)
         self.assertEqual(stream.finish(), final)
-        with self.assertRaises(ASRError) as caught:
+        with self.assertRaises(STTError) as caught:
             stream.accept_audio([])
         self.assertEqual(caught.exception.code, "STREAM_FINISHED")
         stream.close()
@@ -88,7 +88,7 @@ class StreamTests(unittest.TestCase):
         stream.close()
         self.assertEqual(stream.get_result(), partial)
         self.assertFalse(stream.has_final_result)
-        with self.assertRaises(ASRError) as caught:
+        with self.assertRaises(STTError) as caught:
             stream.reset()
         self.assertEqual(caught.exception.code, "STREAM_CLOSED")
 
@@ -107,10 +107,10 @@ class StreamTests(unittest.TestCase):
         stream.decode()
         partial = stream.get_result()
         recognizer.fail_read = True
-        with self.assertRaises(ASRError) as caught:
+        with self.assertRaises(STTError) as caught:
             stream.decode()
         self.assertEqual(caught.exception.operation, "get_result")
         self.assertEqual(stream.get_result(), partial)
-        with self.assertRaises(ASRError):
+        with self.assertRaises(STTError):
             stream.accept_audio([0.2])
         stream.close()

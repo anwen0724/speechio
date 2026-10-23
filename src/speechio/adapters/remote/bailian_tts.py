@@ -7,17 +7,17 @@ from threading import Event, Lock, Timer
 from time import monotonic
 from uuid import uuid4
 
-from speechio.adapters.contracts import BaseSynthesisEngine, SynthesisCapabilities
+from speechio.adapters.contracts import TTSAdapter, TTSCapabilities
 from speechio.audio.formats import AudioFormat
 from speechio.audio.results import AudioChunk, AudioResult
 from speechio.errors import TTSError
 from speechio.resources import CloseResult
 
 
-class BailianSynthesisEngine(BaseSynthesisEngine):
+class BailianSynthesisEngine(TTSAdapter):
     """统一完整文本、音频流与增量文本的服务协议。"""
 
-    capabilities = SynthesisCapabilities(
+    capabilities = TTSCapabilities(
         default_sample_rate=24000,
         synthesis=True,
         audio_streaming=True,

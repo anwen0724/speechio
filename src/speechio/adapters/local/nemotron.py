@@ -4,7 +4,7 @@ import inspect
 from pathlib import Path
 
 from speechio.adapters.local.stream import NativeStream
-from speechio.errors import ASRError
+from speechio.errors import STTError
 from speechio.models.files import check_model_files
 from speechio.models.stages import preparation_step
 from speechio.stt.input import as_audio
@@ -15,15 +15,15 @@ class NemotronEngine:
 
     def __init__(self, config):
         self.preparation_steps = []
-        options = config.engine_options or {}
+        options = config.adapter_options or {}
         num_threads = options.get("num_threads", 1)
         if type(num_threads) is not int or num_threads <= 0:
-            raise ASRError(
+            raise STTError(
                 "INVALID_CONFIGURATION", "configure_engine", "engine_options.num_threads 应为正整数"
             )
         self.num_threads = num_threads
         if config.compute_type not in (None, "int8"):
-            raise ASRError(
+            raise STTError(
                 "INVALID_CONFIGURATION",
                 "configure_engine",
                 "当前 Nemotron 适配器读取 INT8 模型，compute_type 只接受 None 或 int8",
@@ -41,10 +41,10 @@ class NemotronEngine:
         try:
             from sherpa_onnx import OnlineRecognizer
         except ImportError as exc:
-            raise ASRError("DEPENDENCY_MISSING", "load_model", str(exc)) from exc
+            raise STTError("DEPENDENCY_MISSING", "load_model", str(exc)) from exc
         if self.provider == "cuda":
             # 当前 INT8 适配器只承诺 CPU，不能把 provider 请求当成 GPU 执行成功。
-            raise ASRError(
+            raise STTError(
                 "DEVICE_UNAVAILABLE",
                 "load_model",
                 "当前 Nemotron INT8 适配器仅支持 CPU，请使用 device='cpu'",
@@ -75,7 +75,7 @@ class NemotronEngine:
         try:
             self._recognizer = OnlineRecognizer.from_transducer(**self.parameters)
         except Exception as exc:
-            raise ASRError("MODEL_LOAD", "load_model", str(exc)) from exc
+            raise STTError("MODEL_LOAD", "load_model", str(exc)) from exc
 
     def resolved_parameters(self):
         """记录实际工厂参数和统一调用参数，不加载额外热词或规则。"""

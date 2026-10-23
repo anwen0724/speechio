@@ -9,13 +9,13 @@ import numpy as np
 import soxr
 
 from speechio import (
-    ASRError,
     AudioFormat,
-    ModelConfig,
+    LocalModelConfig,
     RuntimeLimits,
     SessionConfig,
+    STTError,
 )
-from speechio.runtime.asr import ASRRuntime
+from speechio.stt.runtime.asr import STTRuntime
 from tests.runtime import test_transcriber
 
 
@@ -30,7 +30,7 @@ class SessionTests(unittest.TestCase):
             "faster_whisper.BatchedInferencePipeline.transcribe",
             return_value=(iter([]), SimpleNamespace(language=None, language_probability=None)),
         ):
-            with ASRRuntime(ModelConfig(engine="whisper", model_path=self.path)) as runtime:
+            with STTRuntime(LocalModelConfig(adapter="whisper", model_path=self.path)) as runtime:
                 session = runtime.create_session()
                 unit = session.start()
                 session.feed_audio(b"\x00\x00")
@@ -56,7 +56,7 @@ class SessionTests(unittest.TestCase):
                 language="en", language_probability=1.0
             )
 
-        runtime = ASRRuntime(ModelConfig(engine="whisper", model_path=self.path))
+        runtime = STTRuntime(LocalModelConfig(adapter="whisper", model_path=self.path))
         self.addCleanup(runtime.close)
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=native):
             runtime.prepare()
@@ -83,13 +83,13 @@ class SessionTests(unittest.TestCase):
             self.assertIsNone(session.next_event())
 
     def test_invalid_finish_terminates_only_its_unit_and_accepts_next_unit(self):
-        with ASRRuntime(ModelConfig(engine="whisper", model_path=self.path)) as runtime:
+        with STTRuntime(LocalModelConfig(adapter="whisper", model_path=self.path)) as runtime:
             session = runtime.create_session()
             for payload, code in ((b"", "INVALID_AUDIO"), (b"\x01", "AUDIO_INPUT_TRUNCATED")):
                 with self.subTest(code=code):
                     unit = session.start()
                     session.feed_audio(payload)
-                    with self.assertRaises(ASRError) as caught:
+                    with self.assertRaises(STTError) as caught:
                         session.end_turn()
                     self.assertEqual(caught.exception.code, code)
                     event = session.next_event(timeout=5)
@@ -108,7 +108,7 @@ class SessionTests(unittest.TestCase):
             )
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=native):
-            with ASRRuntime(ModelConfig(engine="whisper", model_path=self.path)) as runtime:
+            with STTRuntime(LocalModelConfig(adapter="whisper", model_path=self.path)) as runtime:
                 session = runtime.create_session()
                 failed = session.start()
                 session.feed_audio(np.array([-1], np.int16))
@@ -140,7 +140,7 @@ class SessionTests(unittest.TestCase):
             return iter([]), SimpleNamespace(language=None, language_probability=None)
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=native):
-            with ASRRuntime(ModelConfig(engine="whisper", model_path=self.path)) as runtime:
+            with STTRuntime(LocalModelConfig(adapter="whisper", model_path=self.path)) as runtime:
                 session = runtime.create_session()
                 running = session.start()
                 session.feed_audio(np.array([1], np.int16))
@@ -185,7 +185,7 @@ class SessionTests(unittest.TestCase):
             return iter([]), SimpleNamespace(language=None, language_probability=None)
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=native):
-            with ASRRuntime(ModelConfig(engine="whisper", model_path=self.path)) as runtime:
+            with STTRuntime(LocalModelConfig(adapter="whisper", model_path=self.path)) as runtime:
                 session, other = runtime.create_session(), runtime.create_session()
                 old = session.start()
                 session.feed_audio(np.array([-1], np.int16))
@@ -205,7 +205,7 @@ class SessionTests(unittest.TestCase):
                     self.assertEqual([e.turn for e in change.cancelled], [old, queued, active])
                     self.assertEqual(change.pending_tasks, 1)
                     self.assertFalse(session.cancel_turn(old))
-                    with self.assertRaises(ASRError) as caught:
+                    with self.assertRaises(STTError) as caught:
                         session.cancel_turn(untouched)
                     self.assertEqual(caught.exception.code, "INVALID_TARGET")
                     fresh = session.start()
@@ -224,7 +224,7 @@ class SessionTests(unittest.TestCase):
             return iter([]), SimpleNamespace(language=None, language_probability=None)
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=native):
-            with ASRRuntime(ModelConfig(engine="whisper", model_path=self.path)) as runtime:
+            with STTRuntime(LocalModelConfig(adapter="whisper", model_path=self.path)) as runtime:
                 session = runtime.create_session()
                 session.start()
                 session.feed_audio(np.array([1], np.int16))
@@ -235,7 +235,7 @@ class SessionTests(unittest.TestCase):
                 self.assertIs(session.close(), change)
                 self.assertEqual(session.state, "closed")
                 self.assertIsNone(session.next_event(timeout=None))
-                with self.assertRaises(ASRError) as caught:
+                with self.assertRaises(STTError) as caught:
                     session.start()
                 self.assertEqual(caught.exception.code, "SESSION_CLOSED")
                 self.assertEqual(runtime.capacity.open_sessions, 0)
@@ -254,22 +254,22 @@ class SessionTests(unittest.TestCase):
             return iter([]), SimpleNamespace(language=None, language_probability=None)
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=native):
-            with ASRRuntime(ModelConfig(engine="whisper", model_path=self.path)) as runtime:
+            with STTRuntime(LocalModelConfig(adapter="whisper", model_path=self.path)) as runtime:
                 session = runtime.create_session(
                     SessionConfig(max_audio_samples=3, max_pending_units=1)
                 )
                 session.start()
                 session.feed_audio(b"\x01")
-                with self.assertRaises(ASRError) as caught:
+                with self.assertRaises(STTError) as caught:
                     session.feed_audio(bytes(6))
                 self.assertEqual(caught.exception.code, "AUDIO_CAPACITY_EXCEEDED")
                 session.feed_audio(b"\x00\x02\x00\x03\x00")
                 self.assertEqual(session.end_turn().audio_samples, 3)
-                with self.assertRaises(ASRError) as caught:
+                with self.assertRaises(STTError) as caught:
                     session.start()
                 self.assertEqual(caught.exception.code, "RESULT_CAPACITY_EXCEEDED")
                 session.next_event(timeout=5)
-                with self.assertRaises(ASRError):
+                with self.assertRaises(STTError):
                     session.start()
                 self.assertEqual(session.next_event(timeout=5).kind, "completed")
                 session.start()
@@ -289,8 +289,8 @@ class SessionTests(unittest.TestCase):
             return iter([]), SimpleNamespace(language=None, language_probability=None)
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=native):
-            with ASRRuntime(
-                ModelConfig(engine="whisper", model_path=self.path),
+            with STTRuntime(
+                LocalModelConfig(adapter="whisper", model_path=self.path),
                 limits=RuntimeLimits(max_tasks=2, max_task_audio_samples=100),
             ) as runtime:
                 first, second = runtime.create_session(), runtime.create_session()
@@ -304,15 +304,15 @@ class SessionTests(unittest.TestCase):
                     first.end_turn()
                     unit = second.start()
                     second.feed_audio(np.array([4], np.int16))
-                    with self.assertRaises(ASRError) as caught:
+                    with self.assertRaises(STTError) as caught:
                         second.end_turn()
                     self.assertEqual(caught.exception.code, "TASK_CAPACITY_EXCEEDED")
                     self.assertEqual(second.state, "sealed")
-                    with self.assertRaises(ASRError) as caught:
+                    with self.assertRaises(STTError) as caught:
                         second.feed_audio(np.array([5], np.int16))
                     self.assertEqual(caught.exception.code, "UNIT_SEALED")
                     first.cancel_turn(running)
-                    with self.assertRaises(ASRError):
+                    with self.assertRaises(STTError):
                         second.end_turn()
                     first.cancel_turn(queued)
                     task = second.end_turn()
@@ -335,8 +335,8 @@ class SessionTests(unittest.TestCase):
             return iter([]), SimpleNamespace(language=None, language_probability=None)
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=native):
-            with ASRRuntime(
-                ModelConfig(engine="whisper", model_path=self.path),
+            with STTRuntime(
+                LocalModelConfig(adapter="whisper", model_path=self.path),
                 limits=RuntimeLimits(max_tasks=4, max_task_audio_samples=2),
             ) as runtime:
                 session = runtime.create_session()
@@ -347,7 +347,7 @@ class SessionTests(unittest.TestCase):
                 try:
                     session.start()
                     session.feed_audio(np.array([3], np.int16))
-                    with self.assertRaises(ASRError) as caught:
+                    with self.assertRaises(STTError) as caught:
                         session.end_turn()
                     self.assertEqual(caught.exception.code, "TASK_CAPACITY_EXCEEDED")
                     self.assertEqual(runtime.capacity.tasks, 1)
@@ -368,8 +368,8 @@ class SessionTests(unittest.TestCase):
             return iter([]), SimpleNamespace(language=None, language_probability=None)
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=native):
-            with ASRRuntime(
-                ModelConfig(engine="whisper", model_path=self.path),
+            with STTRuntime(
+                LocalModelConfig(adapter="whisper", model_path=self.path),
                 limits=RuntimeLimits(max_sessions=2),
             ) as runtime:
                 a, b = runtime.create_session(), runtime.create_session()
@@ -378,7 +378,7 @@ class SessionTests(unittest.TestCase):
                 a.end_turn()
                 self.assertTrue(entered.wait(5))
                 try:
-                    with self.assertRaises(ASRError) as caught:
+                    with self.assertRaises(STTError) as caught:
                         runtime.create_session()
                     self.assertEqual(caught.exception.code, "SESSION_CAPACITY_EXCEEDED")
                     for session, sample in ((a, 2), (a, 3), (b, 4)):
@@ -403,7 +403,7 @@ class SessionTests(unittest.TestCase):
                 raise RuntimeError("测试未释放模型")
             return iter([]), SimpleNamespace(language=None, language_probability=None)
 
-        runtime = ASRRuntime(ModelConfig(engine="whisper", model_path=self.path))
+        runtime = STTRuntime(LocalModelConfig(adapter="whisper", model_path=self.path))
         self.addCleanup(runtime.close)
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=native):
             runtime.prepare()
@@ -421,7 +421,7 @@ class SessionTests(unittest.TestCase):
                 self.assertEqual(runtime.state, "closing")
                 self.assertEqual(runtime.capacity.tasks, 1)
                 self.assertEqual(session.state, "closed")
-                with self.assertRaises(ASRError) as caught:
+                with self.assertRaises(STTError) as caught:
                     runtime.create_session()
                 self.assertEqual(caught.exception.code, "RUNTIME_CLOSING")
             finally:
@@ -440,7 +440,7 @@ class SessionTests(unittest.TestCase):
             return iter([]), SimpleNamespace(language=None, language_probability=None)
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=native):
-            with ASRRuntime(ModelConfig(engine="whisper", model_path=self.path)) as runtime:
+            with STTRuntime(LocalModelConfig(adapter="whisper", model_path=self.path)) as runtime:
                 session = runtime.create_session(
                     SessionConfig(format=AudioFormat(48000, 2), max_audio_samples=16)
                 )
@@ -450,7 +450,7 @@ class SessionTests(unittest.TestCase):
                     raw = source.tobytes()
                     for offset in range(0, len(raw), 7):
                         session.feed_audio(raw[offset : offset + 7])
-                    with self.assertRaises(ASRError) as caught:
+                    with self.assertRaises(STTError) as caught:
                         session.feed_audio(b"\x00")
                     self.assertEqual(caught.exception.code, "AUDIO_CAPACITY_EXCEEDED")
                     self.assertEqual(session.end_turn().audio_samples, 16)
@@ -462,13 +462,13 @@ class SessionTests(unittest.TestCase):
                 np.testing.assert_allclose(received[1], -expected, atol=1 / 32768)
 
     def test_prepare_retry_and_context_body_exception_keep_runtime_contract(self):
-        runtime = ASRRuntime(ModelConfig(engine="whisper", model_path=self.path))
+        runtime = STTRuntime(LocalModelConfig(adapter="whisper", model_path=self.path))
         self.addCleanup(runtime.close)
-        with self.assertRaises(ASRError) as caught:
+        with self.assertRaises(STTError) as caught:
             runtime.create_session()
         self.assertEqual(caught.exception.code, "RUNTIME_NOT_READY")
         with patch("faster_whisper.WhisperModel", side_effect=OSError("外部加载失败")):
-            with self.assertRaises(ASRError):
+            with self.assertRaises(STTError):
                 runtime.prepare()
         self.assertEqual(runtime.state, "unprepared")
         original = ValueError("宿主正文错误")
@@ -477,7 +477,7 @@ class SessionTests(unittest.TestCase):
                 raise original
         self.assertIs(caught.exception, original)
         self.assertEqual(runtime.close_result.status, "ok")
-        with self.assertRaises(ASRError) as caught:
+        with self.assertRaises(STTError) as caught:
             runtime.prepare()
         self.assertEqual(caught.exception.code, "RUNTIME_CLOSED")
 
@@ -489,13 +489,13 @@ class SessionTests(unittest.TestCase):
             return iter([]), SimpleNamespace(language=None, language_probability=None)
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=native):
-            with ASRRuntime(ModelConfig(engine="whisper", model_path=self.path)) as runtime:
+            with STTRuntime(LocalModelConfig(adapter="whisper", model_path=self.path)) as runtime:
                 session = runtime.create_session(
                     SessionConfig(format=AudioFormat(sample_type="float32"), max_audio_samples=2)
                 )
                 session.start()
                 session.feed_audio(np.array([0.25], np.float32))
-                with self.assertRaises(ASRError) as caught:
+                with self.assertRaises(STTError) as caught:
                     session.feed_audio(np.array([np.nan], np.float32))
                 self.assertEqual(caught.exception.code, "INVALID_AUDIO")
                 self.assertEqual(session.state, "receiving")

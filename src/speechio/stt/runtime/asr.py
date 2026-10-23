@@ -7,9 +7,10 @@ from threading import Condition, Lock, Thread
 from time import monotonic
 
 from speechio.audio.formats import AudioFormat
-from speechio.errors import ASRError
+from speechio.errors import STTError
 from speechio.resources import CloseError
-from speechio.stt.runtime.candidates import CandidateConfig, execute_candidate
+from speechio.stt.options import TranscriptionOptions
+from speechio.stt.runtime.candidates import OnDemandConfig, execute_candidate
 from speechio.stt.runtime.engines import EngineResources
 from speechio.stt.runtime.realtime import RealtimeConfig, RealtimeGroup
 from speechio.stt.runtime.tasks import InferenceRequest
@@ -31,7 +32,7 @@ class RuntimeLimits:
     def __post_init__(self):
         for limit in (self.max_sessions, self.max_tasks, self.max_task_audio_samples):
             if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
-                raise ASRError("INVALID_CONFIGURATION", "configure", "运行时容量应为正整数")
+                raise STTError("INVALID_CONFIGURATION", "configure", "运行时容量应为正整数")
 
 
 @dataclass(frozen=True)
@@ -55,49 +56,58 @@ class RuntimeCloseResult:
     errors: tuple[CloseError, ...] = ()
 
 
-class ASRRuntime:
+class STTRuntime:
     """拥有一个同步模型组件及后台调度，供多个独立会话使用。"""
 
-    def __init__(
-        self,
-        config=None,
-        *,
-        engine=None,
-        limits=None,
-        realtime=None,
-        ultrafast=None,
-        candidate=None,
-        final_enabled=True,
-    ):
-        if type(final_enabled) is not bool or (
-            candidate is not None and not isinstance(candidate, CandidateConfig)
+    def __init__(self, config, *, limits=None, realtime=None, ultrafast=None, on_demand=None):
+        """持有主模型及可选识别角色，资源由运行时统一关闭。"""
+        self._initialize(Transcriber(config), limits, realtime, ultrafast, on_demand)
+
+    @classmethod
+    def from_adapter(cls, adapter, *, limits=None, realtime=None, ultrafast=None, on_demand=None):
+        """从调用方适配器创建共享运行时。"""
+        instance = cls.__new__(cls)
+        instance._initialize(
+            Transcriber.from_adapter(adapter), limits, realtime, ultrafast, on_demand
+        )
+        return instance
+
+    @classmethod
+    def from_on_demand(cls, on_demand, *, limits=None, realtime=None, ultrafast=None):
+        """只使用按需模型，不需要虚构一个主模型配置。"""
+        if not isinstance(on_demand, OnDemandConfig) or (
+            on_demand.config is None and on_demand._adapter is None
         ):
-            raise ASRError("INVALID_CONFIGURATION", "configure", "最终开关或候选配置无效")
+            raise STTError("INVALID_CONFIGURATION", "configure", "需要明确的按需模型配置")
+        recognizer = (
+            Transcriber(on_demand.config)
+            if on_demand._adapter is None
+            else Transcriber.from_adapter(on_demand._adapter)
+        )
+        instance = cls.__new__(cls)
+        instance._initialize(
+            recognizer, limits, realtime, ultrafast, on_demand, final_enabled=False
+        )
+        return instance
+
+    def _initialize(
+        self, recognizer, limits, realtime, ultrafast, candidate, *, final_enabled=True
+    ):
+        if candidate is not None and not isinstance(candidate, OnDemandConfig):
+            raise STTError("INVALID_CONFIGURATION", "configure", "需要 OnDemandConfig")
         self._final_enabled = final_enabled
-        if not final_enabled:
-            if (
-                config is not None
-                or engine is not None
-                or candidate is None
-                or candidate.model is None
-                and candidate.engine is None
-            ):
-                raise ASRError(
-                    "INVALID_CONFIGURATION", "configure", "候选专用宿主只接受明确的候选模型或引擎"
-                )
-            config, engine = candidate.model, candidate.engine
-        self._recognizer = Transcriber(config, engine=engine)
+        self._recognizer = recognizer
         if not self._recognizer.capabilities.transcription:
-            raise ASRError("BACKEND_INCOMPATIBLE", "configure", "最终角色需要整段识别能力")
+            raise STTError("BACKEND_INCOMPATIBLE", "configure", "主角色需要整段识别能力")
         if realtime is not None and not isinstance(realtime, RealtimeConfig):
-            raise ASRError("INVALID_CONFIGURATION", "configure", "需要 RealtimeConfig")
+            raise STTError("INVALID_CONFIGURATION", "configure", "需要 RealtimeConfig")
         self._realtime_config = realtime
         if ultrafast is not None and realtime is None:
-            raise ASRError("INVALID_CONFIGURATION", "configure", "极速角色需要准确实时角色")
+            raise STTError("INVALID_CONFIGURATION", "configure", "极速角色需要准确实时角色")
         self._ultrafast_config = ultrafast
-        self._candidate_config = candidate
+        self._on_demand_config = candidate
         if limits is not None and not isinstance(limits, RuntimeLimits):
-            raise ASRError("INVALID_CONFIGURATION", "configure", "需要 RuntimeLimits")
+            raise STTError("INVALID_CONFIGURATION", "configure", "需要 RuntimeLimits")
         self._limits = limits if limits is not None else RuntimeLimits()
         # 会话控制和任务登记共用协调锁，避免跨对象锁顺序和提交竞态。
         self._condition = Condition()
@@ -118,28 +128,28 @@ class ASRRuntime:
         self._assemble_candidate()
 
     def _assemble_candidate(self):
-        config = self._candidate_config
+        config = self._on_demand_config
         if not self._final_enabled:
             self._candidate = self._recognizer, self._model_lock
         else:
             self._candidate = (
-                self._engines.assign(model=config.model, engine=config.engine)
+                self._engines.assign(config=config.config, adapter=config._adapter)
                 if config is not None
                 else None
             )
         if self._candidate is not None and not self._candidate[0].capabilities.transcription:
-            raise ASRError("BACKEND_INCOMPATIBLE", "configure", "候选角色需要整段识别能力")
+            raise STTError("BACKEND_INCOMPATIBLE", "configure", "候选角色需要整段识别能力")
 
     @property
     def final_enabled(self):
         return self._final_enabled
 
     @property
-    def candidate_config(self):
-        return self._candidate_config
+    def on_demand_config(self):
+        return self._on_demand_config
 
     @property
-    def candidate_capabilities(self):
+    def on_demand_capabilities(self):
         return self._candidate[0].capabilities if self._candidate is not None else None
 
     @property
@@ -188,7 +198,7 @@ class ASRRuntime:
         result = self.close()
         if exc_type is None and result.status != "ok":
             code = "CLOSE_TIMEOUT" if result.status == "pending" else "CLEANUP_FAILED"
-            raise ASRError(code, "close", "运行时关闭未成功")
+            raise STTError(code, "close", "运行时关闭未成功")
         return False
 
     def prepare(self):
@@ -232,31 +242,75 @@ class ASRRuntime:
     def _require_ready(self, *, allow_unprepared=False):
         if self._worker_error is not None:
             error = self._worker_error
-            raise ASRError(error.code, error.operation, error.message)
+            raise STTError(error.code, error.operation, error.message)
         codes = {
             "closing": "RUNTIME_CLOSING",
             "closed": "RUNTIME_CLOSED",
             "unprepared": "RUNTIME_NOT_READY",
         }
         if self._state != "ready" and not (allow_unprepared and self._state == "unprepared"):
-            raise ASRError(codes[self._state], "runtime", "运行时不能接受新工作")
+            raise STTError(codes[self._state], "runtime", "运行时不能接受新工作")
 
     def create_session(self, config=None) -> Session:
         """创建独立输入与结果范围，复用当前运行时的模型。"""
         with self._condition:
             self._require_ready()
             if len(self._sessions) >= self._limits.max_sessions:
-                raise ASRError("SESSION_CAPACITY_EXCEEDED", "create_session", "开放会话达到上限")
+                raise STTError("SESSION_CAPACITY_EXCEEDED", "create_session", "开放会话达到上限")
             config = config if config is not None else SessionConfig()
             if not isinstance(config, SessionConfig):
-                raise ASRError("INVALID_CONFIGURATION", "configure", "需要 SessionConfig")
+                raise STTError("INVALID_CONFIGURATION", "configure", "需要 SessionConfig")
             if config.realtime and self._realtime is None:
-                raise ASRError("REALTIME_NOT_CONFIGURED", "create_session", "运行时未配置实时角色")
+                raise STTError("REALTIME_NOT_CONFIGURED", "create_session", "运行时未配置实时角色")
             session = Session(self, config)
             self._sessions[session.session_id] = session
             return session
 
     def create_auto_session(
+        self,
+        *,
+        config=None,
+        vad=None,
+        segmentation=None,
+        endpoint=None,
+        wake=None,
+        wake_detector_factory=None,
+    ):
+        """自动分段；未指定 VAD 时使用随包提供的检测模型。"""
+        from speechio.bundled import default_vad_model
+        from speechio.stt.segmentation.vad import VadConfig
+
+        vad = vad if vad is not None else VadConfig(model_path=default_vad_model())
+        return self._create_auto_session(
+            config=config,
+            vad=vad,
+            segmentation=segmentation,
+            endpoint=endpoint,
+            wake=wake,
+            wake_detector_factory=wake_detector_factory,
+        )
+
+    def create_auto_session_from_detector(
+        self,
+        detector_factory,
+        *,
+        config=None,
+        segmentation=None,
+        endpoint=None,
+        wake=None,
+        wake_detector_factory=None,
+    ):
+        """由调用方提供语音检测器工厂；不同时接收 VAD 配置。"""
+        return self._create_auto_session(
+            config=config,
+            detector_factory=detector_factory,
+            segmentation=segmentation,
+            endpoint=endpoint,
+            wake=wake,
+            wake_detector_factory=wake_detector_factory,
+        )
+
+    def _create_auto_session(
         self,
         *,
         vad=None,
@@ -270,25 +324,25 @@ class ASRRuntime:
         """显式准备检测器；加载不持有共享协调锁，失败不注册会话。"""
         from speechio.stt.segmentation.gate import SegmentationConfig
         from speechio.stt.segmentation.vad import VadConfig
-        from speechio.stt.session.automatic import LiveSession
+        from speechio.stt.session.automatic import AutoSession
 
         if (
             (vad is None) == (detector_factory is None)
             or (vad is not None and not isinstance(vad, VadConfig))
             or (detector_factory is not None and not callable(detector_factory))
         ):
-            raise ASRError("INVALID_CONFIGURATION", "configure", "VAD 配置与工厂应且仅应提供一个")
+            raise STTError("INVALID_CONFIGURATION", "configure", "VAD 配置与工厂应且仅应提供一个")
         config = config if config is not None else SessionConfig()
         segmentation = segmentation if segmentation is not None else SegmentationConfig()
         if not isinstance(config, SessionConfig) or not isinstance(
             segmentation, SegmentationConfig
         ):
-            raise ASRError("INVALID_CONFIGURATION", "configure", "自动会话配置类型无效")
+            raise STTError("INVALID_CONFIGURATION", "configure", "自动会话配置类型无效")
         with self._condition:
             self._require_ready()
             if config.realtime and self._realtime is None:
-                raise ASRError("REALTIME_NOT_CONFIGURED", "create_session", "运行时未配置实时角色")
-        session = LiveSession(
+                raise STTError("REALTIME_NOT_CONFIGURED", "create_session", "运行时未配置实时角色")
+        session = AutoSession(
             self,
             config,
             vad,
@@ -302,11 +356,11 @@ class ASRRuntime:
             try:
                 self._require_ready()
                 if len(self._sessions) >= self._limits.max_sessions:
-                    raise ASRError(
+                    raise STTError(
                         "SESSION_CAPACITY_EXCEEDED", "create_session", "开放会话达到上限"
                     )
                 self._sessions[session.session_id] = session
-            except ASRError:
+            except STTError:
                 session.close()
                 raise
         return session
@@ -374,7 +428,7 @@ class ASRRuntime:
         ):
             if request.priority == "auxiliary":
                 return False
-            raise ASRError("TASK_CAPACITY_EXCEEDED", "finish", "最终任务容量不足，保留封口音频")
+            raise STTError("TASK_CAPACITY_EXCEEDED", "finish", "最终任务容量不足，保留封口音频")
         if replaced is not None:
             self.cancel_task(replaced.task.task_id)
         self._queue.append(replace(request, submitted_at=monotonic()))
@@ -390,7 +444,7 @@ class ASRRuntime:
             self._work_loop()
         except BaseException as exc:
             LOGGER.exception("最终识别工作线程异常退出")
-            failure = ASRError("RUNTIME_WORKER_FAILED", "worker", f"{type(exc).__name__}: {exc}")
+            failure = STTError("RUNTIME_WORKER_FAILED", "worker", f"{type(exc).__name__}: {exc}")
             errors.append(CloseError(failure.code, failure.operation, failure.message))
             with self._condition:
                 self._worker_error = errors[0]
@@ -455,10 +509,11 @@ class ASRRuntime:
                         result = model.transcribe(
                             job.pcm,
                             format=AudioFormat(),
-                            language=job.language,
-                            word_timestamps=job.word_timestamps,
+                            options=TranscriptionOptions(
+                                language=job.language, word_timestamps=job.word_timestamps
+                            ),
                         )
-            except ASRError as exc:
+            except STTError as exc:
                 error = exc
             completed_at = monotonic()
             with self._condition:

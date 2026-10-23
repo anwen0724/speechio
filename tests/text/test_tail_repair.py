@@ -2,7 +2,7 @@
 
 import unittest
 
-from speechio.text.tail_repair import repair_tail
+from speechio.stt.text.tail_repair import repair_tail
 
 
 class TailRepairTests(unittest.TestCase):

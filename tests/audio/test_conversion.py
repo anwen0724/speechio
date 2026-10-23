@@ -6,8 +6,8 @@ from unittest.mock import patch
 import numpy as np
 import soxr
 
-from speechio.audio.conversion import AudioConverter, AudioFormat
-from speechio.errors import ASRError
+from speechio.errors import STTError
+from speechio.stt.input import AudioConverter, AudioFormat
 
 
 class ConversionTests(unittest.TestCase):
@@ -46,7 +46,7 @@ class ConversionTests(unittest.TestCase):
         raw = np.array([[1000, -1000], [101, 100]], dtype="<i2").tobytes()
         converter = AudioConverter(AudioFormat(channels=2), frame_samples=1)
         frames = converter.feed(b"") + converter.feed(raw[:3])
-        with self.assertRaises(ASRError) as caught:
+        with self.assertRaises(STTError) as caught:
             converter.feed(np.zeros((1, 2), np.int16))
         self.assertEqual(caught.exception.code, "INVALID_AUDIO")
         frames += converter.feed(bytearray(raw[3:])) + converter.finish()
@@ -57,7 +57,7 @@ class ConversionTests(unittest.TestCase):
         raw = np.array([0.5], dtype="<f4").tobytes()
         converter = AudioConverter(AudioFormat(sample_type="float32"))
         converter.feed(raw[:2])
-        with self.assertRaises(ASRError) as caught:
+        with self.assertRaises(STTError) as caught:
             converter.feed(raw[2:] + np.array([np.nan], dtype="<f4").tobytes())
         self.assertEqual(caught.exception.code, "INVALID_AUDIO")
         frames = converter.feed(raw[2:]) + converter.finish()
@@ -66,24 +66,24 @@ class ConversionTests(unittest.TestCase):
     def test_truncated_finish_fails_and_close_rejects_further_input(self):
         converter = AudioConverter(AudioFormat())
         converter.feed(b"\x01")
-        with self.assertRaises(ASRError) as caught:
+        with self.assertRaises(STTError) as caught:
             converter.finish()
         self.assertEqual(caught.exception.code, "AUDIO_INPUT_TRUNCATED")
         self.assertEqual(converter.state, "failed")
         converter.close()
         converter.close()
-        with self.assertRaises(ASRError) as caught:
+        with self.assertRaises(STTError) as caught:
             converter.feed(b"\x00")
         self.assertEqual(caught.exception.code, "CONVERTER_CLOSED")
 
     def test_shape_failure_can_be_repaired_and_finish_is_idempotent(self):
         converter = AudioConverter(AudioFormat(channels=2))
-        with self.assertRaises(ASRError):
+        with self.assertRaises(STTError):
             converter.feed(np.array([1, 2], np.int16))
         frames = converter.feed(np.array([[100, 100]], np.int16)) + converter.finish()
         self.assertEqual(frames[0].pcm, b"\x64\x00")
         self.assertEqual(converter.finish(), [])
-        with self.assertRaises(ASRError) as caught:
+        with self.assertRaises(STTError) as caught:
             converter.feed(np.array([[1, 1]], np.int16))
         self.assertEqual(caught.exception.code, "CONVERTER_FINISHED")
 
@@ -93,17 +93,17 @@ class ConversionTests(unittest.TestCase):
             ({"channels": 0}, "INVALID_AUDIO_FORMAT"),
         ]:
             with self.subTest(options=options):
-                with self.assertRaises(ASRError) as caught:
+                with self.assertRaises(STTError) as caught:
                     AudioConverter(AudioFormat(**options))
                 self.assertEqual(caught.exception.code, code)
 
     def test_native_resample_failure_disallows_finish_and_new_blocks(self):
         converter = AudioConverter(AudioFormat(48000, sample_type="float32"))
         with patch("soxr.ResampleStream.resample_chunk", side_effect=RuntimeError("滤波失败")):
-            with self.assertRaises(ASRError) as caught:
+            with self.assertRaises(STTError) as caught:
                 converter.feed(np.zeros(480, np.float32))
         self.assertEqual(caught.exception.code, "AUDIO_CONVERSION_FAILED")
         self.assertEqual(converter.state, "failed")
-        with self.assertRaises(ASRError):
+        with self.assertRaises(STTError):
             converter.finish()
         converter.close()

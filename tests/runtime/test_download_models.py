@@ -8,9 +8,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from speechio import ASRError
+from speechio import STTError
 from speechio.models import download_model
-from speechio.runtime.models.pinned import nemotron_model
+from speechio.models.pinned import nemotron_model
 
 
 class DownloadModelTests(unittest.TestCase):
@@ -43,7 +43,7 @@ class DownloadModelTests(unittest.TestCase):
             target = Path(directory)
             existing = target / "model.bin"
             existing.write_bytes(b"my model")
-            with self.assertRaises(ASRError) as caught:
+            with self.assertRaises(STTError) as caught:
                 download_model(engine="whisper", model_id="large-v3-turbo", destination=target)
             self.assertEqual(caught.exception.code, "MODEL_CONFLICT")
             self.assertEqual(existing.read_bytes(), b"my model")
@@ -60,7 +60,7 @@ class DownloadModelTests(unittest.TestCase):
                 patch("huggingface_hub.snapshot_download", side_effect=interrupted),
             ):
                 api.return_value.model_info.return_value = SimpleNamespace(sha="1" * 40)
-                with self.assertRaises(ASRError) as caught:
+                with self.assertRaises(STTError) as caught:
                     download_model(engine="whisper", model_id="large-v3-turbo", destination=target)
             self.assertEqual(caught.exception.code, "MODEL_DOWNLOAD")
             self.assertEqual(list(Path(directory).iterdir()), [])
@@ -81,9 +81,36 @@ class DownloadModelTests(unittest.TestCase):
         payload.seek(0)
         payload.headers = {"Content-Length": str(len(payload.getvalue()))}
         with tempfile.TemporaryDirectory() as directory:
-            with patch("speechio.runtime.models.prepare.urlopen", return_value=payload):
+            with patch("speechio.models.prepare.urlopen", return_value=payload):
                 result = download_model(
                     engine="nemotron", model_id="560ms", destination=Path(directory) / "model"
                 )
             self.assertEqual((result / "encoder.int8.onnx").read_bytes(), b"model")
             self.assertNotIn("sha256", (result / "model-manifest.json").read_text(encoding="utf-8"))
+
+    def test_qwen_download_delivers_local_model_and_is_reusable(self):
+        from tests.tts.test_local import qwen_folder
+
+        def download(*, local_dir, **kwargs):
+            qwen_folder(Path(local_dir))
+
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "qwen"
+            with (
+                patch("huggingface_hub.HfApi") as api,
+                patch("huggingface_hub.snapshot_download", side_effect=download),
+            ):
+                api.return_value.model_info.return_value = SimpleNamespace(sha="2" * 40)
+                result = download_model(
+                    engine="qwen_tts", model_id="Qwen/Qwen3-TTS-12Hz-0.6B-Base", destination=target
+                )
+            self.assertTrue((result / "speech_tokenizer" / "model.safetensors").is_file())
+            with patch("huggingface_hub.HfApi", side_effect=AssertionError("no network")):
+                self.assertEqual(
+                    download_model(
+                        engine="qwen_tts",
+                        model_id="Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+                        destination=target,
+                    ),
+                    result,
+                )

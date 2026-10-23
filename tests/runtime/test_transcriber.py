@@ -10,13 +10,14 @@ from unittest.mock import patch
 import numpy as np
 import soundfile as sf
 
-from speechio import ASRError, AudioFormat, ModelConfig, Transcriber, transcribe_audio
-from speechio.runtime.models.manifest import create_manifest
+from speechio import AudioFormat, LocalModelConfig, STTError, Transcriber
+from speechio.models.manifest import create_manifest
+from speechio.stt.options import TranscriptionOptions
 from tests.runtime.test_engine_injection import RecordingEngine
 
 
 class AudioLimitTests(unittest.TestCase):
-    def test_chunk_limit_stops_consuming_and_shortcut_accepts_none(self):
+    def test_chunk_limit_stops_consuming_and_accepts_none(self):
         consumed = []
 
         def chunks():
@@ -25,15 +26,18 @@ class AudioLimitTests(unittest.TestCase):
                 yield b"\x01\x00" * 800
 
         engine = RecordingEngine()
-        with self.assertRaises(ASRError) as caught:
-            transcribe_audio(chunks(), engine=engine, max_audio_seconds=0.1)
+        transcriber = Transcriber.from_adapter(engine, max_audio_seconds=0.1)
+        try:
+            with self.assertRaises(STTError) as caught:
+                transcriber.transcribe_chunks(chunks(), format=AudioFormat())
+        finally:
+            transcriber.close()
         self.assertEqual(caught.exception.code, "AUDIO_CAPACITY_EXCEEDED")
         self.assertEqual(consumed, [0, 1, 2])
         self.assertEqual(engine.preparations, 0)
         self.assertEqual(engine.closes, 1)
-        result = transcribe_audio(
-            b"\x01\x00" * 2000, engine=RecordingEngine(), max_audio_seconds=None
-        )
+        with Transcriber.from_adapter(RecordingEngine(), max_audio_seconds=None) as transcriber:
+            result = transcriber.transcribe(b"\x01\x00" * 2000, format=AudioFormat())
         self.assertTrue(result.text)
 
     def test_file_limit_rejects_before_decoding_and_model_preparation(self):
@@ -41,11 +45,11 @@ class AudioLimitTests(unittest.TestCase):
             path = Path(folder) / "long.wav"
             sf.write(path, np.ones(1601, dtype=np.int16), 16000, subtype="PCM_16")
             engine = RecordingEngine()
-            transcriber = Transcriber(engine=engine, max_audio_seconds=0.1)
+            transcriber = Transcriber.from_adapter(adapter=engine, max_audio_seconds=0.1)
             self.addCleanup(transcriber.close)
             # 文件读取是外部边界，超长文件应仅检查头信息就拒绝。
             with patch.object(sf.SoundFile, "read", side_effect=AssertionError("不应解码超限文件")):
-                with self.assertRaises(ASRError) as caught:
+                with self.assertRaises(STTError) as caught:
                     transcriber.transcribe_file(path)
             self.assertEqual(caught.exception.code, "AUDIO_CAPACITY_EXCEEDED")
             self.assertEqual(engine.preparations, 0)
@@ -54,13 +58,13 @@ class AudioLimitTests(unittest.TestCase):
         for source in (b"\x01\x00" * 800, np.ones((800, 1), dtype=np.int16)):
             with self.subTest(kind=type(source).__name__):
                 engine = RecordingEngine()
-                transcriber = Transcriber(engine=engine, max_audio_seconds=0.1)
+                transcriber = Transcriber.from_adapter(adapter=engine, max_audio_seconds=0.1)
                 self.addCleanup(transcriber.close)
                 result = transcriber.transcribe(source, format=AudioFormat(sample_rate=8000))
                 self.assertTrue(result.text)
                 # 每次调用重新计时，不累计到对象下一次调用。
                 transcriber.transcribe(source, format=AudioFormat(sample_rate=8000))
-                with self.assertRaises(ASRError) as caught:
+                with self.assertRaises(STTError) as caught:
                     transcriber.transcribe_chunks(
                         (source, source), format=AudioFormat(sample_rate=8000)
                     )
@@ -70,8 +74,8 @@ class AudioLimitTests(unittest.TestCase):
     def test_invalid_limit_is_rejected_at_construction(self):
         for value in (0, -1, True, "600", float("inf"), float("nan")):
             with self.subTest(value=value):
-                with self.assertRaises(ASRError) as caught:
-                    Transcriber(max_audio_seconds=value)
+                with self.assertRaises(STTError) as caught:
+                    Transcriber.from_adapter(RecordingEngine(), max_audio_seconds=value)
                 self.assertEqual(caught.exception.code, "INVALID_CONFIGURATION")
 
 
@@ -103,9 +107,11 @@ class RecognizerTests(unittest.TestCase):
         with patch(
             "faster_whisper.BatchedInferencePipeline.transcribe", side_effect=native_transcribe
         ):
-            recognizer = Transcriber(ModelConfig(engine="whisper", model_path=self.path))
+            recognizer = Transcriber(LocalModelConfig(adapter="whisper", model_path=self.path))
             result = recognizer.transcribe(
-                np.array([1, -1, 32767], np.int16), format=AudioFormat(), language="zh-CN"
+                np.array([1, -1, 32767], np.int16),
+                format=AudioFormat(),
+                options=TranscriptionOptions(language="zh-CN"),
             )
         self.assertEqual(result.text, "结果")
         self.assertEqual(result.requested_language, "zh-CN")
@@ -123,7 +129,7 @@ class RecognizerTests(unittest.TestCase):
                 raise RuntimeError("测试没有释放模型边界")
             return iter([]), SimpleNamespace(language=None, language_probability=None)
 
-        recognizer = Transcriber(ModelConfig(engine="whisper", model_path=self.path))
+        recognizer = Transcriber(LocalModelConfig(adapter="whisper", model_path=self.path))
 
         def run():
             try:
@@ -138,7 +144,7 @@ class RecognizerTests(unittest.TestCase):
             worker.start()
             try:
                 self.assertTrue(entered.wait(5))
-                with self.assertRaises(ASRError) as caught:
+                with self.assertRaises(STTError) as caught:
                     recognizer.close()
                 self.assertEqual(caught.exception.code, "RUNTIME_BUSY")
             finally:
@@ -152,7 +158,7 @@ class RecognizerTests(unittest.TestCase):
             self.fail("关闭运行时不能读取输入")
             yield b"\x00\x00"
 
-        with self.assertRaises(ASRError) as caught:
+        with self.assertRaises(STTError) as caught:
             recognizer.transcribe_chunks(never_read(), format=AudioFormat())
         self.assertEqual(caught.exception.code, "RUNTIME_CLOSED")
 
@@ -168,7 +174,7 @@ class RecognizerTests(unittest.TestCase):
 
         path = self.path / "input.wav"
         sf.write(path, source, 16000, subtype="PCM_16")
-        recognizer = Transcriber(ModelConfig(engine="whisper", model_path=self.path))
+        recognizer = Transcriber(LocalModelConfig(adapter="whisper", model_path=self.path))
         with patch(
             "faster_whisper.BatchedInferencePipeline.transcribe", side_effect=native_transcribe
         ):
@@ -182,7 +188,7 @@ class RecognizerTests(unittest.TestCase):
         self.assertEqual(recognizer.close().status, "ok")
 
     def test_context_prepares_and_closes_without_suppressing_body_error(self):
-        recognizer = Transcriber(ModelConfig(engine="whisper", model_path=self.path))
+        recognizer = Transcriber(LocalModelConfig(adapter="whisper", model_path=self.path))
         original = RuntimeError("调用方失败")
         with self.assertRaises(RuntimeError) as caught:
             with recognizer as ready:
@@ -198,18 +204,18 @@ class RecognizerTests(unittest.TestCase):
             yield b"\x00\x00"
             raise OSError("来源中断")
 
-        recognizer = Transcriber(ModelConfig(engine="whisper", model_path=self.path))
+        recognizer = Transcriber(LocalModelConfig(adapter="whisper", model_path=self.path))
         with patch("faster_whisper.WhisperModel", side_effect=AssertionError("不能加载模型")):
-            with self.assertRaises(ASRError) as caught:
+            with self.assertRaises(STTError) as caught:
                 recognizer.transcribe_chunks(failed_input(), format=AudioFormat())
         self.assertEqual(caught.exception.code, "AUDIO_READ_FAILED")
         self.assertEqual(caught.exception.operation, "read_chunks")
         self.assertEqual(recognizer.state, "unprepared")
 
     def test_prepare_failure_can_retry_and_late_model_failure_is_not_prefix_success(self):
-        recognizer = Transcriber(ModelConfig(engine="whisper", model_path=self.path))
+        recognizer = Transcriber(LocalModelConfig(adapter="whisper", model_path=self.path))
         with patch("faster_whisper.WhisperModel", side_effect=RuntimeError("加载失败")):
-            with self.assertRaises(ASRError) as caught:
+            with self.assertRaises(STTError) as caught:
                 recognizer.prepare()
         self.assertEqual(caught.exception.code, "MODEL_LOAD")
         self.assertEqual(recognizer.state, "unprepared")
@@ -223,7 +229,7 @@ class RecognizerTests(unittest.TestCase):
             "faster_whisper.BatchedInferencePipeline.transcribe",
             return_value=(segments(), SimpleNamespace(language="en", language_probability=None)),
         ):
-            with self.assertRaises(ASRError) as caught:
+            with self.assertRaises(STTError) as caught:
                 recognizer.transcribe(b"\x00\x00", format=AudioFormat())
         self.assertEqual(caught.exception.code, "INFERENCE_FAILED")
         self.assertEqual(recognizer.state, "ready")
@@ -234,29 +240,32 @@ class RecognizerTests(unittest.TestCase):
             self.fail("参数失败不应读取输入")
             yield b""
 
-        recognizer = Transcriber(ModelConfig(engine="whisper", model_path=self.path))
-        with self.assertRaises(ASRError) as caught:
-            recognizer.transcribe_chunks(never_read(), format=AudioFormat(), language=1)
+        recognizer = Transcriber(LocalModelConfig(adapter="whisper", model_path=self.path))
+        with self.assertRaises(STTError) as caught:
+            recognizer.transcribe_chunks(
+                never_read(), format=AudioFormat(), options=TranscriptionOptions(language=1)
+            )
         self.assertEqual(caught.exception.code, "INVALID_CONFIGURATION")
-        with self.assertRaises(ASRError) as caught:
+        with self.assertRaises(STTError) as caught:
             recognizer.transcribe_chunks(never_read(), format=None)
         self.assertEqual(caught.exception.code, "INVALID_AUDIO_FORMAT")
 
 
 class LocalConfigTests(unittest.TestCase):
     def test_compute_type_and_device_follow_the_caller(self):
-        from speechio.engines.local import resolve_config
+        from speechio.adapters.local.engine import resolve_config
 
         self.assertEqual(
-            resolve_config(ModelConfig(engine="whisper", model_path="tiny")).compute_type, None
+            resolve_config(LocalModelConfig(adapter="whisper", model_path="tiny")).compute_type,
+            None,
         )
         resolved = resolve_config(
-            ModelConfig(
-                engine="whisper", model_path="tiny", device="gpu", compute_type="int8_float16"
+            LocalModelConfig(
+                adapter="whisper", model_path="tiny", device="gpu", compute_type="int8_float16"
             )
         )
         self.assertEqual(resolved.compute_type, "int8_float16")
         resolved = resolve_config(
-            ModelConfig(model_path="models/nemotron", engine="nemotron", device="gpu")
+            LocalModelConfig(model_path="models/nemotron", adapter="nemotron", device="gpu")
         )
         self.assertEqual(resolved.device, "gpu")

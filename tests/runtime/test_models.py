@@ -5,8 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from speechio.errors import ASRError
-from speechio.runtime.models.manifest import create_manifest, verify_manifest
+from speechio.errors import STTError
+from speechio.models.manifest import create_manifest, verify_manifest
 
 
 class ModelTests(unittest.TestCase):
@@ -20,7 +20,7 @@ class ModelTests(unittest.TestCase):
             )
             manifest["files"] = []
             (path / "model-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-            with self.assertRaises(ASRError) as caught:
+            with self.assertRaises(STTError) as caught:
                 verify_manifest(path)
             self.assertEqual(caught.exception.code, "MODEL_INCOMPLETE")
 
@@ -34,10 +34,10 @@ class ModelTests(unittest.TestCase):
             )
             self.assertEqual(verify_manifest(path)["revision"], "abc")
             (path / "model.bin").write_bytes(b"tampered")
-            with self.assertRaises(ASRError) as caught:
+            with self.assertRaises(STTError) as caught:
                 verify_manifest(path)
             self.assertEqual(caught.exception.code, "MODEL_INTEGRITY")
-            with self.assertRaises(ASRError):
+            with self.assertRaises(STTError):
                 create_manifest(
                     path, backend="whisper", model_id="tiny", source="test", revision="abc"
                 )
@@ -47,7 +47,7 @@ class ModelTests(unittest.TestCase):
     def test_missing_required_model_file_is_not_prepared(self):
         with tempfile.TemporaryDirectory() as folder:
             Path(folder, "model.bin").write_bytes(b"partial")
-            with self.assertRaises(ASRError) as caught:
+            with self.assertRaises(STTError) as caught:
                 create_manifest(
                     folder, backend="whisper", model_id="tiny", source="test", revision="abc"
                 )

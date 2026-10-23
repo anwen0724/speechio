@@ -9,12 +9,12 @@ from typing import Protocol
 
 import numpy as np
 
-from speechio.errors import ASRError
+from speechio.errors import STTError
 from speechio.resources import CloseError
 
 
 @dataclass(frozen=True, kw_only=True)
-class WakeConfig:
+class WakeWordConfig:
     """宿主检测参数和门控秒数；密钥不参与日志表示。"""
 
     backend: str = "openwakeword"
@@ -50,7 +50,7 @@ class WakeConfig:
             or not isinstance(self.model_paths, tuple)
             or not isinstance(self.keywords, tuple)
         ):
-            raise ASRError("INVALID_CONFIGURATION", "configure", "唤醒后端、阈值或时间无效")
+            raise STTError("INVALID_CONFIGURATION", "configure", "唤醒后端、阈值或时间无效")
 
 
 class WakeDetector(Protocol):
@@ -78,11 +78,11 @@ class LocalWakeDetector:
 
                 key = config.access_key or os.environ.get("PICOVOICE_ACCESS_KEY")
                 if not key:
-                    raise ASRError(
+                    raise STTError(
                         "WAKE_ACCESS_KEY_REQUIRED", "prepare_wake", "需要 PICOVOICE_ACCESS_KEY"
                     )
                 if bool(config.keywords) == bool(config.model_paths):
-                    raise ASRError(
+                    raise STTError(
                         "INVALID_CONFIGURATION",
                         "prepare_wake",
                         "关键词或自定义模型应且仅应提供一个",
@@ -108,13 +108,13 @@ class LocalWakeDetector:
 
                 directory = Path(config.feature_model_dir) if config.feature_model_dir else None
                 if not config.model_paths or directory is None:
-                    raise ASRError(
+                    raise STTError(
                         "WAKE_MODEL_INVALID", "prepare_wake", "需要关键词与基础特征模型路径"
                     )
                 paths = [Path(path) for path in config.model_paths]
                 features = [directory / "melspectrogram.onnx", directory / "embedding_model.onnx"]
                 if any(path.suffix != ".onnx" or not path.is_file() for path in paths + features):
-                    raise ASRError(
+                    raise STTError(
                         "WAKE_MODEL_INVALID", "prepare_wake", "唤醒 ONNX 文件不存在或类型无效"
                     )
                 self._model = Model(
@@ -127,18 +127,18 @@ class LocalWakeDetector:
                 self.frame_samples = 1280
             if self.sample_rate != 16000:
                 self.close()
-                raise ASRError("WAKE_MODEL_INVALID", "prepare_wake", "唤醒检测采样率应为 16000")
+                raise STTError("WAKE_MODEL_INVALID", "prepare_wake", "唤醒检测采样率应为 16000")
         except ImportError:
             extra = "wake-porcupine" if config.backend == "porcupine" else "wake-openwakeword"
-            raise ASRError(
+            raise STTError(
                 "OPTIONAL_DEPENDENCY_MISSING", "prepare_wake", f"请安装 speechio[{extra}]"
             ) from None
-        except ASRError:
+        except STTError:
             raise
         except Exception as exc:
             # 原生异常可能包含密钥；向调用方只公开异常类型。
             self.close()
-            raise ASRError(
+            raise STTError(
                 "WAKE_MODEL_INVALID", "prepare_wake", f"唤醒准备失败：{type(exc).__name__}"
             ) from None
 
@@ -170,16 +170,16 @@ class WakeGate:
 
     def __init__(self, config, pre_roll_samples, factory=None, *, on_release):
         if (
-            not isinstance(config, WakeConfig)
+            not isinstance(config, WakeWordConfig)
             or int(config.trim_duration * 16000) > pre_roll_samples
         ):
-            raise ASRError("INVALID_CONFIGURATION", "configure", "唤醒裁剪不能超过前置缓冲")
+            raise STTError("INVALID_CONFIGURATION", "configure", "唤醒裁剪不能超过前置缓冲")
         try:
             detector = factory() if factory else LocalWakeDetector(config)
-        except ASRError:
+        except STTError:
             raise
         except Exception as exc:
-            raise ASRError("WAKE_MODEL_INVALID", "prepare_wake", type(exc).__name__) from None
+            raise STTError("WAKE_MODEL_INVALID", "prepare_wake", type(exc).__name__) from None
         if (
             getattr(detector, "sample_rate", None) != 16000
             or type(getattr(detector, "frame_samples", None)) is not int
@@ -190,7 +190,7 @@ class WakeGate:
         ):
             if callable(getattr(detector, "close", None)):
                 detector.close()
-            raise ASRError("WAKE_MODEL_INVALID", "prepare_wake", "检测器不符合 WakeDetector 契约")
+            raise STTError("WAKE_MODEL_INVALID", "prepare_wake", "检测器不符合 WakeDetector 契约")
         self.config, self.detector, self.pre_roll = config, detector, pre_roll_samples
         self._lock = RLock()
         self._closing = self.released = self.busy = False
@@ -228,10 +228,10 @@ class WakeGate:
                     self.detector.reset()
                     self._reset_needed = False
                 return self._process(frame, recording)
-            except ASRError:
+            except STTError:
                 raise
             except Exception as exc:
-                raise ASRError("WAKE_DETECTION_FAILED", "detect_wake", type(exc).__name__) from exc
+                raise STTError("WAKE_DETECTION_FAILED", "detect_wake", type(exc).__name__) from exc
             finally:
                 self.busy = False
                 if self._closing:
@@ -273,7 +273,7 @@ class WakeGate:
                 return False, None
             if name is not None:
                 if not isinstance(name, str) or not name:
-                    raise ASRError("WAKE_DETECTION_FAILED", "detect_wake", "命中名称无效")
+                    raise STTError("WAKE_DETECTION_FAILED", "detect_wake", "命中名称无效")
                 self.trigger = frame.end_sample - len(self._pending) // 2
                 self.keyword = name
                 self.detections += 1

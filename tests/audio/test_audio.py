@@ -7,9 +7,9 @@ from pathlib import Path
 
 import numpy as np
 
-from speechio.audio.conversion import as_audio
 from speechio.audio.files import read_wav
-from speechio.errors import ASRError
+from speechio.errors import STTError
+from speechio.stt.input import as_audio
 
 
 class AudioTests(unittest.TestCase):
@@ -17,7 +17,7 @@ class AudioTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "input.wav"
             path.write_bytes(b"not-a-wav")
-            with self.assertRaises(ASRError) as caught:
+            with self.assertRaises(STTError) as caught:
                 read_wav(path)
             self.assertEqual(caught.exception.code, "INVALID_AUDIO")
             for count in (0, 10):
@@ -26,7 +26,7 @@ class AudioTests(unittest.TestCase):
                     wav.writeframes(bytes(count * 2))
                 if count:
                     path.write_bytes(path.read_bytes()[:-1])
-                with self.assertRaises(ASRError) as caught:
+                with self.assertRaises(STTError) as caught:
                     read_wav(path)
                 self.assertEqual(caught.exception.code, "INVALID_AUDIO")
 
@@ -43,7 +43,7 @@ class AudioTests(unittest.TestCase):
     def test_stereo_and_empty_whole_input_fail_but_empty_stream_block_is_valid(self):
         for audio in [np.zeros((8, 2)), []]:
             with self.subTest(shape=np.shape(audio)):
-                with self.assertRaises(ASRError) as caught:
+                with self.assertRaises(STTError) as caught:
                     as_audio(audio)
                 self.assertEqual(caught.exception.code, "INVALID_AUDIO")
         self.assertEqual(as_audio([], allow_empty=True).size, 0)
@@ -57,5 +57,5 @@ class AudioTests(unittest.TestCase):
                     wav.setparams((channels, width, rate, 0, "NONE", "not compressed"))
                     wav.writeframes(bytes(8 * channels * width))
                 with self.subTest(rate=rate, channels=channels, width=width):
-                    with self.assertRaises(ASRError):
+                    with self.assertRaises(STTError):
                         read_wav(path)

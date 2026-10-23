@@ -6,10 +6,9 @@ from dataclasses import replace
 from os import PathLike
 from pathlib import Path
 
-from speechio.adapters.contracts import BaseTranscriptionEngine
-from speechio.errors import ASRError
+from speechio.adapters.contracts import STTAdapter
+from speechio.errors import STTError
 from speechio.models.config import LocalModelConfig
-from speechio.models.config import ModelConfig as ModelConfig
 from speechio.models.factory import available_engines, create_engine, normalize_engine
 from speechio.resources import CloseError, CloseResult
 
@@ -19,10 +18,10 @@ LOGGER = logging.getLogger(__name__)
 def resolve_config(config):
     """固定目录的绝对位置并检查运行设置；存在性留到真正加载时检查。"""
     if not isinstance(config, LocalModelConfig):
-        raise ASRError("INVALID_CONFIGURATION", "configure", "需要 LocalModelConfig")
-    engine = normalize_engine(config.engine)
+        raise STTError("INVALID_CONFIGURATION", "configure", "需要 LocalModelConfig")
+    engine = normalize_engine(config.adapter)
     if engine not in available_engines():
-        raise ASRError(
+        raise STTError(
             "BACKEND_INCOMPATIBLE",
             "configure",
             f"不支持的引擎 {engine}；可用：{', '.join(available_engines())}",
@@ -38,31 +37,33 @@ def resolve_config(config):
             and (not isinstance(config.compute_type, str) or not config.compute_type)
         )
     ):
-        raise ASRError("INVALID_CONFIGURATION", "configure", "引擎或设备组合无效")
+        raise STTError("INVALID_CONFIGURATION", "configure", "引擎或设备组合无效")
     if not isinstance(config.model_path, (str, PathLike)) or not str(config.model_path).strip():
-        raise ASRError("INVALID_CONFIGURATION", "configure", "model_path 必须是模型目录")
-    if config.engine_options is not None and not isinstance(config.engine_options, Mapping):
-        raise ASRError("INVALID_CONFIGURATION", "configure", "engine_options 应为映射")
+        raise STTError("INVALID_CONFIGURATION", "configure", "model_path 必须是模型目录")
+    if config.adapter_options is not None and not isinstance(config.adapter_options, Mapping):
+        raise STTError("INVALID_CONFIGURATION", "configure", "engine_options 应为映射")
     try:
-        engine_options = dict(config.engine_options) if config.engine_options is not None else None
+        engine_options = (
+            dict(config.adapter_options) if config.adapter_options is not None else None
+        )
         if (
             engine_options
             and {"device", "provider", "device_index", "compute_type"} & engine_options.keys()
         ):
-            raise ASRError(
+            raise STTError(
                 "INVALID_CONFIGURATION", "configure", "设备和精度请使用 LocalModelConfig 的对应字段"
             )
         return replace(
             config,
-            engine=engine,
+            adapter=engine,
             model_path=Path(config.model_path).expanduser().resolve(),
-            engine_options=engine_options,
+            adapter_options=engine_options,
         )
     except (TypeError, ValueError, OSError) as exc:
-        raise ASRError("INVALID_CONFIGURATION", "configure", "模型或运行库路径无效") from exc
+        raise STTError("INVALID_CONFIGURATION", "configure", "模型或运行库路径无效") from exc
 
 
-class LocalEngine(BaseTranscriptionEngine):
+class LocalEngine(STTAdapter):
     """隐藏本地准备、后端创建、参数映射与资源关闭，不拥有会话。"""
 
     def __init__(self, config):
@@ -71,7 +72,9 @@ class LocalEngine(BaseTranscriptionEngine):
 
     @property
     def capabilities(self):
-        return self.config.capabilities
+        from speechio.models.factory import engine_capabilities
+
+        return engine_capabilities(self.config)
 
     def prepare(self):
         if self._model is not None:
@@ -82,13 +85,13 @@ class LocalEngine(BaseTranscriptionEngine):
             cleanup = self.close()
             if cleanup.errors:
                 exc.cleanup_errors = cleanup.errors
-            if isinstance(exc, (ASRError, KeyboardInterrupt, SystemExit)):
+            if isinstance(exc, (STTError, KeyboardInterrupt, SystemExit)):
                 raise
             code = "DEPENDENCY_MISSING" if isinstance(exc, (ImportError, OSError)) else "MODEL_LOAD"
-            raise ASRError(code, "load_model", str(exc)) from exc
+            raise STTError(code, "load_model", str(exc)) from exc
 
     def transcribe(self, audio, language=None, *, role="final", word_timestamps=False):
-        if self.config.engine == "whisper":
+        if self.config.adapter == "whisper":
             mapped = {"zh-CN": "zh", "en-US": "en"}.get(language, language)
             # 候选使用完整识别参数，模型内部仍只维护最终与实时两种参数组。
             parameter_role = "final" if role == "candidate" else role

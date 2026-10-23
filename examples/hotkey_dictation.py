@@ -8,12 +8,12 @@ from time import sleep
 
 from speechio import (
     AudioFormat,
+    LocalModelConfig,
     MicrophoneConfig,
     MicrophoneInput,
-    ModelConfig,
     SessionConfig,
 )
-from speechio.runtime.asr import ASRRuntime
+from speechio.stt.runtime.asr import STTRuntime
 
 
 @contextmanager
@@ -44,7 +44,7 @@ def main():
     args = parser.parse_args()
     microphone = None
     with (
-        ASRRuntime(ModelConfig(engine="whisper", model_path=args.model_path)) as runtime,
+        STTRuntime(LocalModelConfig(adapter="whisper", model_path=args.model_path)) as runtime,
         terminal_keys() as read_key,
     ):
         session = runtime.create_session(SessionConfig(format=AudioFormat()))

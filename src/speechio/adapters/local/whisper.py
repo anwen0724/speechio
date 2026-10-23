@@ -5,7 +5,7 @@ from dataclasses import asdict
 from math import isfinite
 from pathlib import Path
 
-from speechio.errors import ASRError
+from speechio.errors import STTError
 from speechio.models.files import check_model_files
 from speechio.models.stages import preparation_step
 from speechio.stt.input import as_audio
@@ -25,7 +25,7 @@ class WhisperEngine:
             from faster_whisper import BatchedInferencePipeline, WhisperModel
             from faster_whisper.vad import VadOptions
         except ImportError as exc:
-            raise ASRError(
+            raise STTError(
                 "DEPENDENCY_MISSING",
                 "load_model",
                 "缺少 faster-whisper；运行 pip install speechio 后重试",
@@ -33,10 +33,10 @@ class WhisperEngine:
         self.device = config.device
         self.compute_type = config.compute_type or "default"
         self.device_index = config.device_index
-        options = config.engine_options or {}
+        options = config.adapter_options or {}
         beam_size = options.get("beam_size")
         if beam_size is not None and (type(beam_size) is not int or beam_size <= 0):
-            raise ASRError(
+            raise STTError(
                 "INVALID_CONFIGURATION", "configure_engine", "engine_options.beam_size 应为正整数"
             )
         self.beam_size = beam_size
@@ -51,7 +51,7 @@ class WhisperEngine:
                 )
                 self._pipeline = BatchedInferencePipeline(self._model)
         except Exception as exc:
-            error = ASRError("MODEL_LOAD", "load_model", str(exc))
+            error = STTError("MODEL_LOAD", "load_model", str(exc))
             error.preparation_steps = self.preparation_steps
             raise error from exc
         signature = inspect.signature(BatchedInferencePipeline.transcribe)
@@ -149,7 +149,7 @@ class WhisperEngine:
                 timestamp_status=timestamp_status,
             )
         except Exception as exc:
-            raise ASRError("INFERENCE_FAILED", "transcribe", str(exc)) from exc
+            raise STTError("INFERENCE_FAILED", "transcribe", str(exc)) from exc
 
     def close(self):
         """移除自有模型引用，不将其声明为显存回收成功。"""

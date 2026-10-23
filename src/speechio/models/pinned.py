@@ -1,6 +1,6 @@
 """已接入的固定模型身份；变体的包与文件校验值分开声明。"""
 
-from speechio.errors import ASRError
+from speechio.errors import STTError
 
 WHISPER_MODEL = {"id": "tiny", "source": "Systran/faster-whisper-tiny"}
 
@@ -98,7 +98,7 @@ NEMOTRON_MODELS = {
 def nemotron_model(variant):
     """显式选择固定发布变体，不从目录名称猜测模型身份。"""
     if not isinstance(variant, str) or variant not in NEMOTRON_MODELS:
-        raise ASRError(
+        raise STTError(
             "INVALID_CONFIGURATION", "prepare_model", "Nemotron 变体应为 560ms、1120ms 或 80ms"
         )
     return NEMOTRON_MODELS[variant]

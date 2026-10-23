@@ -8,7 +8,7 @@ from typing import Protocol
 
 import numpy as np
 
-from speechio.errors import ASRError
+from speechio.errors import STTError
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -34,7 +34,7 @@ class VadConfig:
             or self.intra_op_threads <= 0
             or type(self.warmup) is not bool
         ):
-            raise ASRError("INVALID_CONFIGURATION", "configure", "VAD 配置无效")
+            raise STTError("INVALID_CONFIGURATION", "configure", "VAD 配置无效")
 
 
 @dataclass(frozen=True)
@@ -63,7 +63,7 @@ class VoiceDetector(Protocol):
 def local_detector_factory(config):
     """只组装默认检测路线；ONNX 与 WebRTC 选择不泄漏到自动会话。"""
     if not isinstance(config, VadConfig):
-        raise ASRError("INVALID_CONFIGURATION", "configure", "需要 VadConfig")
+        raise STTError("INVALID_CONFIGURATION", "configure", "需要 VadConfig")
     return lambda: VoiceActivityDetector(config)
 
 
@@ -71,16 +71,16 @@ def create_detector(factory):
     """工厂属于模型外部边界，只在取得新上下文时检查契约。"""
     try:
         detector = factory()
-    except ASRError:
+    except STTError:
         raise
     except Exception as exc:
-        raise ASRError("VAD_MODEL_INVALID", "prepare_vad", str(exc)) from exc
+        raise STTError("VAD_MODEL_INVALID", "prepare_vad", str(exc)) from exc
     if (
         not isinstance(getattr(detector, "info", None), dict)
         or not callable(getattr(detector, "detect", None))
         or not callable(getattr(detector, "reset", None))
     ):
-        raise ASRError("VAD_MODEL_INVALID", "prepare_vad", "检测器不符合 VoiceDetector 契约")
+        raise STTError("VAD_MODEL_INVALID", "prepare_vad", "检测器不符合 VoiceDetector 契约")
     return detector
 
 
@@ -93,7 +93,7 @@ class VoiceActivityDetector:
             import onnxruntime as ort
             import webrtcvad
         except ImportError as exc:
-            raise ASRError(
+            raise STTError(
                 "OPTIONAL_DEPENDENCY_MISSING",
                 "prepare_vad",
                 "检测运行库缺失，请重新安装 speechio",
@@ -119,7 +119,7 @@ class VoiceActivityDetector:
             ):
                 raise ValueError("需要 16 kHz Silero v6 的 input/h/c 图")
         except Exception as exc:
-            raise ASRError("VAD_MODEL_INVALID", "prepare_vad", str(exc)) from exc
+            raise STTError("VAD_MODEL_INVALID", "prepare_vad", str(exc)) from exc
         self._webrtc = webrtcvad.Vad(config.webrtc_mode)
         self.reset()
         if config.warmup:
@@ -129,7 +129,7 @@ class VoiceActivityDetector:
                 self._silero(np.zeros(512, np.float32))
                 self._silero(tone.astype(np.float32) / 32768)
             except Exception as exc:
-                raise ASRError("VAD_FAILED", "warmup_vad", str(exc)) from exc
+                raise STTError("VAD_FAILED", "warmup_vad", str(exc)) from exc
             self.reset()
         self.info = {
             "backends": ("webrtc", "silero-v6"),
@@ -153,7 +153,7 @@ class VoiceActivityDetector:
         try:
             return self._detect(pcm, start_sample, recording=recording)
         except Exception as exc:
-            raise ASRError("VAD_FAILED", "detect_vad", str(exc)) from exc
+            raise STTError("VAD_FAILED", "detect_vad", str(exc)) from exc
 
     def _silero(self, audio):
         """固定图输入与输出；递归状态只属于本会话。"""

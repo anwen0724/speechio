@@ -6,8 +6,9 @@ import wave
 from dataclasses import asdict
 from pathlib import Path
 
-from speechio import ModelConfig, SessionConfig
-from speechio.runtime.asr import ASRRuntime
+from speechio import LocalModelConfig, SessionConfig
+from speechio.stt.options import TranscriptionOptions
+from speechio.stt.runtime.asr import STTRuntime
 
 
 def main():
@@ -17,8 +18,10 @@ def main():
     parser.add_argument("--backend", choices=("whisper", "nemotron"), default="whisper")
     parser.add_argument("--language", default=None)
     args = parser.parse_args()
-    with ASRRuntime(ModelConfig(model_path=args.model_path, engine=args.backend)) as runtime:
-        session = runtime.create_session(SessionConfig(language=args.language))
+    with STTRuntime(LocalModelConfig(model_path=args.model_path, adapter=args.backend)) as runtime:
+        session = runtime.create_session(
+            SessionConfig(options=TranscriptionOptions(language=args.language))
+        )
         for path in args.audio:
             with wave.open(str(path)) as source:
                 if (source.getframerate(), source.getnchannels(), source.getsampwidth()) != (

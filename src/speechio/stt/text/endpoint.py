@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass
 from math import isfinite
 
-from speechio.errors import ASRError
+from speechio.errors import STTError
 from speechio.stt.text.stabilizer import project_text
 
 SENTENCE_MARKS = ".?!。？！"
@@ -12,7 +12,7 @@ ABBREVIATIONS = {"mr", "dr", "mrs", "ms", "prof", "sr", "jr", "st", "vs", "etc",
 
 
 @dataclass(frozen=True, kw_only=True)
-class EndpointConfig:
+class SpeechEndConfig:
     """自动会话的可选结束策略；默认保留固定 VAD 边界。"""
 
     early_transcription_silence: float = 0
@@ -41,7 +41,7 @@ class EndpointConfig:
             or type(self.dynamic_silence) is not bool
             or type(self.punctuation_split) is not bool
         ):
-            raise ASRError("INVALID_CONFIGURATION", "configure", "自动结束优化配置无效")
+            raise STTError("INVALID_CONFIGURATION", "configure", "自动结束优化配置无效")
 
     def pause_for(self, text, baseline):
         """文本选择静音等待，不更新本次静音的起点。"""

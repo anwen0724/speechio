@@ -6,8 +6,8 @@ from threading import Event, Thread
 import numpy as np
 
 import speechio as sdk
-from speechio.runtime.asr import ASRRuntime
-from speechio.segmentation.vad import VoiceActivity
+from speechio.stt.runtime.asr import STTRuntime
+from speechio.stt.segmentation.vad import VoiceActivity
 from tests.runtime.test_engine_injection import RecordingEngine
 
 
@@ -53,19 +53,19 @@ class WakeTests(unittest.TestCase):
                 return super().detect(pcm)
 
         detector, errors = BlockingWake(), []
-        runtime = ASRRuntime(engine=RecordingEngine())
+        runtime = STTRuntime.from_adapter(adapter=RecordingEngine())
         self.addCleanup(runtime.close)
         runtime.prepare()
-        session = runtime.create_auto_session(
+        session = runtime.create_auto_session_from_detector(
             detector_factory=SpeechDetector,
-            wake=sdk.WakeConfig(),
+            wake=sdk.WakeWordConfig(),
             wake_detector_factory=lambda: detector,
         )
 
         def feed():
             try:
                 session.feed_audio(np.full(512, 500, np.int16))
-            except sdk.ASRError as exc:
+            except sdk.STTError as exc:
                 errors.append(exc.code)
 
         worker = Thread(target=feed)
@@ -91,13 +91,13 @@ class WakeTests(unittest.TestCase):
 
         detectors = [FailedWake(), WakeDetector()]
         supplied = iter(detectors)
-        with ASRRuntime(engine=RecordingEngine()) as runtime:
-            session = runtime.create_auto_session(
+        with STTRuntime.from_adapter(adapter=RecordingEngine()) as runtime:
+            session = runtime.create_auto_session_from_detector(
                 detector_factory=SpeechDetector,
-                wake=sdk.WakeConfig(trim_duration=0),
+                wake=sdk.WakeWordConfig(trim_duration=0),
                 wake_detector_factory=lambda: next(supplied),
             )
-            with self.assertRaises(sdk.ASRError) as caught:
+            with self.assertRaises(sdk.STTError) as caught:
                 session.feed_audio(np.full(512, 500, np.int16))
             self.assertEqual(caught.exception.code, "WAKE_DETECTION_FAILED")
             self.assertEqual(session.wake_status["state"], "failed")
@@ -112,11 +112,13 @@ class WakeTests(unittest.TestCase):
                 speech = np.frombuffer(pcm, dtype="<i2")[0] == 200
                 return VoiceActivity(speech, speech, speech, speech, 0)
 
-        with ASRRuntime(engine=RecordingEngine()) as runtime:
-            session = runtime.create_auto_session(
+        with STTRuntime.from_adapter(adapter=RecordingEngine()) as runtime:
+            session = runtime.create_auto_session_from_detector(
                 detector_factory=BodyDetector,
                 segmentation=sdk.SegmentationConfig(pre_roll_duration=0, min_recording_duration=0),
-                wake=sdk.WakeConfig(trim_duration=0, speech_timeout=0.032, followup_window=0.064),
+                wake=sdk.WakeWordConfig(
+                    trim_duration=0, speech_timeout=0.032, followup_window=0.064
+                ),
                 wake_detector_factory=WakeDetector,
             )
             for value in (500, 0, 200):
@@ -138,13 +140,13 @@ class WakeTests(unittest.TestCase):
 
     def test_wake_gates_speech_and_trims_only_fixed_prefix(self):
         engine, detector = RecordingEngine(), WakeDetector()
-        with ASRRuntime(engine=engine) as runtime:
-            session = runtime.create_auto_session(
+        with STTRuntime.from_adapter(adapter=engine) as runtime:
+            session = runtime.create_auto_session_from_detector(
                 detector_factory=SpeechDetector,
                 segmentation=sdk.SegmentationConfig(
                     pre_roll_duration=0.064, min_recording_duration=0
                 ),
-                wake=sdk.WakeConfig(trim_duration=0.008),
+                wake=sdk.WakeWordConfig(trim_duration=0.008),
                 wake_detector_factory=lambda: detector,
             )
             before, wake, speech = (np.full(512, value, np.int16) for value in (100, 500, 800))

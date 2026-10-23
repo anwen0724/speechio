@@ -4,7 +4,7 @@ import unittest
 from threading import Event, Thread
 from unittest.mock import patch
 
-from speechio import ASRError
+from speechio import STTError
 from speechio.audio.microphone import MicrophoneConfig, MicrophoneInput, list_input_devices
 
 
@@ -52,7 +52,7 @@ class PortAudio:
 class MicrophoneTests(unittest.TestCase):
     def test_missing_dependency_explains_microphone_extra(self):
         with patch.dict("sys.modules", {"pyaudio": None}):
-            with self.assertRaises(ASRError) as caught:
+            with self.assertRaises(STTError) as caught:
                 list_input_devices()
         self.assertEqual(caught.exception.code, "OPTIONAL_DEPENDENCY_MISSING")
         self.assertIn('pip install "speechio[microphone]"', caught.exception.message)
@@ -80,7 +80,7 @@ class MicrophoneTests(unittest.TestCase):
     def test_invalid_explicit_device_is_not_replaced_by_default(self):
         library = PortAudio()
         with patch("pyaudio.PyAudio", return_value=library):
-            with self.assertRaises(ASRError) as caught:
+            with self.assertRaises(STTError) as caught:
                 MicrophoneInput(MicrophoneConfig(device_index=9)).prepare()
         self.assertEqual(caught.exception.code, "INPUT_DEVICE_INVALID")
         self.assertTrue(library.terminated)
@@ -120,7 +120,7 @@ class MicrophoneTests(unittest.TestCase):
                 self.assertEqual(microphone.received_frames, 4)
                 self.assertEqual(microphone.read_audio(), b"\x01\x00" * 2)
                 self.assertEqual(microphone.read_audio(), b"\x02\x00" * 2)
-                with self.assertRaises(ASRError) as caught:
+                with self.assertRaises(STTError) as caught:
                     microphone.read_audio()
                 self.assertEqual(caught.exception.code, "CAPTURE_CAPACITY_EXCEEDED")
             finally:
@@ -201,7 +201,7 @@ class MicrophoneTests(unittest.TestCase):
             microphone = MicrophoneInput()
             microphone.start()
             try:
-                with self.assertRaises(ASRError) as caught:
+                with self.assertRaises(STTError) as caught:
                     microphone.read_audio(timeout=1)
                 self.assertEqual(caught.exception.code, "MICROPHONE_OVERFLOW")
             finally:
@@ -211,7 +211,7 @@ class MicrophoneTests(unittest.TestCase):
         library = PortAudio(fail_open=True)
         with patch("pyaudio.PyAudio", return_value=library):
             microphone = MicrophoneInput(MicrophoneConfig(device_index=1))
-            with self.assertRaises(ASRError) as caught:
+            with self.assertRaises(STTError) as caught:
                 microphone.prepare()
         self.assertEqual(caught.exception.code, "MICROPHONE_OPEN_FAILED")
         self.assertTrue(library.terminated, "打开失败后 PortAudio 仍未释放")

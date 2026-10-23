@@ -6,13 +6,14 @@ import wave
 from dataclasses import asdict
 
 from speechio import (
-    ModelConfig,
+    LocalModelConfig,
     RealtimeConfig,
     SessionConfig,
     VadConfig,
 )
 from speechio.bundled import default_vad_model
-from speechio.runtime.asr import ASRRuntime
+from speechio.stt.options import TranscriptionOptions
+from speechio.stt.runtime.asr import STTRuntime
 
 
 def main():
@@ -24,14 +25,16 @@ def main():
     parser.add_argument("--language", default=None)
     parser.add_argument("--realtime", action="store_true")
     args = parser.parse_args()
-    model = ModelConfig(model_path=args.model_path, engine=args.backend)
+    model = LocalModelConfig(model_path=args.model_path, adapter=args.backend)
     realtime = None
     if args.realtime:
         realtime = RealtimeConfig(mode=model.capabilities.realtime_mode)
-    with ASRRuntime(model, realtime=realtime) as runtime:
+    with STTRuntime(model, realtime=realtime) as runtime:
         session = runtime.create_auto_session(
             vad=VadConfig(model_path=args.vad_model or default_vad_model()),
-            config=SessionConfig(language=args.language, realtime=args.realtime),
+            config=SessionConfig(
+                options=TranscriptionOptions(language=args.language), realtime=args.realtime
+            ),
         )
 
         def consume(timeout=0):

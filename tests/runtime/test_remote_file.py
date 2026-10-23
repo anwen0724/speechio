@@ -1,5 +1,4 @@
 """长音频适配通过公开 SDK 与本机 HTTP 服务验证，不访问付费端点。"""
-
 import json
 import tempfile
 import unittest
@@ -13,7 +12,8 @@ from threading import Thread
 from unittest.mock import patch
 
 import speechio
-from speechio import ASRError, RemoteModelConfig, Transcriber, transcribe_audio
+from speechio import AudioFormat, RemoteModelConfig, STTError, Transcriber, transcribe_audio
+from speechio.stt.options import TranscriptionOptions
 from tests.audio.encoded_samples import encoded_audio
 
 MODEL = "qwen-audio-3.1-asr-flash-filetrans"
@@ -116,9 +116,10 @@ class RemoteFileTests(unittest.TestCase):
         ):
             path = Path(folder) / "recording.m4a"
             path.write_bytes(encoded_audio())
-            with self.assertRaises(ASRError) as caught:
+            with self.assertRaises(STTError) as caught:
                 transcribe_audio(
                     path,
+                    format=AudioFormat(),
                     config=RemoteModelConfig(
                         provider="bailian",
                         model=MODEL,
@@ -147,19 +148,22 @@ class RemoteFileTests(unittest.TestCase):
                     model=MODEL,
                     api_key="test-secret",
                     base_url=root,
-                    task_timeout_seconds=timeout,
                 )
                 with (
-                    patch("speechio.engines.remote.bailian_file.monotonic", lambda: clock[0]),
-                    patch("speechio.engines.remote.bailian_file.sleep", advance),
+                    patch("speechio.adapters.remote.bailian_file.monotonic", lambda: clock[0]),
+                    patch("speechio.adapters.remote.bailian_file.sleep", advance),
                     Transcriber(config) as recognizer,
                 ):
                     if timeout == 3:
-                        with self.assertRaises(ASRError) as caught:
-                            recognizer.transcribe_url("https://audio.example/long.m4a")
+                        with self.assertRaises(STTError) as caught:
+                            recognizer.transcribe_url(
+                                "https://audio.example/long.m4a", task_timeout_seconds=timeout
+                            )
                         self.assertEqual(caught.exception.code, "REMOTE_TIMEOUT")
                     else:
-                        result = recognizer.transcribe_url("https://audio.example/long.m4a")
+                        result = recognizer.transcribe_url(
+                            "https://audio.example/long.m4a", task_timeout_seconds=timeout
+                        )
                         self.assertEqual(result.text, "你好 hello")
                 self.assertEqual(clock[0], expected_time)
                 self.assertEqual(recognizer.state, "closed")
@@ -202,7 +206,7 @@ class RemoteFileTests(unittest.TestCase):
                 self.subTest(path=path, data=data),
                 file_service(overrides={path: (status, data)}) as (root, requests),
             ):
-                with self.assertRaises(ASRError) as caught:
+                with self.assertRaises(STTError) as caught:
                     speechio.transcribe_url(
                         "https://audio.example/long.m4a",
                         config=RemoteModelConfig(
@@ -229,13 +233,20 @@ class RemoteFileTests(unittest.TestCase):
                 base_url=root,
             )
             for operation, code in (
-                (lambda: transcribe_audio(bytes(100), config=config), "BACKEND_INCOMPATIBLE"),
                 (
-                    lambda: transcribe_audio(path, config=config, max_audio_seconds=0.5),
+                    lambda: transcribe_audio(bytes(100), format=AudioFormat(), config=config),
+                    "BACKEND_INCOMPATIBLE",
+                ),
+                (
+                    lambda: transcribe_audio(
+                        path, format=AudioFormat(), config=config, max_audio_seconds=0.5
+                    ),
                     "AUDIO_CAPACITY_EXCEEDED",
                 ),
                 (
-                    lambda: transcribe_audio(path.with_name("missing.wav"), config=config),
+                    lambda: transcribe_audio(
+                        path.with_name("missing.wav"), format=AudioFormat(), config=config
+                    ),
                     "AUDIO_READ_FAILED",
                 ),
                 (
@@ -261,14 +272,18 @@ class RemoteFileTests(unittest.TestCase):
                     "BACKEND_INCOMPATIBLE",
                 ),
             ):
-                with self.subTest(code=code), self.assertRaises(ASRError) as caught:
+                with self.subTest(code=code), self.assertRaises(STTError) as caught:
                     operation()
                 self.assertEqual(caught.exception.code, code)
             self.assertEqual(requests, [])
             path.unlink()
         for invalid in (0, -1, True, float("inf"), float("nan")):
-            with self.subTest(timeout=invalid), self.assertRaises(ASRError) as caught:
-                RemoteModelConfig(provider="bailian", model=MODEL, task_timeout_seconds=invalid)
+            with self.subTest(timeout=invalid), self.assertRaises(STTError) as caught:
+                speechio.transcribe_url(
+                    "https://audio.example/a.wav",
+                    config=RemoteModelConfig(provider="bailian", model=MODEL),
+                    task_timeout_seconds=invalid,
+                )
             self.assertEqual(caught.exception.code, "INVALID_CONFIGURATION")
 
     def test_url_entrypoints_submit_address_without_download_or_upload(self):
@@ -303,14 +318,14 @@ class RemoteFileTests(unittest.TestCase):
             original = path.read_bytes()
             result = transcribe_audio(
                 path,
+                format=AudioFormat(),
                 config=RemoteModelConfig(
                     provider="bailian",
                     model=MODEL,
                     api_key="test-secret",
                     base_url=url,
                 ),
-                language="zh-CN",
-                word_timestamps=True,
+                options=TranscriptionOptions(language="zh-CN", word_timestamps=True),
             )
             self.assertEqual(result.text, "你好 hello")
             self.assertEqual(result.requested_language, "zh-CN")

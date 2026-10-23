@@ -6,7 +6,7 @@ from threading import Event
 import numpy as np
 
 import speechio as sdk
-from speechio.runtime.asr import ASRRuntime
+from speechio.stt.runtime.asr import STTRuntime
 from tests.runtime.test_engine_injection import RecordingEngine, RecordingStream
 
 
@@ -20,7 +20,7 @@ class RoleEngine(RecordingEngine):
 
     @property
     def capabilities(self):
-        return sdk.EngineCapabilities(engine="external-role", streaming=True)
+        return sdk.STTCapabilities(engine="external-role", streaming=True)
 
     def create_streaming_session(self, language=None):
         text = self.text
@@ -59,11 +59,11 @@ class DualRealtimeTests(unittest.TestCase):
                 return stream
 
         accurate, fast = BlockingRole("speech system"), BlockingRole("speech system today")
-        runtime = ASRRuntime(
-            engine=accurate,
-            realtime=sdk.RealtimeConfig(mode="streaming", initial_delay=0, max_units=1),
-            ultrafast=sdk.RealtimeConfig(
-                mode="streaming", engine=fast, initial_delay=0, max_units=1
+        runtime = STTRuntime.from_adapter(
+            adapter=accurate,
+            realtime=sdk.RealtimeConfig(mode="streaming", initial_delay_seconds=0, max_units=1),
+            ultrafast=sdk.RealtimeConfig.from_adapter(
+                mode="streaming", adapter=fast, initial_delay_seconds=0, max_units=1
             ),
         )
         self.addCleanup(runtime.close)
@@ -78,7 +78,7 @@ class DualRealtimeTests(unittest.TestCase):
             self.assertTrue(fast.entered.wait(5))
             self.assertEqual(session.reset().pending_tasks, 2)
             self.assertEqual(runtime.capacity.realtime_units, 2)
-            with self.assertRaises(sdk.ASRError) as caught:
+            with self.assertRaises(sdk.STTError) as caught:
                 session.start()
             self.assertEqual(caught.exception.code, "REALTIME_CAPACITY_EXCEEDED")
             pending = runtime.close(timeout=0)
@@ -102,10 +102,12 @@ class DualRealtimeTests(unittest.TestCase):
                 return stream
 
         accurate, fast = RoleEngine("speech system"), FailedRole("unused")
-        with ASRRuntime(
-            engine=accurate,
-            realtime=sdk.RealtimeConfig(mode="streaming", initial_delay=0),
-            ultrafast=sdk.RealtimeConfig(mode="streaming", engine=fast, initial_delay=0),
+        with STTRuntime.from_adapter(
+            adapter=accurate,
+            realtime=sdk.RealtimeConfig(mode="streaming", initial_delay_seconds=0),
+            ultrafast=sdk.RealtimeConfig.from_adapter(
+                mode="streaming", adapter=fast, initial_delay_seconds=0
+            ),
         ) as runtime:
             session = runtime.create_session(
                 sdk.SessionConfig(realtime=True, merge=sdk.RealtimeMergeConfig())
@@ -128,16 +130,16 @@ class DualRealtimeTests(unittest.TestCase):
 
     def test_start_rejects_all_roles_together_when_fast_capacity_is_full(self):
         accurate, fast = RoleEngine("speech system"), RoleEngine("speech system today")
-        with ASRRuntime(
-            engine=accurate,
+        with STTRuntime.from_adapter(
+            adapter=accurate,
             realtime=sdk.RealtimeConfig(mode="streaming", max_units=2),
-            ultrafast=sdk.RealtimeConfig(mode="streaming", engine=fast, max_units=1),
+            ultrafast=sdk.RealtimeConfig.from_adapter(mode="streaming", adapter=fast, max_units=1),
         ) as runtime:
             config = sdk.SessionConfig(realtime=True, merge=sdk.RealtimeMergeConfig())
             first, second = runtime.create_session(config), runtime.create_session(config)
             first.start()
             self.assertEqual(runtime.capacity.realtime_units, 2)
-            with self.assertRaises(sdk.ASRError) as caught:
+            with self.assertRaises(sdk.STTError) as caught:
                 second.start()
             self.assertEqual(caught.exception.code, "REALTIME_CAPACITY_EXCEEDED")
             self.assertEqual(runtime.capacity.realtime_units, 2)
@@ -145,10 +147,12 @@ class DualRealtimeTests(unittest.TestCase):
 
     def test_each_unit_drains_both_roles_and_uses_accurate_final(self):
         accurate, fast = RoleEngine("speech system"), RoleEngine("speech system today")
-        runtime = ASRRuntime(
-            engine=accurate,
-            realtime=sdk.RealtimeConfig(mode="streaming", initial_delay=0),
-            ultrafast=sdk.RealtimeConfig(mode="streaming", engine=fast, initial_delay=0),
+        runtime = STTRuntime.from_adapter(
+            adapter=accurate,
+            realtime=sdk.RealtimeConfig(mode="streaming", initial_delay_seconds=0),
+            ultrafast=sdk.RealtimeConfig.from_adapter(
+                mode="streaming", adapter=fast, initial_delay_seconds=0
+            ),
         )
         self.addCleanup(runtime.close)
         runtime.prepare()

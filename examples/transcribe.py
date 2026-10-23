@@ -5,7 +5,8 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
-from speechio import ModelConfig, Transcriber
+from speechio import LocalModelConfig, Transcriber
+from speechio.stt.options import TranscriptionOptions
 
 
 def main():
@@ -17,9 +18,11 @@ def main():
     parser.add_argument("--device", choices=("cpu", "gpu"), default="cpu")
     parser.add_argument("--language")
     args = parser.parse_args()
-    config = ModelConfig(model_path=args.model_path, engine=args.backend, device=args.device)
+    config = LocalModelConfig(model_path=args.model_path, adapter=args.backend, device=args.device)
     with Transcriber(config) as recognizer:
-        result = recognizer.transcribe_file(args.audio, language=args.language)
+        result = recognizer.transcribe_file(
+            args.audio, options=TranscriptionOptions(language=args.language)
+        )
     print(
         json.dumps(
             {"result": asdict(result), "close": asdict(recognizer.close_result)},

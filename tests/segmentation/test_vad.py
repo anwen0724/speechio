@@ -6,8 +6,8 @@ from unittest.mock import patch
 
 import numpy as np
 
-from speechio import ASRError
-from speechio.segmentation.vad import VadConfig, VoiceActivityDetector
+from speechio import STTError
+from speechio.stt.segmentation.vad import VadConfig, VoiceActivityDetector
 
 
 class VadTests(unittest.TestCase):
@@ -25,7 +25,7 @@ class VadTests(unittest.TestCase):
         model = Path(".venv/Lib/site-packages/faster_whisper/assets/silero_vad_v6.onnx")
         detector = VoiceActivityDetector(VadConfig(model_path=model, warmup=False))
         with patch("webrtcvad.Vad.is_speech", side_effect=RuntimeError("device detector error")):
-            with self.assertRaises(ASRError) as caught:
+            with self.assertRaises(STTError) as caught:
                 detector.detect(bytes(1024), 0)
         self.assertEqual(caught.exception.code, "VAD_FAILED")
 
@@ -54,12 +54,12 @@ class VadTests(unittest.TestCase):
         )
         with patch("webrtcvad.Vad.is_speech", return_value=False):
             with patch("onnxruntime.InferenceSession.run", side_effect=RuntimeError("bad graph")):
-                with self.assertRaises(ASRError) as caught:
+                with self.assertRaises(STTError) as caught:
                     detector.detect(bytes(1024), 0, recording=True)
         self.assertEqual(caught.exception.code, "VAD_FAILED")
 
     def test_intra_op_threads_must_be_positive(self):
-        with self.assertRaises(ASRError) as caught:
+        with self.assertRaises(STTError) as caught:
             VadConfig(model_path=Path("model.onnx"), intra_op_threads=0)
         self.assertEqual(caught.exception.code, "INVALID_CONFIGURATION")
 

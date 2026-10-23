@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True)
-class CandidateRequest:
+class SessionTranscriptionRequest:
     """公开接纳凭据，标准输入范围与继续边界分别记录。"""
 
     turn: object
@@ -28,10 +28,10 @@ class CandidateRequest:
 
 
 @dataclass(frozen=True)
-class CandidateResult:
+class SessionTranscriptionResult:
     """候选正文与原始模型结果并存，不伪装成覆盖新音频的最终结果。"""
 
-    request: CandidateRequest
+    request: SessionTranscriptionRequest
     text: str
     live_text: str
     model_text: str
@@ -58,7 +58,7 @@ class ResumeAck:
 
 @dataclass(frozen=True)
 class _Pending:
-    request: CandidateRequest
+    request: SessionTranscriptionRequest
     live_text: str
     pcm_digest: bytes
 
@@ -86,7 +86,7 @@ class CandidateState:
         self._results = {}
 
     def describe(self, kind, hint, start, end):
-        return CandidateRequest(
+        return SessionTranscriptionRequest(
             self.turn,
             uuid4().hex,
             kind,
@@ -122,7 +122,7 @@ class CandidateState:
         text = result.text.strip()
         execution = result.backend_metadata.get("candidate_execution", {})
         repaired = repair_tail(pending.live_text, text) if request.kind == "tail" else None
-        value = CandidateResult(
+        value = SessionTranscriptionResult(
             request=request,
             text=repaired.text if repaired else text,
             live_text=pending.live_text,

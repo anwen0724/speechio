@@ -3,37 +3,46 @@
 from dataclasses import replace
 from threading import Condition, Event, Thread
 
-from speechio.adapters.contracts import SynthesisCapabilities
+from speechio.adapters.contracts import TTSCapabilities
 from speechio.audio.results import AudioResult
 from speechio.errors import TTSError
 from speechio.resources import CloseError, CloseResult
 from speechio.tts.options import SynthesisOptions, validate_seconds
+from speechio.tts.voices import Voice, read_reference_audio
 
 
 class Synthesizer:
     """可复用的合成对象，同一时刻只拥有一个任务。"""
 
-    def __init__(self, config=None, *, engine=None, max_buffer_seconds=10.0):
-        validate_seconds(max_buffer_seconds, "max_buffer_seconds", positive=True)
-        if (config is None) == (engine is None):
-            raise TTSError("INVALID_CONFIGURATION", "configure", "config 和 engine 应且仅提供一个")
-        if engine is None:
-            from speechio.models.factory import build_synthesis_engine
+    def __init__(self, config, *, max_buffer_seconds=10.0):
+        """创建内置适配器，模型准备推迟到首次操作。"""
+        from speechio.models.factory import build_synthesis_engine
 
-            engine = build_synthesis_engine(config)
+        self._initialize(build_synthesis_engine(config), max_buffer_seconds)
+
+    @classmethod
+    def from_adapter(cls, adapter, *, max_buffer_seconds=10.0):
+        """接管自定义适配器，成功接入后负责其资源释放。"""
+        instance = cls.__new__(cls)
+        instance._initialize(adapter, max_buffer_seconds)
+        return instance
+
+    def _initialize(self, engine, max_buffer_seconds):
+        validate_seconds(max_buffer_seconds, "max_buffer_seconds", positive=True)
         capabilities = getattr(engine, "capabilities", None)
         methods = ["prepare", "close"]
-        if isinstance(capabilities, SynthesisCapabilities):
+        if isinstance(capabilities, TTSCapabilities):
             methods += [
                 name
                 for flag, name in (
                     ("synthesis", "synthesize"),
                     ("audio_streaming", "stream"),
                     ("text_streaming", "open_stream"),
+                    ("voice_cloning", "clone_voice"),
                 )
                 if getattr(capabilities, flag)
             ]
-        if not isinstance(capabilities, SynthesisCapabilities) or any(
+        if not isinstance(capabilities, TTSCapabilities) or any(
             not callable(getattr(engine, method, None)) for method in methods
         ):
             raise TTSError("INVALID_CONFIGURATION", "configure", "引擎不符合合成接入契约")
@@ -92,6 +101,8 @@ class Synthesizer:
         if not isinstance(options, SynthesisOptions):
             raise TTSError("INVALID_INPUT", "synthesize", "需要 SynthesisOptions")
         caps = self.capabilities
+        if isinstance(options.voice, Voice) and not caps.voice_cloning:
+            raise TTSError("CAPABILITY_UNSUPPORTED", "synthesize", "该模型不支持使用克隆声音")
         if not getattr(caps, capability) or any(
             (
                 options.language is not None and not caps.language_selection,
@@ -128,6 +139,29 @@ class Synthesizer:
             raise
         except Exception:
             raise TTSError("SYNTHESIS_FAILED", "synthesize", "后端合成失败") from None
+        finally:
+            self._end()
+
+    def clone_voice(self, reference_audio, *, reference_text=None) -> Voice:
+        """使用本实例选定的模型克隆声音，不执行文字合成。"""
+        if not self.capabilities.voice_cloning:
+            raise TTSError("CAPABILITY_UNSUPPORTED", "clone_voice", "所选模型不支持声音克隆")
+        if reference_text is not None and (
+            not isinstance(reference_text, str) or not reference_text.strip()
+        ):
+            raise TTSError("INVALID_INPUT", "clone_voice", "参考文字应为非空字符串或 None")
+        self._begin()
+        try:
+            audio = read_reference_audio(reference_audio)
+            self._prepare()
+            voice = self._engine.clone_voice(audio, reference_text=reference_text)
+            if not isinstance(voice, Voice):
+                raise TTSError("PROTOCOL_ERROR", "clone_voice", "适配器未返回 Voice")
+            return voice
+        except TTSError:
+            raise
+        except Exception as exc:
+            raise TTSError("CLONING_FAILED", "clone_voice", "声音克隆失败") from exc
         finally:
             self._end()
 

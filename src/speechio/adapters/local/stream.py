@@ -3,7 +3,7 @@
 import re
 from uuid import uuid4
 
-from speechio.errors import ASRError, error_record
+from speechio.errors import STTError, error_record
 from speechio.stt.input import as_audio, validate_sample_rate
 from speechio.stt.results import Transcript
 
@@ -35,7 +35,7 @@ class NativeStream:
         self.recognizer = recognizer
         self.language = "auto" if language is None else language
         if not isinstance(self.language, str) or not self.language:
-            raise ASRError("BACKEND_INCOMPATIBLE", "create_streaming_session", "语言值无效")
+            raise STTError("BACKEND_INCOMPATIBLE", "create_streaming_session", "语言值无效")
         self.state = "open"
         self.failed = False
         self.has_final_result = False
@@ -54,11 +54,11 @@ class NativeStream:
     def _require_input(self):
         """状态错误在进入原生运行库前返回，失败试次不再推进。"""
         if self.state == "closed":
-            raise ASRError("STREAM_CLOSED", "accept_audio", "流已经关闭")
+            raise STTError("STREAM_CLOSED", "accept_audio", "流已经关闭")
         if self.state == "finished":
-            raise ASRError("STREAM_FINISHED", "accept_audio", "流已经结束")
+            raise STTError("STREAM_FINISHED", "accept_audio", "流已经结束")
         if self.failed:
-            raise ASRError("INFERENCE_FAILED", "accept_audio", "失败流只允许读取缓存和关闭")
+            raise STTError("INFERENCE_FAILED", "accept_audio", "失败流只允许读取缓存和关闭")
 
     def accept_audio(self, audio, sample_rate=None):
         """只递交新增样本；原生接受成功之后才推进确认范围。"""
@@ -71,7 +71,7 @@ class NativeStream:
             self._native.accept_waveform(16000, array)
         except Exception as exc:
             self.failed = True
-            raise ASRError("INFERENCE_FAILED", "accept_audio", str(exc)) from exc
+            raise STTError("INFERENCE_FAILED", "accept_audio", str(exc)) from exc
         self.accepted_samples += array.size
 
     def decode(self):
@@ -79,13 +79,13 @@ class NativeStream:
         if self.state == "closed":
             return
         if self.failed:
-            raise ASRError("INFERENCE_FAILED", "decode", "失败流不能继续解码")
+            raise STTError("INFERENCE_FAILED", "decode", "失败流不能继续解码")
         try:
             while self.recognizer.is_ready(self._native):
                 self.recognizer.decode_stream(self._native)
         except Exception as exc:
             self.failed = True
-            raise ASRError("INFERENCE_FAILED", "decode", str(exc)) from exc
+            raise STTError("INFERENCE_FAILED", "decode", str(exc)) from exc
         self.get_result()
 
     def get_result(self):
@@ -98,7 +98,7 @@ class NativeStream:
             self._cache = native_result(value.text, self.language)
         except Exception as exc:
             self.failed = True
-            raise ASRError("INFERENCE_FAILED", "get_result", str(exc)) from exc
+            raise STTError("INFERENCE_FAILED", "get_result", str(exc)) from exc
         return self._cache
 
     def finish(self):
@@ -106,16 +106,16 @@ class NativeStream:
         if self.state in ("closed", "finished"):
             return self._cache
         if self.failed:
-            raise ASRError("INFERENCE_FAILED", "finish", "失败流不能正常结束")
+            raise STTError("INFERENCE_FAILED", "finish", "失败流不能正常结束")
         finish = getattr(self._native, "input_finished", None)
         if not callable(finish):
             self.failed = True
-            raise ASRError("BACKEND_INCOMPATIBLE", "finish", "原生流缺少 input_finished")
+            raise STTError("BACKEND_INCOMPATIBLE", "finish", "原生流缺少 input_finished")
         try:
             finish()
         except Exception as exc:
             self.failed = True
-            raise ASRError("INFERENCE_FAILED", "finish", str(exc)) from exc
+            raise STTError("INFERENCE_FAILED", "finish", str(exc)) from exc
         self.decode()
         self.state = "finished"
         self.has_final_result = True
@@ -124,25 +124,25 @@ class NativeStream:
     def reset(self):
         """释放旧流并建立新标识，保持原语言，重置范围与缓存。"""
         if self.state == "closed":
-            raise ASRError("STREAM_CLOSED", "reset", "关闭流不能重置")
+            raise STTError("STREAM_CLOSED", "reset", "关闭流不能重置")
         if self.failed:
-            raise ASRError("INFERENCE_FAILED", "reset", "失败试次应创建新流")
+            raise STTError("INFERENCE_FAILED", "reset", "失败试次应创建新流")
         try:
             self._release()
             self._native = self.recognizer.create_stream()
             setter = getattr(self._native, "set_option", None)
             if not callable(setter):
-                raise ASRError("BACKEND_INCOMPATIBLE", "reset", "原生流缺少语言选项")
+                raise STTError("BACKEND_INCOMPATIBLE", "reset", "原生流缺少语言选项")
             setter("language", self.language)
         except Exception as exc:
             self.failed = True
             try:
                 self.close()
-            except ASRError:
+            except STTError:
                 pass
-            if isinstance(exc, ASRError):
+            if isinstance(exc, STTError):
                 raise
-            raise ASRError("BACKEND_INCOMPATIBLE", "reset", str(exc)) from exc
+            raise STTError("BACKEND_INCOMPATIBLE", "reset", str(exc)) from exc
         self.stream_id = uuid4().hex
         self.accepted_samples = 0
         self.has_final_result = False
@@ -163,7 +163,7 @@ class NativeStream:
                     operation()
                 except Exception as exc:
                     self.cleanup["status"] = "failed"
-                    error = ASRError("CLEANUP_FAILED", "close", str(exc))
+                    error = STTError("CLEANUP_FAILED", "close", str(exc))
                     self.cleanup["errors"].append(error_record(error, "close"))
                     raise error from exc
                 break

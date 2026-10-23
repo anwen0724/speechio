@@ -3,7 +3,7 @@
 import re
 from dataclasses import dataclass, replace
 
-from speechio.errors import ASRError
+from speechio.errors import STTError
 from speechio.stt.text.stabilizer import TextObservation, project_text
 
 
@@ -19,7 +19,7 @@ class RealtimeMergeConfig:
             type(value) is not int or value <= 0
             for value in (self.max_tail_units, self.fuzzy_confirmations)
         ):
-            raise ASRError(
+            raise STTError(
                 "INVALID_CONFIGURATION", "configure_merge", "合并容量与确认次数应为正整数"
             )
 
@@ -202,7 +202,7 @@ class RealtimeMerger:
         self.turn = unit
         self.config = config if config is not None else RealtimeMergeConfig()
         if not isinstance(self.config, RealtimeMergeConfig):
-            raise ASRError("INVALID_CONFIGURATION", "configure_merge", "需要 RealtimeMergeConfig")
+            raise STTError("INVALID_CONFIGURATION", "configure_merge", "需要 RealtimeMergeConfig")
         self._observations = {"accurate": None, "ultrafast": None}
         self._accurate = ""
         self._body_observation = None
@@ -220,7 +220,7 @@ class RealtimeMerger:
     def observe(self, role, observation: TextObservation):
         """先核对来源与覆盖；过期观察不能改变尾部或确认状态。"""
         if role not in self._observations:
-            raise ASRError("INVALID_CONFIGURATION", "merge", "实时角色应为 accurate 或 ultrafast")
+            raise STTError("INVALID_CONFIGURATION", "merge", "实时角色应为 accurate 或 ultrafast")
         previous = self._observations[role]
         reason = None
         if observation.turn != self.turn:

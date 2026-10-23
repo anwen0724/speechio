@@ -11,7 +11,7 @@ class SpeechioError(RuntimeError):
         self.message = message
 
 
-class ASRError(SpeechioError):
+class STTError(SpeechioError):
     """保留现有识别错误类型和捕获行为。"""
 
 
@@ -23,7 +23,7 @@ def error_record(exc: Exception, operation: str, confirmed_range=None, unconfirm
     """将错误与最后确认的音频范围一起保存，不猜测失败调用是否生效。"""
     return {
         "operation": operation,
-        "error_code": exc.code if isinstance(exc, ASRError) else "INFERENCE_FAILED",
+        "error_code": exc.code if isinstance(exc, STTError) else "INFERENCE_FAILED",
         "exception_type": type(exc).__name__,
         "message": str(exc),
         "confirmed_range": confirmed_range,

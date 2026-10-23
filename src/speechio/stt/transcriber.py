@@ -11,64 +11,38 @@ import numpy as np
 from speechio.adapters.contracts import validate_engine
 from speechio.audio.files import audio_file_chunks, read_audio_file
 from speechio.audio.formats import AudioFormat
-from speechio.errors import ASRError
+from speechio.errors import STTError
 from speechio.models.config import LocalModelConfig, RemoteModelConfig
-from speechio.models.config import ModelConfig as ModelConfig
 from speechio.models.factory import build_engine
 from speechio.resources import CloseError, CloseResult
 from speechio.stt.input import AudioConverter, validate_max_audio_seconds
+from speechio.stt.options import resolve_options, validate_task_timeout
 from speechio.stt.results import Transcript
 
 LOGGER = logging.getLogger(__name__)
 LOGGER.addHandler(logging.NullHandler())
 
 
-def resolve_model_options(config=None, *, engine=None, model_path=None, **options):
-    """统一本地、远程配置与引擎注入；旧下载选项给出明确迁移提示。"""
-    if {"model", "download_root", "local_files_only"} & options.keys():
-        raise ASRError(
-            "INVALID_CONFIGURATION",
-            "configure",
-            "旧 model/下载选项已移除；已有目录使用 engine 和 model_path，"
-            "缺少文件时单独调用 download_model",
-        )
-    if config is not None and (engine is not None or model_path is not None or options):
-        raise ASRError("INVALID_CONFIGURATION", "configure", "配置对象与选项应且仅应提供一个")
-    if isinstance(engine, str):
-        if model_path is None:
-            raise ASRError("INVALID_CONFIGURATION", "configure", "加载模型必须指定 model_path")
-        return LocalModelConfig(model_path=model_path, engine=engine, **options), None
-    if engine is not None and (model_path is not None or options):
-        raise ASRError("INVALID_CONFIGURATION", "configure", "注入引擎不接受本地选项")
-    if config is None and engine is None:
-        raise ASRError(
-            "INVALID_CONFIGURATION",
-            "configure",
-            "请提供 LocalModelConfig / RemoteModelConfig，或明确指定 engine 和 model_path",
-        )
-    return config, engine
-
-
 class Transcriber:
     """通过小接口隐藏模型准备、输入转换和资源管理，不持有设备或服务。"""
 
-    def __init__(
-        self,
-        config: LocalModelConfig | RemoteModelConfig | None = None,
-        *,
-        engine=None,
-        model_path=None,
-        max_audio_seconds=None,
-        **options,
-    ):
+    def __init__(self, config: LocalModelConfig | RemoteModelConfig, *, max_audio_seconds=None):
+        """通过模型配置创建内置适配器；首次调用时准备模型。"""
+        self._initialize(build_engine(config), config, max_audio_seconds)
+
+    @classmethod
+    def from_adapter(cls, adapter, *, max_audio_seconds=None):
+        """接管调用方构造的适配器，不需要模型配置。"""
+        instance = cls.__new__(cls)
+        instance._initialize(adapter, None, max_audio_seconds)
+        return instance
+
+    def _initialize(self, adapter, config, max_audio_seconds):
         validate_max_audio_seconds(max_audio_seconds)
+        self._capabilities = validate_engine(adapter)
         self._max_audio_seconds = max_audio_seconds
-        config, engine = resolve_model_options(
-            config, engine=engine, model_path=model_path, **options
-        )
-        self._engine = build_engine(config) if engine is None else engine
-        self._config = self._engine.config if engine is None else None
-        self._capabilities = validate_engine(self._engine)
+        self._engine = adapter
+        self._config = config
         self._state = "unprepared"
         self._close_result = None
         self._operation_lock = Lock()
@@ -82,7 +56,7 @@ class Transcriber:
         """关闭自有资源，正文异常优先于关闭异常。"""
         result = self.close()
         if exc_type is None and result.status == "failed":
-            raise ASRError("CLEANUP_FAILED", "close", result.errors[0].message)
+            raise STTError("CLEANUP_FAILED", "close", result.errors[0].message)
         return False
 
     @property
@@ -103,7 +77,7 @@ class Transcriber:
         return self._capabilities
 
     @property
-    def engine(self):
+    def _adapter(self):
         """供角色组装识别同一实例；调用仍应经由本拥有者。"""
         return self._engine
 
@@ -116,12 +90,12 @@ class Transcriber:
     def _operation(self, *, closing=False):
         """忙时立即拒绝，不排队；守卫在任何输入或资源副作用之前执行。"""
         if not self._operation_lock.acquire(blocking=False):
-            raise ASRError("RUNTIME_BUSY", "close" if closing else "transcribe", "运行时正在使用")
+            raise STTError("RUNTIME_BUSY", "close" if closing else "transcribe", "运行时正在使用")
         try:
             if self.state == "closed" and not closing:
-                raise ASRError("RUNTIME_CLOSED", "transcribe", "运行时已经关闭")
+                raise STTError("RUNTIME_CLOSED", "transcribe", "运行时已经关闭")
             yield
-        except ASRError as exc:
+        except STTError as exc:
             LOGGER.error(
                 "ASR 操作失败：code=%s operation=%s %s", exc.code, exc.operation, exc.message
             )
@@ -147,20 +121,22 @@ class Transcriber:
                 self._close_result = CloseResult(
                     status="failed" if cleanup_errors else "ok", errors=cleanup_errors
                 )
-            if isinstance(exc, (ASRError, KeyboardInterrupt, SystemExit)):
+            if isinstance(exc, (STTError, KeyboardInterrupt, SystemExit)):
                 raise
-            raise ASRError("MODEL_LOAD", "load_model", str(exc)) from exc
+            raise STTError("MODEL_LOAD", "load_model", str(exc)) from exc
 
-    def transcribe(self, audio, *, format: AudioFormat, language=None, word_timestamps=False):
+    def transcribe(self, audio, *, format: AudioFormat, options=None):
         """识别一段完整字节或数组。"""
+        selected = resolve_options(options)
+        language, word_timestamps = selected.language, selected.word_timestamps
         with self._operation():
             self._validate_options(language, word_timestamps)
             return self._transcribe_chunks((audio,), format, language, word_timestamps)
 
-    def transcribe_chunks(
-        self, chunks, *, format: AudioFormat, language=None, word_timestamps=False
-    ):
+    def transcribe_chunks(self, chunks, *, format: AudioFormat, options=None):
         """有限块序列结束后返回一个完整结果。"""
+        selected = resolve_options(options)
+        language, word_timestamps = selected.language, selected.word_timestamps
         with self._operation():
             self._validate_options(language, word_timestamps)
             return self._transcribe_chunks(chunks, format, language, word_timestamps)
@@ -173,14 +149,14 @@ class Transcriber:
             try:
                 iterator = iter(chunks)
             except Exception as exc:
-                raise ASRError("AUDIO_READ_FAILED", "read_chunks", str(exc)) from exc
+                raise STTError("AUDIO_READ_FAILED", "read_chunks", str(exc)) from exc
             while True:
                 try:
                     chunk = next(iterator)
                 except StopIteration:
                     break
                 except Exception as exc:
-                    raise ASRError("AUDIO_READ_FAILED", "read_chunks", str(exc)) from exc
+                    raise STTError("AUDIO_READ_FAILED", "read_chunks", str(exc)) from exc
                 for frame in converter.feed(chunk):
                     output.extend(frame.pcm)
             for frame in converter.finish():
@@ -189,8 +165,11 @@ class Transcriber:
         finally:
             converter.close()
 
-    def transcribe_file(self, path, *, language=None, word_timestamps=False):
+    def transcribe_file(self, path, *, options=None, task_timeout_seconds=3600.0):
         """按能力直接提交原始文件；其余引擎沿用标准音频解码。"""
+        selected = resolve_options(options)
+        language, word_timestamps = selected.language, selected.word_timestamps
+        validate_task_timeout(task_timeout_seconds)
         with self._operation():
             if self.capabilities.file_transcription:
                 self._validate_options(language, word_timestamps, capability="file_transcription")
@@ -198,7 +177,9 @@ class Transcriber:
                     # 有界解码检查真实时长，不把完整长音频保存在内存中。
                     for _ in audio_file_chunks(path, max_audio_seconds=self._max_audio_seconds):
                         pass
-                return self._infer_source("transcribe_file", path, language, word_timestamps)
+                return self._infer_source(
+                    "transcribe_file", path, language, word_timestamps, task_timeout_seconds
+                )
             self._validate_options(language, word_timestamps)
             return self._infer(
                 read_audio_file(path, max_audio_seconds=self._max_audio_seconds),
@@ -206,26 +187,31 @@ class Transcriber:
                 word_timestamps=word_timestamps,
             )
 
-    def transcribe_url(self, url, *, language=None, word_timestamps=False):
+    def transcribe_url(self, url, *, options=None, task_timeout_seconds=3600.0):
         """按声明能力识别文件地址；不能对未下载的音频承诺本地时长检查。"""
+        selected = resolve_options(options)
+        language, word_timestamps = selected.language, selected.word_timestamps
+        validate_task_timeout(task_timeout_seconds)
         with self._operation():
             self._validate_options(language, word_timestamps, capability="url_transcription")
             if self._max_audio_seconds is not None:
-                raise ASRError(
+                raise STTError(
                     "INVALID_CONFIGURATION",
                     "transcribe_url",
                     "URL 输入不支持本地 max_audio_seconds 检查；请使用本地文件或移除此限制",
                 )
-            return self._infer_source("transcribe_url", url, language, word_timestamps)
+            return self._infer_source(
+                "transcribe_url", url, language, word_timestamps, task_timeout_seconds
+            )
 
     def _validate_options(self, language, word_timestamps, *, capability="transcription"):
         """调用边界先检查元数据，错误选项不能消费源或加载模型。"""
         if language is not None and (not isinstance(language, str) or not language.strip()):
-            raise ASRError("INVALID_CONFIGURATION", "transcribe", "语言应为非空代码或 None")
+            raise STTError("INVALID_CONFIGURATION", "transcribe", "语言应为非空代码或 None")
         if not getattr(self.capabilities, capability):
-            raise ASRError("BACKEND_INCOMPATIBLE", "transcribe", "引擎不支持该输入方式")
+            raise STTError("BACKEND_INCOMPATIBLE", "transcribe", "引擎不支持该输入方式")
         if type(word_timestamps) is not bool:
-            raise ASRError("INVALID_CONFIGURATION", "transcribe", "词时间戳开关应为布尔值")
+            raise STTError("INVALID_CONFIGURATION", "transcribe", "词时间戳开关应为布尔值")
 
     def _candidate(self, pcm, language, *, word_timestamps=False):
         """候选仍是整段输入，使用通用候选角色而不读取任何会话状态。"""
@@ -233,45 +219,46 @@ class Transcriber:
             self._validate_options(language, word_timestamps)
             return self._infer(pcm, language, role="candidate", word_timestamps=word_timestamps)
 
-    def _infer_source(self, method, source, language, word_timestamps):
+    def _infer_source(self, method, source, language, word_timestamps, task_timeout_seconds):
         """文件输入沿用资源、错误和结果契约，厂商传输由适配器处理。"""
         self._prepare()
         try:
             result = getattr(self._engine, method)(
                 source,
+                task_timeout_seconds=task_timeout_seconds,
                 language=language,
                 word_timestamps=word_timestamps and self.capabilities.word_timestamps,
             )
-        except ASRError:
+        except STTError:
             raise
         except Exception as exc:
-            raise ASRError("INFERENCE_FAILED", method, str(exc)) from exc
+            raise STTError("INFERENCE_FAILED", method, str(exc)) from exc
         return self._normalize_result(result, language, word_timestamps)
 
     def _snapshot(self, pcm, language):
         """识别固定的标准音频快照，使用实时角色参数。"""
         with self._operation():
             if not self.capabilities.snapshot:
-                raise ASRError("BACKEND_INCOMPATIBLE", "snapshot", "引擎不支持周期快照")
+                raise STTError("BACKEND_INCOMPATIBLE", "snapshot", "引擎不支持周期快照")
             return self._infer(pcm, language, role="snapshot")
 
     def _create_stream(self, language):
         """创建独立流，语言及网络协议映射由具体引擎负责。"""
         with self._operation():
             if not self.capabilities.streaming:
-                raise ASRError("BACKEND_INCOMPATIBLE", "create_stream", "引擎不支持原生流式")
+                raise STTError("BACKEND_INCOMPATIBLE", "create_stream", "引擎不支持原生流式")
             self._prepare()
             try:
                 return self._engine.create_streaming_session(language=language)
-            except ASRError:
+            except STTError:
                 raise
             except Exception as exc:
-                raise ASRError("INFERENCE_FAILED", "create_stream", str(exc)) from exc
+                raise STTError("INFERENCE_FAILED", "create_stream", str(exc)) from exc
 
     def _infer(self, pcm, language, *, role="final", word_timestamps=False):
         """固定标准输入经统一引擎调用，不读取模型名称或专有配置。"""
         if not pcm:
-            raise ASRError("INVALID_AUDIO", "transcribe", "完整输入没有标准采样")
+            raise STTError("INVALID_AUDIO", "transcribe", "完整输入没有标准采样")
         self._prepare()
         array = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
         try:
@@ -281,16 +268,16 @@ class Transcriber:
                 role=role,
                 word_timestamps=word_timestamps and self.capabilities.word_timestamps,
             )
-        except ASRError:
+        except STTError:
             raise
         except Exception as exc:
-            raise ASRError("INFERENCE_FAILED", "transcribe", str(exc)) from exc
+            raise STTError("INFERENCE_FAILED", "transcribe", str(exc)) from exc
         return self._normalize_result(result, language, word_timestamps)
 
     def _normalize_result(self, result, language, word_timestamps):
         """所有输入方式交付隔离的统一结果，不泄露引擎持有的可变对象。"""
         if not isinstance(result, Transcript):
-            raise ASRError("BACKEND_INCOMPATIBLE", "transcribe", "引擎应返回 Transcript")
+            raise STTError("BACKEND_INCOMPATIBLE", "transcribe", "引擎应返回 Transcript")
         unavailable = word_timestamps and (
             not self.capabilities.word_timestamps or result.words is None
         )

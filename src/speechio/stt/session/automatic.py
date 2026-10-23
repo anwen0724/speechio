@@ -10,7 +10,7 @@ from uuid import uuid4
 import numpy as np
 
 from speechio.audio.formats import AudioFormat
-from speechio.errors import ASRError
+from speechio.errors import STTError
 from speechio.stt.input import AudioConverter, AudioFrame
 from speechio.stt.results import Transcript
 from speechio.stt.runtime.tasks import InferenceRequest
@@ -21,9 +21,9 @@ from speechio.stt.segmentation.vad import (
     create_detector,
     local_detector_factory,
 )
-from speechio.stt.segmentation.wakeword import WakeConfig, WakeGate
+from speechio.stt.segmentation.wakeword import WakeGate, WakeWordConfig
 from speechio.stt.session.session import FinalTask, Session, _AudioUnit, _validate_timeout
-from speechio.stt.text.endpoint import EndpointConfig, SentenceBoundaryPolicy, SentenceHint
+from speechio.stt.text.endpoint import SentenceBoundaryPolicy, SentenceHint, SpeechEndConfig
 
 
 @dataclass
@@ -86,7 +86,7 @@ class _AutomaticUnit(_AudioUnit):
     wake_context: dict | None = None
 
 
-class LiveSession(Session):
+class AutoSession(Session):
     """宿主只连续送音频；封口和后台任务使用普通会话的同一实现。"""
 
     def __init__(
@@ -102,9 +102,9 @@ class LiveSession(Session):
         wake_detector_factory=None,
     ):
         super().__init__(runtime, config)
-        self._endpoint = endpoint if endpoint is not None else EndpointConfig()
-        if not isinstance(self._endpoint, EndpointConfig):
-            raise ASRError("INVALID_CONFIGURATION", "configure", "需要 EndpointConfig")
+        self._endpoint = endpoint if endpoint is not None else SpeechEndConfig()
+        if not isinstance(self._endpoint, SpeechEndConfig):
+            raise STTError("INVALID_CONFIGURATION", "configure", "需要 SpeechEndConfig")
         shortest = (
             min(
                 self._endpoint.sentence_pause,
@@ -118,17 +118,17 @@ class LiveSession(Session):
             self._endpoint.early_transcription_silence > 0
             and self._endpoint.early_transcription_silence >= shortest
         ):
-            raise ASRError("INVALID_CONFIGURATION", "configure", "回溯或提前阈值超过结束等待")
+            raise STTError("INVALID_CONFIGURATION", "configure", "回溯或提前阈值超过结束等待")
         if self._endpoint.dynamic_silence and not config.realtime:
-            raise ASRError("INVALID_CONFIGURATION", "configure", "动态等待需要实时观察")
+            raise STTError("INVALID_CONFIGURATION", "configure", "动态等待需要实时观察")
         if self._endpoint.punctuation_split and (
             not config.realtime
             or config.stabilization is None
             or not runtime.capabilities.word_timestamps
         ):
-            raise ASRError("BACKEND_INCOMPATIBLE", "configure", "句末切段需要稳定观察和词时间能力")
+            raise STTError("BACKEND_INCOMPATIBLE", "configure", "句末切段需要稳定观察和词时间能力")
         if self._endpoint.punctuation_split and self._completion_source == "streaming":
-            raise ASRError(
+            raise STTError(
                 "BACKEND_INCOMPATIBLE",
                 "configure",
                 "标点回溯切段会改变已发送的音频边界，需要 completion_mode='final' 重识别",
@@ -138,11 +138,11 @@ class LiveSession(Session):
         self._input_lock = RLock()
         self._detector_factory = detector_factory or local_detector_factory(vad)
         self._segmentation = segmentation
-        if (wake is not None and not isinstance(wake, WakeConfig)) or (
+        if (wake is not None and not isinstance(wake, WakeWordConfig)) or (
             wake_detector_factory is not None
             and (wake is None or not callable(wake_detector_factory))
         ):
-            raise ASRError("INVALID_CONFIGURATION", "configure", "唤醒配置或工厂无效")
+            raise STTError("INVALID_CONFIGURATION", "configure", "唤醒配置或工厂无效")
         self._wake_config, self._wake_factory = wake, wake_detector_factory
         minimum = int(segmentation.min_recording_duration * 16000)
         pre_roll = int(segmentation.pre_roll_duration * 16000)
@@ -151,7 +151,7 @@ class LiveSession(Session):
             or config.max_audio_samples > runtime.limits.max_task_audio_samples
             or segmentation.max_buffer_samples < config.max_audio_samples + pre_roll + 1024
         ):
-            raise ASRError("INVALID_CONFIGURATION", "configure", "自动段长与缓冲预算不一致")
+            raise STTError("INVALID_CONFIGURATION", "configure", "自动段长与缓冲预算不一致")
         self._input = self._new_input()
         self._vad_info = self._input.detector.info
 
@@ -218,13 +218,13 @@ class LiveSession(Session):
             return len(self._units) + unassigned
 
     def start(self):
-        raise ASRError("AUTOMATIC_INPUT", "start", "自动会话直接连续输入音频")
+        raise STTError("AUTOMATIC_INPUT", "start", "自动会话直接连续输入音频")
 
     def _require_input(self):
         self._require_open()
         state = self._input
         if state.state in ("finished", "failed"):
-            raise ASRError("INPUT_ENDED", "feed_audio", "输入已经结束或失败，请重置后重新输入")
+            raise STTError("INPUT_ENDED", "feed_audio", "输入已经结束或失败，请重置后重新输入")
         return state
 
     def _buffer_samples(self, state):
@@ -238,14 +238,14 @@ class LiveSession(Session):
         elif isinstance(chunk, np.ndarray):
             scalars = chunk.size
         else:
-            raise ASRError("INVALID_AUDIO", "feed_audio", "输入应为字节或 NumPy 数组")
+            raise STTError("INVALID_AUDIO", "feed_audio", "输入应为字节或 NumPy 数组")
         upper = int(scalars / self.config.format.channels * 16000 / self.config.format.sample_rate)
         if self._buffer_samples(state) + upper + 1024 > self._segmentation.max_buffer_samples:
-            raise ASRError("AUDIO_CAPACITY_EXCEEDED", "feed_audio", "自动输入缓冲不足，本块未接纳")
+            raise STTError("AUDIO_CAPACITY_EXCEEDED", "feed_audio", "自动输入缓冲不足，本块未接纳")
 
     def resume(self, *, expected_audio_samples=None):
         """自动输入的录音段由门控负责，不把继续误作重新开始分句。"""
-        raise ASRError("MODE_UNAVAILABLE", "resume", "同轮继续只适用于手动输入")
+        raise STTError("MODE_UNAVAILABLE", "resume", "同轮继续只适用于手动输入")
 
     def current_audio(self):
         """先递交已形成的确定音频，不把未确定回溯尾部归给当前单元。"""
@@ -265,7 +265,7 @@ class LiveSession(Session):
             try:
                 frames = state.converter.feed(chunk)
                 self._detect_frames(state, frames)
-            except ASRError as exc:
+            except STTError as exc:
                 if exc.code not in ("INVALID_AUDIO", "INPUT_CANCELLED", "SESSION_CLOSED"):
                     self._fail_input(state, exc)
                 raise
@@ -277,7 +277,7 @@ class LiveSession(Session):
     def _check_generation(self, state):
         self._require_open()
         if self._input is not state:
-            raise ASRError("INPUT_CANCELLED", "feed_audio", "检测所属输入已失效")
+            raise STTError("INPUT_CANCELLED", "feed_audio", "检测所属输入已失效")
 
     def _detect_frames(self, state, frames):
         for frame in frames:
@@ -295,11 +295,11 @@ class LiveSession(Session):
                     else VoiceActivity(False, False, False, False, 0)
                 )
                 if not isinstance(activity, VoiceActivity):
-                    raise ASRError("VAD_FAILED", "detect_vad", "检测器应返回 VoiceActivity")
-            except ASRError:
+                    raise STTError("VAD_FAILED", "detect_vad", "检测器应返回 VoiceActivity")
+            except STTError:
                 raise
             except Exception as exc:
-                raise ASRError("VAD_FAILED", "detect_vad", str(exc)) from exc
+                raise STTError("VAD_FAILED", "detect_vad", str(exc)) from exc
             with self._runtime.coordination:
                 self._check_generation(state)
                 if clear_before is not None:
@@ -317,7 +317,7 @@ class LiveSession(Session):
                     # 转换已经接纳本块；取消掉本块尚未登记的段，保留转换时钟。
                     state.gate.position = frames[-1].end_sample
                     self._apply_cancellations(state)
-                    raise ASRError("INPUT_CANCELLED", "feed_audio", "当前输入在检测期间被取消")
+                    raise STTError("INPUT_CANCELLED", "feed_audio", "当前输入在检测期间被取消")
                 if (
                     activity.speech
                     and state.gate.silence_samples > 0
@@ -373,7 +373,7 @@ class LiveSession(Session):
                 unit.boundary = segment.boundary
                 Session.end_turn(self)
                 state.segments.popleft()
-            except ASRError as exc:
+            except STTError as exc:
                 if exc.code in (
                     "TASK_CAPACITY_EXCEEDED",
                     "RESULT_CAPACITY_EXCEEDED",
@@ -440,8 +440,8 @@ class LiveSession(Session):
         request = InferenceRequest(
             task,
             pcm,
-            self.config.language,
-            word_timestamps=purpose == "punctuation" or self.config.word_timestamps,
+            self.config.options.language,
+            word_timestamps=purpose == "punctuation" or self.config.options.word_timestamps,
             priority="auxiliary",
             role="final" if self._runtime.final_enabled else "candidate",
         )
@@ -610,7 +610,7 @@ class LiveSession(Session):
                 self._require_open()
                 state = self._input
                 if state.state == "failed":
-                    raise ASRError("INPUT_ENDED", "end_input", "输入已失败，请重置")
+                    raise STTError("INPUT_ENDED", "end_input", "输入已失败，请重置")
                 self._apply_cancellations(state)
             if state.state != "finished":
                 try:
@@ -620,7 +620,7 @@ class LiveSession(Session):
                     if state.wake:
                         state.wake.state = "finished"
                         state.wake.close()
-                except ASRError as exc:
+                except STTError as exc:
                     self._fail_input(state, exc)
                     raise
             with self._runtime.coordination:
@@ -637,10 +637,10 @@ class LiveSession(Session):
                 if state.segments and state.segments[0].boundary is not None:
                     segment = state.segments[0]
                 else:
-                    raise ASRError("NO_ACTIVE_UNIT", "end_turn", "没有活动录音段")
+                    raise STTError("NO_ACTIVE_UNIT", "end_turn", "没有活动录音段")
             self._pump(state)
             if segment in state.segments:
-                raise ASRError("TASK_CAPACITY_EXCEEDED", "end_turn", "封口段已保留，等待容量后重试")
+                raise STTError("TASK_CAPACITY_EXCEEDED", "end_turn", "封口段已保留，等待容量后重试")
             state.state = "listening"
             if state.wake:
                 state.wake.recording_finished(state.gate.position)
@@ -732,7 +732,7 @@ class LiveSession(Session):
             old = self._input
             try:
                 change = Session.reset(self)
-            except ASRError:
+            except STTError:
                 if fresh.wake:
                     fresh.wake.close()
                 raise

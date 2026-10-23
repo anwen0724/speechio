@@ -25,6 +25,8 @@ dependencies = [
 asr-install-sherpa-models = "speechio.install_sherpa_models:main"
 
 [project.optional-dependencies]
+tts-qwen = ["qwen-tts>=0.1.1,<0.2", "torch>=2.7,<2.9", "torchaudio>=2.7,<2.9"]
+tts-kokoro = ["kokoro>=0.9.4,<0.10", "misaki[zh]>=0.9.4,<0.10", "torch>=2.7,<2.9"]
 remote = ["httpx>=0.28.1,<0.29", "websockets>=17.2,<18"]
 microphone = ["PyAudio>=0.2.14,<0.3"]
 nemotron = ["sherpa-onnx>=1.13.4,<2", "requests>=2.33,<3"]

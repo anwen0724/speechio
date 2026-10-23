@@ -6,114 +6,152 @@ from sys import exc_info
 from time import monotonic
 
 from speechio.adapters.contracts import validate_engine
-from speechio.audio.formats import AudioFormat
 from speechio.audio.microphone import MicrophoneConfig, MicrophoneInput
 from speechio.bundled import default_vad_model
-from speechio.errors import ASRError
-from speechio.stt.runtime.asr import ASRRuntime
+from speechio.errors import STTError
+from speechio.models.factory import engine_capabilities
+from speechio.stt.options import resolve_options
+from speechio.stt.runtime.asr import STTRuntime
 from speechio.stt.runtime.realtime import RealtimeConfig
 from speechio.stt.segmentation.gate import SegmentationConfig
 from speechio.stt.segmentation.vad import VadConfig
 from speechio.stt.session.session import SessionConfig
-from speechio.stt.text.endpoint import EndpointConfig
-from speechio.stt.transcriber import Transcriber, resolve_model_options
+from speechio.stt.text.endpoint import SpeechEndConfig
+from speechio.stt.transcriber import Transcriber
 
 
 def transcribe_audio(
-    audio,
-    *,
-    config=None,
-    model_path=None,
-    language=None,
-    word_timestamps=False,
-    format=None,
-    max_audio_seconds=None,
-    **options,
+    audio, *, config, format=None, options=None, max_audio_seconds=None, task_timeout_seconds=3600.0
 ):
-    """转写一段已有音频；路径读文件，字节或数组按声明格式转换。"""
-    transcriber = Transcriber(
-        config=config, model_path=model_path, max_audio_seconds=max_audio_seconds, **options
-    )
+    """识别一次文件或裸音频；裸音频必须声明格式。"""
+    transcriber = Transcriber(config, max_audio_seconds=max_audio_seconds)
     try:
-        # 快捷调用沿用底层的输入校验顺序，不通过 __enter__ 提前准备模型。
         if isinstance(audio, (str, PathLike)):
             return transcriber.transcribe_file(
-                audio, language=language, word_timestamps=word_timestamps
+                audio, options=options, task_timeout_seconds=task_timeout_seconds
             )
-        source = format or AudioFormat()
-        if isinstance(audio, (bytes, bytearray, memoryview)):
-            return transcriber.transcribe(
-                audio, format=source, language=language, word_timestamps=word_timestamps
-            )
-        try:
-            import numpy as np
-        except ImportError:  # pragma: no cover - 基础依赖固定包含 NumPy
-            np = None
-        if np is not None and isinstance(audio, np.ndarray):
-            return transcriber.transcribe(
-                audio, format=source, language=language, word_timestamps=word_timestamps
-            )
-        return transcriber.transcribe_chunks(
-            audio, format=source, language=language, word_timestamps=word_timestamps
-        )
+        if format is None:
+            raise STTError("INVALID_CONFIGURATION", "transcribe", "裸音频需要显式提供 AudioFormat")
+        import numpy as np
+
+        if isinstance(audio, (bytes, bytearray, memoryview, np.ndarray)):
+            return transcriber.transcribe(audio, format=format, options=options)
+        return transcriber.transcribe_chunks(audio, format=format, options=options)
     finally:
         transcriber.__exit__(*exc_info())
 
 
 def transcribe_url(
-    url,
-    *,
-    config=None,
-    engine=None,
-    language=None,
-    word_timestamps=False,
-    max_audio_seconds=None,
+    url, *, config, options=None, max_audio_seconds=None, task_timeout_seconds=3600.0
 ):
-    """转写服务可访问的文件地址；不在本机下载，调用结束后释放引擎。"""
-    transcriber = Transcriber(config=config, engine=engine, max_audio_seconds=max_audio_seconds)
+    """识别服务可访问的文件地址，不在本机下载。"""
+    transcriber = Transcriber(config, max_audio_seconds=max_audio_seconds)
     try:
-        return transcriber.transcribe_url(url, language=language, word_timestamps=word_timestamps)
+        return transcriber.transcribe_url(
+            url, options=options, task_timeout_seconds=task_timeout_seconds
+        )
     finally:
         transcriber.__exit__(*exc_info())
 
 
-class StreamTranscriber:
+class MicrophoneTranscriber:
     """持续转写麦克风；按段交付最终结果，预览走回调。"""
 
     def __init__(
         self,
+        config,
         *,
-        config=None,
-        model_path=None,
-        vad_model=None,
-        language=None,
-        on_partial=None,
-        input_device=None,
+        options=None,
+        microphone=None,
+        vad=None,
+        segmentation=None,
+        endpoint=None,
+        on_partial_text=None,
         realtime=True,
         completion_mode="auto",
-        drain_timeout=10.0,
-        **options,
+        drain_timeout_seconds=10.0,
     ):
-        if on_partial is not None and not callable(on_partial):
-            raise ASRError("INVALID_CONFIGURATION", "configure", "on_partial 应为可调用对象")
-        self._model_path = model_path
-        self._config = config
-        self._options = options
-        self._completion_mode = completion_mode
-        # 默认使用随包分发的 Silero v6；显式路径优先，启动前就检查文件。
-        self._vad_model = Path(vad_model) if vad_model is not None else default_vad_model()
-        if not self._vad_model.is_file():
-            raise ASRError(
-                "INVALID_CONFIGURATION", "configure", f"检测模型不存在：{self._vad_model}"
-            )
-        self._language = language
-        self._on_partial = on_partial
-        self._input_device = input_device
+        self._initialize(
+            config,
+            None,
+            options,
+            microphone,
+            vad,
+            segmentation,
+            endpoint,
+            on_partial_text,
+            realtime,
+            completion_mode,
+            drain_timeout_seconds,
+        )
+
+    @classmethod
+    def from_adapter(
+        cls,
+        adapter,
+        *,
+        options=None,
+        microphone=None,
+        vad=None,
+        segmentation=None,
+        endpoint=None,
+        on_partial_text=None,
+        realtime=True,
+        completion_mode="auto",
+        drain_timeout_seconds=10.0,
+    ):
+        """使用自定义识别适配器采集麦克风。"""
+        validate_engine(adapter)
+        instance = cls.__new__(cls)
+        instance._initialize(
+            None,
+            adapter,
+            options,
+            microphone,
+            vad,
+            segmentation,
+            endpoint,
+            on_partial_text,
+            realtime,
+            completion_mode,
+            drain_timeout_seconds,
+        )
+        return instance
+
+    def _initialize(
+        self,
+        config,
+        adapter,
+        options,
+        microphone,
+        vad,
+        segmentation,
+        endpoint,
+        on_partial_text,
+        realtime,
+        completion_mode,
+        drain_timeout_seconds,
+    ):
+        from speechio.stt.session.session import _validate_timeout
+
+        if on_partial_text is not None and not callable(on_partial_text):
+            raise STTError("INVALID_CONFIGURATION", "configure", "on_partial_text 应为函数")
+        if completion_mode not in ("auto", "final"):
+            raise STTError("INVALID_CONFIGURATION", "configure", "麦克风入口只支持 auto / final")
+        _validate_timeout(drain_timeout_seconds)
+        self._config, self._adapter = config, adapter
+        self._options = resolve_options(options)
+        self._microphone_config = microphone if microphone is not None else MicrophoneConfig()
+        self._vad = vad if vad is not None else VadConfig(model_path=default_vad_model())
+        if not isinstance(self._vad, VadConfig) or not Path(self._vad.model_path).is_file():
+            raise STTError("INVALID_CONFIGURATION", "configure", "VAD 模型路径不存在")
+        self._segmentation = segmentation if segmentation is not None else SegmentationConfig()
+        self._endpoint = endpoint if endpoint is not None else SpeechEndConfig()
+        self._on_partial = on_partial_text
         self._realtime = realtime
-        self._drain_timeout = drain_timeout
-        self._runtime = None
-        self._session = None
-        self._microphone = None
+        self._completion_mode = completion_mode
+        self._drain_timeout = drain_timeout_seconds
+        self._runtime = self._session = self._microphone = None
         self._ending = False
 
     def __enter__(self):
@@ -127,7 +165,7 @@ class StreamTranscriber:
             if exc is None:
                 raise
             # 清理失败不能覆盖触发退出的推理错误或使用者异常。
-            exc.add_note(f"关闭 StreamTranscriber 时发生异常：{cleanup_error!r}")
+            exc.add_note(f"关闭 MicrophoneTranscriber 时发生异常：{cleanup_error!r}")
             for note in getattr(cleanup_error, "__notes__", ()):
                 exc.add_note(note)
         return False
@@ -140,36 +178,38 @@ class StreamTranscriber:
         """加载模型、打开麦克风并建立自动分句会话。"""
         if self._session is not None:
             return self
-        config, engine = resolve_model_options(
-            self._config, model_path=self._model_path, **self._options
+        capabilities = (
+            engine_capabilities(self._config)
+            if self._adapter is None
+            else validate_engine(self._adapter)
         )
-        capabilities = config.capabilities if engine is None else validate_engine(engine)
         if self._realtime and capabilities.realtime_mode is None:
-            raise ASRError(
+            raise STTError(
                 "BACKEND_INCOMPATIBLE",
                 "configure",
                 "所选模型不支持实时预览；请选流式模型，或设置 realtime=False 仅获取分段最终结果",
             )
-        runtime = ASRRuntime(
-            config,
-            engine=engine,
-            realtime=RealtimeConfig(mode=capabilities.realtime_mode) if self._realtime else None,
+        realtime = RealtimeConfig(mode=capabilities.realtime_mode) if self._realtime else None
+        runtime = (
+            STTRuntime(self._config, realtime=realtime)
+            if self._adapter is None
+            else STTRuntime.from_adapter(self._adapter, realtime=realtime)
         )
         microphone = None
         try:
             runtime.prepare()
-            microphone = MicrophoneInput(MicrophoneConfig(device_index=self._input_device))
+            microphone = MicrophoneInput(self._microphone_config)
             format = microphone.prepare()
             session = runtime.create_auto_session(
                 config=SessionConfig(
                     format=format,
-                    language=self._language,
+                    options=self._options,
                     realtime=self._realtime,
                     completion_mode=self._completion_mode,
                 ),
-                vad=VadConfig(model_path=self._vad_model),
-                segmentation=SegmentationConfig(),
-                endpoint=EndpointConfig(),
+                vad=self._vad,
+                segmentation=self._segmentation,
+                endpoint=self._endpoint,
             )
             microphone.start()
         except BaseException:
@@ -199,10 +239,10 @@ class StreamTranscriber:
         while result.status == "pending":
             remaining = deadline - monotonic()
             if remaining <= 0:
-                raise ASRError("CLOSE_TIMEOUT", "close_microphone", "等待采集结束超时")
+                raise STTError("CLOSE_TIMEOUT", "close_microphone", "等待采集结束超时")
             result = microphone.close(timeout=remaining)
         if result.status != "ok":
-            error = ASRError("MICROPHONE_CLEANUP_FAILED", "close_microphone", "采集器清理失败")
+            error = STTError("MICROPHONE_CLEANUP_FAILED", "close_microphone", "采集器清理失败")
             error.cleanup_errors = result.errors
             raise error
 
@@ -233,7 +273,7 @@ class StreamTranscriber:
                 result = runtime.close()
                 if result.status != "ok":
                     code = "CLOSE_TIMEOUT" if result.status == "pending" else "CLEANUP_FAILED"
-                    error = ASRError(code, "close", "运行时关闭未成功")
+                    error = STTError(code, "close", "运行时关闭未成功")
                     error.cleanup_errors = result.errors
                     raise error
             except BaseException as exc:
@@ -292,20 +332,34 @@ class StreamTranscriber:
             return None
         if event.kind in ("failed", "realtime_failed", "correction_failed"):
             error = event.error
-            raise ASRError(error.code, error.operation, error.message)
+            raise STTError(error.code, error.operation, error.message)
         return None
 
 
-def transcribe_stream(
-    *, config=None, model_path=None, vad_model=None, language=None, on_partial=None, **options
+def transcribe_microphone(
+    *,
+    config,
+    options=None,
+    microphone=None,
+    vad=None,
+    segmentation=None,
+    endpoint=None,
+    on_partial_text=None,
+    realtime=True,
+    completion_mode="auto",
+    drain_timeout_seconds=10.0,
 ):
-    """持续转写麦克风；每次产出一段的最终结果，默认使用内置检测模型。"""
-    with StreamTranscriber(
-        config=config,
-        model_path=model_path,
-        vad_model=vad_model,
-        language=language,
-        on_partial=on_partial,
-        **options,
+    """快捷采集麦克风，每次产出一个音频段的最终结果。"""
+    with MicrophoneTranscriber(
+        config,
+        options=options,
+        microphone=microphone,
+        vad=vad,
+        segmentation=segmentation,
+        endpoint=endpoint,
+        on_partial_text=on_partial_text,
+        realtime=realtime,
+        completion_mode=completion_mode,
+        drain_timeout_seconds=drain_timeout_seconds,
     ) as transcriber:
         yield from transcriber

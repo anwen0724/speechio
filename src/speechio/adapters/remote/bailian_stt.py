@@ -8,8 +8,8 @@ from math import isfinite
 
 import numpy as np
 
-from speechio.adapters.contracts import BaseTranscriptionEngine
-from speechio.errors import ASRError
+from speechio.adapters.contracts import STTAdapter
+from speechio.errors import STTError
 from speechio.resources import CloseError, CloseResult
 from speechio.stt.results import Transcript, WordTimestamp
 
@@ -60,20 +60,22 @@ def transcript_from_sentences(text, sentences, *, word_timestamps, audio_samples
     )
 
 
-class BailianEngine(BaseTranscriptionEngine):
+class BailianEngine(STTAdapter):
     """拥有请求客户端及本引擎创建的流；模型名始终使用调用方明确选择。"""
 
     def __init__(self, config):
         self.config = config
         if not config.api_key or any(not 33 <= ord(char) <= 126 for char in config.api_key):
-            raise ASRError("INVALID_CONFIGURATION", "configure", "百炼需要有效的 api_key")
+            raise STTError("INVALID_CONFIGURATION", "configure", "百炼需要有效的 api_key")
         self._http = None
         self._prepared = False
         self._streams = set()
 
     @property
     def capabilities(self):
-        return self.config.capabilities
+        from speechio.models.factory import engine_capabilities
+
+        return engine_capabilities(self.config)
 
     def prepare(self):
         """创建客户端但不提交音频；缺依赖时只提示安装，不自行安装。"""
@@ -83,7 +85,7 @@ class BailianEngine(BaseTranscriptionEngine):
             import httpx
             from websockets.sync.client import connect  # noqa: F401
         except ImportError:
-            raise ASRError(
+            raise STTError(
                 "DEPENDENCY_MISSING", "prepare", '请安装远程依赖：pip install "speechio[remote]"'
             ) from None
         if not self.capabilities.streaming:
@@ -112,7 +114,7 @@ class BailianEngine(BaseTranscriptionEngine):
             finally:
                 stream.close()
         if len(audio) > 300 * 16000:
-            raise ASRError("AUDIO_TOO_LONG", "transcribe", "百炼短音频最多 300 秒，不自动切分")
+            raise STTError("AUDIO_TOO_LONG", "transcribe", "百炼短音频最多 300 秒，不自动切分")
         pcm = pcm_bytes(audio)
         buffer = io.BytesIO()
         with wave.open(buffer, "wb") as output:
@@ -120,7 +122,7 @@ class BailianEngine(BaseTranscriptionEngine):
             output.writeframes(pcm)
         encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
         if len(encoded) > 10 * 1024 * 1024:
-            raise ASRError(
+            raise STTError(
                 "AUDIO_TOO_LARGE", "transcribe", "音频 Base64 超过百炼直接提交的 10 MB 限制"
             )
         parameters = {"format": "wav", "sample_rate": "16000"}
@@ -154,23 +156,23 @@ class BailianEngine(BaseTranscriptionEngine):
                 },
             )
         except httpx.TimeoutException:
-            raise ASRError("REMOTE_TIMEOUT", "transcribe", "等待百炼响应超时，未自动重试") from None
+            raise STTError("REMOTE_TIMEOUT", "transcribe", "等待百炼响应超时，未自动重试") from None
         except httpx.HTTPError:
-            raise ASRError(
+            raise STTError(
                 "REMOTE_CONNECTION", "transcribe", "百炼请求连接失败，未自动重试"
             ) from None
         if response.status_code != 200:
             code = {401: "REMOTE_AUTH", 403: "REMOTE_AUTH", 429: "REMOTE_RATE_LIMIT"}.get(
                 response.status_code, "REMOTE_SERVICE"
             )
-            raise ASRError(code, "transcribe", f"百炼请求失败，HTTP {response.status_code}")
+            raise STTError(code, "transcribe", f"百炼请求失败，HTTP {response.status_code}")
         try:
             data = response.json()
             text = data["output"]["text"]
             if not isinstance(text, str):
                 raise ValueError
         except (ValueError, KeyError, TypeError):
-            raise ASRError("REMOTE_PROTOCOL", "transcribe", "百炼响应缺少有效的识别文本") from None
+            raise STTError("REMOTE_PROTOCOL", "transcribe", "百炼响应缺少有效的识别文本") from None
         output = data["output"]
         sentences = output.get("sentences") or (
             [output["sentence"]] if output.get("sentence") else []

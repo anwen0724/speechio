@@ -9,7 +9,7 @@ from uuid import uuid4
 
 import numpy as np
 
-from speechio.errors import ASRError
+from speechio.errors import STTError
 from speechio.models.config import LocalModelConfig, RemoteModelConfig
 from speechio.resources import CloseError
 from speechio.stt.results import Transcript
@@ -19,13 +19,13 @@ from speechio.stt.session.session import EventError, SessionEvent
 
 @dataclass(frozen=True, kw_only=True)
 class RealtimeConfig:
-    """一个实时角色；model 或 engine 指定拥有者，缺省共用最终引擎。"""
+    """一个实时角色；配置省略时共用主模型，自定义适配器使用 from_adapter。"""
 
     mode: str = "snapshot"
-    model: LocalModelConfig | RemoteModelConfig | None = None
-    engine: object = None
-    interval: float = 0.2
-    initial_delay: float = 0.2
+    config: LocalModelConfig | RemoteModelConfig | None = None
+    _adapter: object = field(default=None, init=False, repr=False, compare=False)
+    interval_seconds: float = 0.2
+    initial_delay_seconds: float = 0.2
     min_snapshot_samples: int = 800
     max_units: int = 32
     max_audio_samples: int = 9600000
@@ -38,17 +38,17 @@ class RealtimeConfig:
         if type(self.acoustic_boundaries) is not bool or (
             self.acoustic_boundaries and self.mode != "snapshot"
         ):
-            raise ASRError("BACKEND_INCOMPATIBLE", "configure", "声学触发需要快照实时角色")
+            raise STTError("BACKEND_INCOMPATIBLE", "configure", "声学触发需要快照实时角色")
         if (
             not isinstance(self.boundary_sensitivity, (int, float))
             or not 0 <= self.boundary_sensitivity <= 1
         ):
-            raise ASRError("INVALID_CONFIGURATION", "configure", "声学灵敏度无效")
+            raise STTError("INVALID_CONFIGURATION", "configure", "声学灵敏度无效")
         if (
             not isinstance(self.boundary_followup_delays, tuple)
             or len(self.boundary_followup_delays) > 8
         ):
-            raise ASRError("INVALID_CONFIGURATION", "configure", "声学补识别最多八个时间")
+            raise STTError("INVALID_CONFIGURATION", "configure", "声学补识别最多八个时间")
         for value in (*self.boundary_followup_delays, self.boundary_fallback_interval):
             if (
                 not isinstance(value, (int, float))
@@ -56,34 +56,69 @@ class RealtimeConfig:
                 or not isfinite(value)
                 or value < 0
             ):
-                raise ASRError("INVALID_CONFIGURATION", "configure", "声学时间应为有限非负秒数")
+                raise STTError("INVALID_CONFIGURATION", "configure", "声学时间应为有限非负秒数")
         if self.boundary_fallback_interval == 0:
-            raise ASRError("INVALID_CONFIGURATION", "configure", "声学回退间隔应大于零")
+            raise STTError("INVALID_CONFIGURATION", "configure", "声学回退间隔应大于零")
         object.__setattr__(
             self, "boundary_followup_delays", tuple(sorted(set(self.boundary_followup_delays)))
         )
         if (
             self.mode not in ("snapshot", "streaming")
             or (
-                self.model is not None
-                and not isinstance(self.model, (LocalModelConfig, RemoteModelConfig))
+                self.config is not None
+                and not isinstance(self.config, (LocalModelConfig, RemoteModelConfig))
             )
-            or (self.model is not None and self.engine is not None)
+            or (self.config is not None and self._adapter is not None)
         ):
-            raise ASRError("INVALID_CONFIGURATION", "configure", "实时模式或模型配置无效")
-        for seconds in (self.interval, self.initial_delay):
+            raise STTError("INVALID_CONFIGURATION", "configure", "实时模式或模型配置无效")
+        for seconds in (self.interval_seconds, self.initial_delay_seconds):
             if (
                 not isinstance(seconds, (int, float))
                 or isinstance(seconds, bool)
                 or not isfinite(seconds)
                 or seconds < 0
             ):
-                raise ASRError("INVALID_CONFIGURATION", "configure", "实时秒数应为有限非负数")
-        if self.interval == 0:
-            raise ASRError("INVALID_CONFIGURATION", "configure", "实时执行间隔应大于零")
+                raise STTError("INVALID_CONFIGURATION", "configure", "实时秒数应为有限非负数")
+        if self.interval_seconds == 0:
+            raise STTError("INVALID_CONFIGURATION", "configure", "实时执行间隔应大于零")
         for limit in (self.min_snapshot_samples, self.max_units, self.max_audio_samples):
             if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
-                raise ASRError("INVALID_CONFIGURATION", "configure", "实时容量应为正整数")
+                raise STTError("INVALID_CONFIGURATION", "configure", "实时容量应为正整数")
+
+    @classmethod
+    def from_adapter(
+        cls,
+        adapter,
+        *,
+        mode="snapshot",
+        interval_seconds=0.2,
+        initial_delay_seconds=0.2,
+        min_snapshot_samples=800,
+        max_units=32,
+        max_audio_samples=9600000,
+        acoustic_boundaries=False,
+        boundary_sensitivity=0.6,
+        boundary_followup_delays=(0.05, 0.2),
+        boundary_fallback_interval=0.2,
+    ):
+        """使用已经构造的识别适配器；运行时负责共享与关闭。"""
+        from speechio.adapters.contracts import validate_engine
+
+        validate_engine(adapter)
+        instance = cls(
+            mode=mode,
+            interval_seconds=interval_seconds,
+            initial_delay_seconds=initial_delay_seconds,
+            min_snapshot_samples=min_snapshot_samples,
+            max_units=max_units,
+            max_audio_samples=max_audio_samples,
+            acoustic_boundaries=acoustic_boundaries,
+            boundary_sensitivity=boundary_sensitivity,
+            boundary_followup_delays=boundary_followup_delays,
+            boundary_fallback_interval=boundary_fallback_interval,
+        )
+        object.__setattr__(instance, "_adapter", adapter)
+        return instance
 
 
 @dataclass
@@ -121,7 +156,7 @@ class RealtimeExecutor:
         capabilities = self.model.capabilities
         available = capabilities.snapshot if config.mode == "snapshot" else capabilities.streaming
         if not available:
-            raise ASRError("BACKEND_INCOMPATIBLE", "configure", "实时路径与模型后端不匹配")
+            raise STTError("BACKEND_INCOMPATIBLE", "configure", "实时路径与模型后端不匹配")
         self.model_lock = model_lock
         self.states = {}
         self.busy = None
@@ -135,7 +170,7 @@ class RealtimeExecutor:
         if len(self.states) >= self.config.max_units or (
             reserved + session.config.max_audio_samples > self.config.max_audio_samples
         ):
-            raise ASRError("REALTIME_CAPACITY_EXCEEDED", "start", "实时单元预留容量不足")
+            raise STTError("REALTIME_CAPACITY_EXCEEDED", "start", "实时单元预留容量不足")
 
     def add_unit(self, session, ref):
         """容量检查完成后登记本角色的独立计时、增量和流上下文。"""
@@ -224,10 +259,10 @@ class RealtimeExecutor:
                 )
             ):
                 continue
-            due = state.created_at + self.config.initial_delay
+            due = state.created_at + self.config.initial_delay_seconds
             if state.last_started is not None:
                 if not acoustic:
-                    due = max(due, state.last_started + self.config.interval)
+                    due = max(due, state.last_started + self.config.interval_seconds)
                 if acoustic and not state.boundary_pending and not followup_due:
                     fallback = state.last_started + self.config.boundary_fallback_interval
                     if state.followups:
@@ -272,9 +307,9 @@ class RealtimeExecutor:
             try:
                 stream.close()
             except Exception as exc:
-                code = exc.code if isinstance(exc, ASRError) else "CLEANUP_FAILED"
-                operation = exc.operation if isinstance(exc, ASRError) else "close_stream"
-                message = exc.message if isinstance(exc, ASRError) else str(exc)
+                code = exc.code if isinstance(exc, STTError) else "CLEANUP_FAILED"
+                operation = exc.operation if isinstance(exc, STTError) else "close_stream"
+                message = exc.message if isinstance(exc, STTError) else str(exc)
                 self.errors.append(CloseError(code, operation, message))
                 return EventError(code, operation, message)
         return None
@@ -284,7 +319,7 @@ class RealtimeExecutor:
         if cleaning:
             return None, self._close_stream(state)
         if state.stream is None:
-            state.stream = self.model._create_stream(state.session.config.language)
+            state.stream = self.model._create_stream(state.session.config.options.language)
         if pcm:
             array = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768
             state.stream.accept_audio(array)
@@ -296,10 +331,10 @@ class RealtimeExecutor:
             state.stream.decode()
             result, error = state.stream.get_result(), None
         if not isinstance(result, Transcript):
-            raise ASRError("BACKEND_INCOMPATIBLE", "read_stream", "流应返回 Transcript")
+            raise STTError("BACKEND_INCOMPATIBLE", "read_stream", "流应返回 Transcript")
         return replace(
             result,
-            requested_language=state.session.config.language,
+            requested_language=state.session.config.options.language,
             segments=deepcopy(result.segments),
             words=deepcopy(result.words),
             backend_metadata=deepcopy(result.backend_metadata),
@@ -339,8 +374,8 @@ class RealtimeExecutor:
                             state, pcm, finishing=finishing, cleaning=cleaning
                         )
                     else:
-                        result = self.model._snapshot(pcm, state.session.config.language)
-                except ASRError as exc:
+                        result = self.model._snapshot(pcm, state.session.config.options.language)
+                except STTError as exc:
                     error = EventError(exc.code, exc.operation, exc.message)
                     self._close_stream(state)
                 except Exception as exc:
@@ -401,15 +436,15 @@ class RealtimeGroup:
     def __init__(self, runtime, accurate, ultrafast=None):
         if ultrafast is not None and (
             not isinstance(ultrafast, RealtimeConfig)
-            or (ultrafast.model is None and ultrafast.engine is None)
+            or (ultrafast.config is None and ultrafast._adapter is None)
         ):
-            raise ASRError("INVALID_CONFIGURATION", "configure", "极速角色需要明确的模型或引擎")
+            raise STTError("INVALID_CONFIGURATION", "configure", "极速角色需要明确的模型或引擎")
         self.runtime = runtime
         self.executors = {}
         for role, config in (("accurate", accurate), ("ultrafast", ultrafast)):
             if config is None:
                 continue
-            model, lock = runtime._engines.assign(model=config.model, engine=config.engine)
+            model, lock = runtime._engines.assign(config=config.config, adapter=config._adapter)
             self.executors[role] = RealtimeExecutor(runtime, config, role, model, lock)
 
     @property

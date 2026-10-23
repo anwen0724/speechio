@@ -6,7 +6,8 @@ from unittest.mock import patch
 
 import numpy as np
 
-from speechio import AudioFormat, ModelConfig, Transcriber
+from speechio import AudioFormat, LocalModelConfig, Transcriber
+from speechio.stt.options import TranscriptionOptions
 from tests.runtime import test_transcriber
 
 
@@ -22,9 +23,13 @@ class TimestampTests(unittest.TestCase):
             "faster_whisper.BatchedInferencePipeline.transcribe",
             return_value=(iter([segment]), info),
         ):
-            with Transcriber(ModelConfig(engine="whisper", model_path=self.path)) as recognizer:
+            with Transcriber(
+                LocalModelConfig(adapter="whisper", model_path=self.path)
+            ) as recognizer:
                 result = recognizer.transcribe(
-                    np.ones(16000, np.int16), format=AudioFormat(), word_timestamps=True
+                    np.ones(16000, np.int16),
+                    format=AudioFormat(),
+                    options=TranscriptionOptions(word_timestamps=True),
                 )
         self.assertEqual(result.timestamp_status, "reported")
         self.assertEqual((result.words[0].start_sample, result.words[0].end_sample), (2000, 8000))
@@ -40,9 +45,13 @@ class TimestampTests(unittest.TestCase):
                 info,
             ),
         ):
-            with Transcriber(ModelConfig(engine="whisper", model_path=self.path)) as recognizer:
+            with Transcriber(
+                LocalModelConfig(adapter="whisper", model_path=self.path)
+            ) as recognizer:
                 result = recognizer.transcribe(
-                    np.ones(16000, np.int16), format=AudioFormat(), word_timestamps=True
+                    np.ones(16000, np.int16),
+                    format=AudioFormat(),
+                    options=TranscriptionOptions(word_timestamps=True),
                 )
         self.assertEqual(result.text, "hello")
         self.assertEqual(result.timestamp_status, "unavailable")

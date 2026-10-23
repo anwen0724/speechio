@@ -6,15 +6,15 @@ import wave
 from pathlib import Path
 from threading import Event, Thread
 
-from speechio import AudioFormat, TTSError, synthesize
-from speechio.adapters.contracts import BaseSynthesisEngine, SynthesisCapabilities
+from speechio import AudioFormat, TTSError
+from speechio.adapters.contracts import TTSAdapter, TTSCapabilities
 from speechio.audio.results import AudioResult
 from speechio.tts.options import SynthesisOptions
 from speechio.tts.synthesizer import Synthesizer
 
 
-class RecordingEngine(BaseSynthesisEngine):
-    capabilities = SynthesisCapabilities(default_sample_rate=24000, synthesis=True)
+class RecordingEngine(TTSAdapter):
+    capabilities = TTSCapabilities(default_sample_rate=24000, synthesis=True)
 
     def __init__(self):
         self.received = []
@@ -43,7 +43,7 @@ class SynthesisTests(unittest.TestCase):
             def close(self):
                 released.set()
 
-        synth = Synthesizer(engine=BlockingEngine())
+        synth = Synthesizer.from_adapter(adapter=BlockingEngine())
         outputs = []
         worker = Thread(
             target=lambda: outputs.append(
@@ -67,7 +67,7 @@ class SynthesisTests(unittest.TestCase):
                 raise RuntimeError("cleanup failed")
 
         with self.assertRaisesRegex(ValueError, "body failure") as caught:
-            with Synthesizer(engine=BrokenClose()):
+            with Synthesizer.from_adapter(adapter=BrokenClose()):
                 raise ValueError("body failure")
         self.assertTrue(caught.exception.__notes__)
 
@@ -81,22 +81,23 @@ class SynthesisTests(unittest.TestCase):
             def close(self):
                 released.set()
 
-        synth = Synthesizer(engine=BrokenPreparation())
+        synth = Synthesizer.from_adapter(adapter=BrokenPreparation())
         with self.assertRaises(TTSError):
             synth.synthesize("Hello.", options=SynthesisOptions(voice="test"))
         self.assertTrue(released.wait(1))
 
     def test_unsupported_options_are_rejected_before_model_execution(self):
         engine = RecordingEngine()
-        with Synthesizer(engine=engine) as synth:
+        with Synthesizer.from_adapter(adapter=engine) as synth:
             with self.assertRaises(TTSError) as caught:
                 synth.synthesize("Hello.", options=SynthesisOptions(voice="test", speed=2))
             self.assertEqual(caught.exception.code, "CAPABILITY_UNSUPPORTED")
             self.assertEqual(engine.received, [])
 
-    def test_convenience_function_closes_engine_and_save_does_not_overwrite(self):
+    def test_context_closes_adapter_and_save_does_not_overwrite(self):
         engine = RecordingEngine()
-        audio = synthesize("Hello.", engine=engine, options=SynthesisOptions(voice="test"))
+        with Synthesizer.from_adapter(engine) as synthesizer:
+            audio = synthesizer.synthesize("Hello.", options=SynthesisOptions(voice="test"))
         self.assertEqual(engine.closes, 1)
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "audio.wav"
@@ -107,7 +108,7 @@ class SynthesisTests(unittest.TestCase):
 
     def test_complete_audio_can_be_reused_and_saved_as_wav(self):
         engine = RecordingEngine()
-        synthesizer = Synthesizer(engine=engine)
+        synthesizer = Synthesizer.from_adapter(adapter=engine)
         options = SynthesisOptions(voice="test")
         result = synthesizer.synthesize("Hello.", options=options)
         second = synthesizer.synthesize("你好。", options=options)

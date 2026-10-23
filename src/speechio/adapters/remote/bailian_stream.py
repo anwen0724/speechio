@@ -7,8 +7,8 @@ from uuid import uuid4
 
 from websockets.sync.client import reconnect
 
-from speechio.adapters.contracts import StreamingSession
-from speechio.errors import ASRError
+from speechio.adapters.contracts import STTStream
+from speechio.errors import STTError
 from speechio.stt.results import Transcript
 
 
@@ -19,7 +19,7 @@ class _DirectConnection(reconnect):
         return exc
 
 
-class BailianStream(StreamingSession):
+class BailianStream(STTStream):
     """每个音频单元拥有独立连接；仅在 task-finished 后交付排空结果。"""
 
     def __init__(self, config, language, on_close):
@@ -74,11 +74,11 @@ class BailianStream(StreamingSession):
                     exc.response.status_code,
                     "REMOTE_SERVICE",
                 )
-                raise ASRError(code, "create_stream", "百炼流式连接被服务端拒绝") from None
+                raise STTError(code, "create_stream", "百炼流式连接被服务端拒绝") from None
             if isinstance(exc, TimeoutError):
-                raise ASRError("REMOTE_TIMEOUT", "create_stream", "建立百炼流式任务超时") from None
+                raise STTError("REMOTE_TIMEOUT", "create_stream", "建立百炼流式任务超时") from None
             if isinstance(exc, (OSError, WebSocketException)):
-                raise ASRError("REMOTE_CONNECTION", "create_stream", "百炼流式连接失败") from None
+                raise STTError("REMOTE_CONNECTION", "create_stream", "百炼流式连接失败") from None
             raise
 
     def _send(self, message):
@@ -88,7 +88,7 @@ class BailianStream(StreamingSession):
         try:
             self._ws.send(message)
         except (OSError, WebSocketException):
-            raise ASRError("REMOTE_CONNECTION", "stream", "百炼音频流发送失败") from None
+            raise STTError("REMOTE_CONNECTION", "stream", "百炼音频流发送失败") from None
 
     def _send_command(self, action, payload):
         self._send(
@@ -105,9 +105,9 @@ class BailianStream(StreamingSession):
         from speechio.adapters.remote.bailian_stt import pcm_bytes
 
         if self._closed or self._ending or self._finished:
-            raise ASRError("STREAM_CLOSED", "feed_audio", "百炼流已结束，不能继续输入")
+            raise STTError("STREAM_CLOSED", "feed_audio", "百炼流已结束，不能继续输入")
         if sample_rate not in (None, 16000):
-            raise ASRError("INVALID_AUDIO", "feed_audio", "百炼适配器需要 16000 Hz 标准音频")
+            raise STTError("INVALID_AUDIO", "feed_audio", "百炼适配器需要 16000 Hz 标准音频")
         pcm = pcm_bytes(audio)
         for start in range(0, len(pcm), 3200):
             frame = pcm[start : start + 3200]
@@ -123,9 +123,9 @@ class BailianStream(StreamingSession):
         except TimeoutError:
             if polling:
                 return False
-            raise ASRError("REMOTE_TIMEOUT", "stream", "等待百炼任务确认超时，未自动重试") from None
+            raise STTError("REMOTE_TIMEOUT", "stream", "等待百炼任务确认超时，未自动重试") from None
         except (OSError, WebSocketException):
-            raise ASRError("REMOTE_CONNECTION", "stream", "百炼流在确认结束前断开") from None
+            raise STTError("REMOTE_CONNECTION", "stream", "百炼流在确认结束前断开") from None
         try:
             message = json.loads(raw)
             header = message["header"]
@@ -139,7 +139,7 @@ class BailianStream(StreamingSession):
                     "Throttling": "REMOTE_RATE_LIMIT",
                     "Throttling.RateQuota": "REMOTE_RATE_LIMIT",
                 }.get(header.get("error_code"), "REMOTE_SERVICE")
-                raise ASRError(code, "stream", "百炼流式任务失败，未自动重试")
+                raise STTError(code, "stream", "百炼流式任务失败，未自动重试")
             if event == "task-started" and not self._started:
                 self._started = True
             elif event == "result-generated" and self._started:
@@ -164,7 +164,7 @@ class BailianStream(StreamingSession):
             else:
                 raise ValueError
         except (KeyError, TypeError, ValueError, AttributeError):
-            raise ASRError("REMOTE_PROTOCOL", "stream", "百炼流式事件格式或顺序无效") from None
+            raise STTError("REMOTE_PROTOCOL", "stream", "百炼流式事件格式或顺序无效") from None
         return True
 
     def _update_result(self):
@@ -198,7 +198,7 @@ class BailianStream(StreamingSession):
         if self._finished:
             return self._result
         if self._closed:
-            raise ASRError("STREAM_CLOSED", "finish_stream", "百炼流已关闭，未获得结束确认")
+            raise STTError("STREAM_CLOSED", "finish_stream", "百炼流已关闭，未获得结束确认")
         try:
             if not self._ending:
                 self._ending = True
@@ -207,7 +207,7 @@ class BailianStream(StreamingSession):
             while not self._finished:
                 remaining = deadline - monotonic()
                 if remaining <= 0:
-                    raise ASRError("REMOTE_TIMEOUT", "finish_stream", "等待百炼结束确认超时")
+                    raise STTError("REMOTE_TIMEOUT", "finish_stream", "等待百炼结束确认超时")
                 progress = self._progress_version
                 self._receive(remaining)
                 # 心跳或重复事件不延长等待，避免未完成的任务永久占用连接。

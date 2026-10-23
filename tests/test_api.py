@@ -8,25 +8,28 @@ from unittest.mock import patch
 
 import speechio
 from speechio import (
-    ASRError,
     AudioFormat,
-    BaseTranscriptionEngine,
     CloseResult,
-    EngineCapabilities,
-    StreamTranscriber,
+    LocalModelConfig,
+    MicrophoneTranscriber,
+    STTAdapter,
+    STTCapabilities,
+    STTError,
+    Transcriber,
     Transcript,
+    VadConfig,
     transcribe_audio,
-    transcribe_stream,
+    transcribe_microphone,
 )
 from speechio.bundled import default_vad_model
-from speechio.runtime.asr import ASRRuntime
-from speechio.segmentation.vad import VoiceActivity
+from speechio.stt.runtime.asr import STTRuntime
+from speechio.stt.segmentation.vad import VoiceActivity
 
 
-class RecordingEngine(BaseTranscriptionEngine):
+class RecordingEngine(STTAdapter):
     """替代模型边界，记录实际收到的样本并支持推理故障。"""
 
-    capabilities = EngineCapabilities(engine="test")
+    capabilities = STTCapabilities(engine="test")
 
     def __init__(self, *, fail=False):
         self.fail = fail
@@ -40,7 +43,7 @@ class RecordingEngine(BaseTranscriptionEngine):
     def transcribe(self, audio, language=None, *, role="final", word_timestamps=False):
         self.samples += len(audio)
         if self.fail:
-            raise ASRError("INFERENCE_FAILED", "transcribe", "controlled model failure")
+            raise STTError("INFERENCE_FAILED", "transcribe", "controlled model failure")
         return Transcript(text="recognized")
 
     def close(self):
@@ -59,12 +62,12 @@ class SpeechDetector:
         pass
 
 
-class StreamRuntime(ASRRuntime):
+class StreamRuntime(STTRuntime):
     """保留真实运行时和会话，只注入无需加载权重的检测器。"""
 
     def create_auto_session(self, **options):
         options.pop("vad")
-        return super().create_auto_session(detector_factory=SpeechDetector, **options)
+        return super().create_auto_session_from_detector(detector_factory=SpeechDetector, **options)
 
 
 class RecordingTranscriber:
@@ -72,7 +75,7 @@ class RecordingTranscriber:
 
     calls = []
 
-    def __init__(self, **options):
+    def __init__(self, config, **options):
         self.options = options
 
     def __enter__(self):
@@ -181,11 +184,11 @@ class StreamLifecycleTests(unittest.TestCase):
 
     def make_stream(self, microphone, *, fail=False):
         engine = RecordingEngine(fail=fail)
-        runtime = StreamRuntime(engine=engine)
+        runtime = StreamRuntime.from_adapter(engine)
         self.addCleanup(runtime.close)
-        self.enterContext(patch("speechio.api.ASRRuntime", return_value=runtime))
-        self.enterContext(patch("speechio.api.MicrophoneInput", return_value=microphone))
-        stream = StreamTranscriber(engine=engine, realtime=False)
+        self.enterContext(patch("speechio.stt.api.STTRuntime.from_adapter", return_value=runtime))
+        self.enterContext(patch("speechio.stt.api.MicrophoneInput", return_value=microphone))
+        stream = MicrophoneTranscriber.from_adapter(adapter=engine, realtime=False)
         stream.start()
         self.addCleanup(stream.close)
         return stream, engine, runtime
@@ -195,9 +198,9 @@ class StreamLifecycleTests(unittest.TestCase):
         microphone = FakeMicrophone(None)
         microphone.frames = [b"\xd0\x07" * 1600]
         with (
-            patch("speechio.api.ASRRuntime", StreamRuntime),
-            patch("speechio.api.MicrophoneInput", return_value=microphone),
-            StreamTranscriber(engine=engine, realtime=False) as stream,
+            patch("speechio.stt.api.STTRuntime", StreamRuntime),
+            patch("speechio.stt.api.MicrophoneInput", return_value=microphone),
+            MicrophoneTranscriber.from_adapter(adapter=engine, realtime=False) as stream,
         ):
             stream.end_input()
             transcripts = list(stream)
@@ -215,9 +218,9 @@ class StreamLifecycleTests(unittest.TestCase):
                 microphone.frames = [b"\xd0\x07" * 1600]
                 options = {} if mode == "auto" else {"completion_mode": mode}
                 with (
-                    patch("speechio.api.ASRRuntime", StreamRuntime),
-                    patch("speechio.api.MicrophoneInput", return_value=microphone),
-                    StreamTranscriber(engine=engine, **options) as stream,
+                    patch("speechio.stt.api.STTRuntime", StreamRuntime),
+                    patch("speechio.stt.api.MicrophoneInput", return_value=microphone),
+                    MicrophoneTranscriber.from_adapter(adapter=engine, **options) as stream,
                 ):
                     stream.end_input()
                     transcripts = list(stream)
@@ -251,7 +254,7 @@ class StreamLifecycleTests(unittest.TestCase):
         stream, engine, runtime = self.make_stream(microphone, fail=True)
         stream.end_input()
 
-        with self.assertRaises(ASRError) as caught:
+        with self.assertRaises(STTError) as caught:
             stream.close()
 
         self.assertEqual(caught.exception.code, "INFERENCE_FAILED")
@@ -270,40 +273,76 @@ class EntryTests(unittest.TestCase):
         ):
             with self.subTest(audio=audio):
                 engine = RecordingEngine()
-                with self.assertRaises(ASRError) as caught:
-                    transcribe_audio(audio, engine=engine)
+                transcriber = Transcriber.from_adapter(engine)
+                try:
+                    with self.assertRaises(STTError) as caught:
+                        if isinstance(audio, str):
+                            transcriber.transcribe_file(audio)
+                        else:
+                            transcriber.transcribe(audio, format=AudioFormat())
+                finally:
+                    transcriber.close()
                 self.assertEqual(caught.exception.code, code)
                 self.assertEqual(engine.preparations, 0)
                 self.assertTrue(engine.closed)
         engine = RecordingEngine()
-        self.assertEqual(transcribe_audio(b"\xd0\x07" * 1600, engine=engine).text, "recognized")
+        with Transcriber.from_adapter(engine) as transcriber:
+            self.assertEqual(
+                transcriber.transcribe(b"\xd0\x07" * 1600, format=AudioFormat()).text, "recognized"
+            )
         self.assertEqual(engine.preparations, 1)
         self.assertTrue(engine.closed)
 
     def test_audio_entry_dispatches_by_input_type(self):
         RecordingTranscriber.calls = []
-        with patch("speechio.api.Transcriber", RecordingTranscriber):
-            self.assertEqual(transcribe_audio("a.wav").text, "file")
-            self.assertEqual(transcribe_audio(b"\x00\x00").text, "audio")
-            self.assertEqual(transcribe_audio([b"\x00\x00"]).text, "chunks")
+        with patch("speechio.stt.api.Transcriber", RecordingTranscriber):
+            self.assertEqual(
+                transcribe_audio(
+                    "a.wav", config=LocalModelConfig(adapter="whisper", model_path="models/tiny")
+                ).text,
+                "file",
+            )
+            self.assertEqual(
+                transcribe_audio(
+                    b"\x00\x00",
+                    config=LocalModelConfig(adapter="whisper", model_path="models/tiny"),
+                    format=AudioFormat(),
+                ).text,
+                "audio",
+            )
+            self.assertEqual(
+                transcribe_audio(
+                    [b"\x00\x00"],
+                    config=LocalModelConfig(adapter="whisper", model_path="models/tiny"),
+                    format=AudioFormat(),
+                ).text,
+                "chunks",
+            )
         self.assertEqual(
             [call[0] for call in RecordingTranscriber.calls], ["file", "audio", "chunks"]
         )
 
-    def test_entry_names_are_public_and_runtime_is_not(self):
-        for name in ("transcribe_audio", "transcribe_stream", "Transcriber", "StreamTranscriber"):
+    def test_entry_names_are_public(self):
+        for name in (
+            "transcribe_audio",
+            "transcribe_microphone",
+            "Transcriber",
+            "MicrophoneTranscriber",
+        ):
             self.assertIn(name, speechio.__all__)
-        self.assertNotIn("ASRRuntime", speechio.__all__)
-        self.assertFalse(hasattr(speechio, "ASRRuntime"))
+        self.assertIn("STTRuntime", speechio.__all__)
+        self.assertTrue(hasattr(speechio, "STTRuntime"))
 
     def test_stream_uses_bundled_vad_model_by_default(self):
         session = FakeSession([event("final", "hello")])
         runtime = FakeRuntime(session)
         with (
-            patch("speechio.api.ASRRuntime", lambda *args, **kwargs: runtime),
-            patch("speechio.api.MicrophoneInput", FakeMicrophone),
+            patch("speechio.stt.api.STTRuntime", lambda *args, **kwargs: runtime),
+            patch("speechio.stt.api.MicrophoneInput", FakeMicrophone),
         ):
-            for _ in transcribe_stream(engine="whisper", model_path="models/tiny"):
+            for _ in transcribe_microphone(
+                config=LocalModelConfig(adapter="whisper", model_path="models/tiny")
+            ):
                 break
         self.assertEqual(runtime.options["vad"].model_path, default_vad_model())
 
@@ -314,18 +353,22 @@ class EntryTests(unittest.TestCase):
             session = FakeSession([event("final", "hello")])
             runtime = FakeRuntime(session)
             with (
-                patch("speechio.api.ASRRuntime", lambda *args, **kwargs: runtime),
-                patch("speechio.api.MicrophoneInput", FakeMicrophone),
+                patch("speechio.stt.api.STTRuntime", lambda *args, **kwargs: runtime),
+                patch("speechio.stt.api.MicrophoneInput", FakeMicrophone),
             ):
-                for _ in transcribe_stream(
-                    engine="whisper", model_path="models/tiny", vad_model=custom
+                for _ in transcribe_microphone(
+                    config=LocalModelConfig(adapter="whisper", model_path="models/tiny"),
+                    vad=VadConfig(model_path=custom),
                 ):
                     break
         self.assertEqual(runtime.options["vad"].model_path, custom)
 
     def test_stream_rejects_missing_custom_vad_model(self):
-        with self.assertRaises(ASRError) as caught:
-            StreamTranscriber(engine="whisper", model_path="models/tiny", vad_model="missing.onnx")
+        with self.assertRaises(STTError) as caught:
+            MicrophoneTranscriber(
+                config=LocalModelConfig(adapter="whisper", model_path="models/tiny"),
+                vad=VadConfig(model_path="missing.onnx"),
+            )
         self.assertEqual(caught.exception.code, "INVALID_CONFIGURATION")
 
     def test_stream_delivers_final_and_partial(self):
@@ -338,11 +381,12 @@ class EntryTests(unittest.TestCase):
         runtime = FakeRuntime(session)
         partials = []
         with (
-            patch("speechio.api.ASRRuntime", lambda *args, **kwargs: runtime),
-            patch("speechio.api.MicrophoneInput", FakeMicrophone),
+            patch("speechio.stt.api.STTRuntime", lambda *args, **kwargs: runtime),
+            patch("speechio.stt.api.MicrophoneInput", FakeMicrophone),
         ):
-            for transcript in transcribe_stream(
-                engine="whisper", model_path="models/tiny", on_partial=partials.append
+            for transcript in transcribe_microphone(
+                config=LocalModelConfig(adapter="whisper", model_path="models/tiny"),
+                on_partial_text=partials.append,
             ):
                 self.assertEqual(transcript.text, "hello")
                 break
@@ -354,11 +398,13 @@ class EntryTests(unittest.TestCase):
         session = FakeSession([event("failed", error=error)])
         runtime = FakeRuntime(session)
         with (
-            patch("speechio.api.ASRRuntime", lambda *args, **kwargs: runtime),
-            patch("speechio.api.MicrophoneInput", FakeMicrophone),
+            patch("speechio.stt.api.STTRuntime", lambda *args, **kwargs: runtime),
+            patch("speechio.stt.api.MicrophoneInput", FakeMicrophone),
         ):
-            with self.assertRaises(ASRError) as caught:
-                for _ in transcribe_stream(engine="whisper", model_path="models/tiny"):
+            with self.assertRaises(STTError) as caught:
+                for _ in transcribe_microphone(
+                    config=LocalModelConfig(adapter="whisper", model_path="models/tiny")
+                ):
                     pass
         self.assertEqual(caught.exception.code, "VAD_FAILED")
         self.assertTrue(session.closed)

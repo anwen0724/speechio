@@ -2,9 +2,9 @@
 
 import unittest
 
-from speechio.audio.conversion import AudioFrame
-from speechio.segmentation.gate import SegmentationConfig, SegmentationGate
-from speechio.segmentation.vad import VoiceActivity
+from speechio.stt.input import AudioFrame
+from speechio.stt.segmentation.gate import SegmentationConfig, SegmentationGate
+from speechio.stt.segmentation.vad import VoiceActivity
 
 
 class SegmentationTests(unittest.TestCase):

@@ -8,16 +8,17 @@ from unittest.mock import patch
 import numpy as np
 
 from speechio import (
-    ASRError,
     AudioFormat,
-    ModelConfig,
+    LocalModelConfig,
     RealtimeConfig,
     RuntimeLimits,
     SessionConfig,
+    STTError,
 )
-from speechio.runtime.asr import ASRRuntime
-from speechio.runtime.models.manifest import create_manifest
-from speechio.runtime.models.pinned import NEMOTRON_FILES
+from speechio.models.manifest import create_manifest
+from speechio.models.pinned import NEMOTRON_FILES
+from speechio.stt.options import TranscriptionOptions
+from speechio.stt.runtime.asr import STTRuntime
 from tests.engines.test_stream import RuntimeRecognizer, RuntimeStream
 from tests.runtime import test_transcriber
 
@@ -39,11 +40,11 @@ class RealtimeTests(unittest.TestCase):
             "faster_whisper.BatchedInferencePipeline.transcribe",
             side_effect=lambda *a, **kw: (iter([result]), info),
         ):
-            with ASRRuntime(
-                ModelConfig(engine="whisper", model_path=self.path),
+            with STTRuntime(
+                LocalModelConfig(adapter="whisper", model_path=self.path),
                 realtime=RealtimeConfig(
-                    initial_delay=0,
-                    interval=60,
+                    initial_delay_seconds=0,
+                    interval_seconds=60,
                     acoustic_boundaries=True,
                     boundary_followup_delays=(0.01, 0.05),
                     boundary_fallback_interval=60,
@@ -79,7 +80,7 @@ class RealtimeTests(unittest.TestCase):
         factory = patch("sherpa_onnx.OnlineRecognizer.from_transducer", return_value=native)
         factory.start()
         self.addCleanup(factory.stop)
-        return ModelConfig(model_path=folder, engine="nemotron")
+        return LocalModelConfig(model_path=folder, adapter="nemotron")
 
     def test_native_only_new_samples_and_short_tail_then_separate_whole_final(self):
         streams = []
@@ -91,11 +92,16 @@ class RealtimeTests(unittest.TestCase):
                 return stream
 
         config = self.nemotron_fixture(Native())
-        with ASRRuntime(
-            config, realtime=RealtimeConfig(mode="streaming", initial_delay=0, interval=10)
+        with STTRuntime(
+            config,
+            realtime=RealtimeConfig(mode="streaming", initial_delay_seconds=0, interval_seconds=10),
         ) as runtime:
             session = runtime.create_session(
-                SessionConfig(realtime=True, language="zh-CN", completion_mode="final")
+                SessionConfig(
+                    realtime=True,
+                    options=TranscriptionOptions(language="zh-CN"),
+                    completion_mode="final",
+                )
             )
             session.start()
             session.feed_audio(np.arange(512, dtype=np.int16))
@@ -126,9 +132,9 @@ class RealtimeTests(unittest.TestCase):
                 streams.append(stream)
                 return stream
 
-        with ASRRuntime(
+        with STTRuntime(
             self.nemotron_fixture(Native()),
-            realtime=RealtimeConfig(mode="streaming", initial_delay=10),
+            realtime=RealtimeConfig(mode="streaming", initial_delay_seconds=10),
         ) as runtime:
             session = runtime.create_session(
                 SessionConfig(realtime=True, format=AudioFormat(48000, 2, "float32"))
@@ -158,10 +164,11 @@ class RealtimeTests(unittest.TestCase):
             )
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=native):
-            with ASRRuntime(
-                ModelConfig(engine="whisper", model_path=self.path),
+            with STTRuntime(
+                LocalModelConfig(adapter="whisper", model_path=self.path),
                 realtime=RealtimeConfig(
-                    model=ModelConfig(engine="whisper", model_path=self.path), initial_delay=0
+                    config=LocalModelConfig(adapter="whisper", model_path=self.path),
+                    initial_delay_seconds=0,
                 ),
             ) as runtime:
                 final_session = runtime.create_session()
@@ -187,9 +194,11 @@ class RealtimeTests(unittest.TestCase):
             return iter([]), SimpleNamespace(language=None, language_probability=None)
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=native):
-            runtime = ASRRuntime(
-                ModelConfig(engine="whisper", model_path=self.path),
-                realtime=RealtimeConfig(initial_delay=0, max_units=1, max_audio_samples=2048),
+            runtime = STTRuntime(
+                LocalModelConfig(adapter="whisper", model_path=self.path),
+                realtime=RealtimeConfig(
+                    initial_delay_seconds=0, max_units=1, max_audio_samples=2048
+                ),
             )
             runtime.prepare()
             self.addCleanup(runtime.close)
@@ -201,7 +210,7 @@ class RealtimeTests(unittest.TestCase):
             self.assertEqual(change.pending_tasks, 1)
             self.assertEqual(runtime.capacity.realtime_units, 1)
             self.assertEqual(runtime.capacity.realtime_reserved_samples, 2048)
-            with self.assertRaises(ASRError) as caught:
+            with self.assertRaises(STTError) as caught:
                 session.start()
             self.assertEqual(caught.exception.code, "REALTIME_CAPACITY_EXCEEDED")
             closed = runtime.close(timeout=0)
@@ -236,8 +245,8 @@ class RealtimeTests(unittest.TestCase):
                 return super().get_result_all(stream)
 
         config = self.nemotron_fixture(Native())
-        with ASRRuntime(
-            config, realtime=RealtimeConfig(mode="streaming", initial_delay=0)
+        with STTRuntime(
+            config, realtime=RealtimeConfig(mode="streaming", initial_delay_seconds=0)
         ) as runtime:
             session = runtime.create_session(SessionConfig(realtime=True))
             session.start()
@@ -265,9 +274,9 @@ class RealtimeTests(unittest.TestCase):
             )
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=native):
-            with ASRRuntime(
-                ModelConfig(engine="whisper", model_path=self.path),
-                realtime=RealtimeConfig(initial_delay=0),
+            with STTRuntime(
+                LocalModelConfig(adapter="whisper", model_path=self.path),
+                realtime=RealtimeConfig(initial_delay_seconds=0),
             ) as runtime:
                 session = runtime.create_session(SessionConfig(realtime=True))
                 session.start()
@@ -288,12 +297,14 @@ class RealtimeTests(unittest.TestCase):
             "faster_whisper.WhisperModel",
             side_effect=[model, RuntimeError("第二模型失败"), model, model],
         ):
-            runtime = ASRRuntime(
-                ModelConfig(engine="whisper", model_path=self.path),
-                realtime=RealtimeConfig(model=ModelConfig(engine="whisper", model_path=self.path)),
+            runtime = STTRuntime(
+                LocalModelConfig(adapter="whisper", model_path=self.path),
+                realtime=RealtimeConfig(
+                    config=LocalModelConfig(adapter="whisper", model_path=self.path)
+                ),
             )
             self.addCleanup(runtime.close)
-            with self.assertRaises(ASRError) as caught:
+            with self.assertRaises(STTError) as caught:
                 runtime.prepare()
             self.assertEqual(caught.exception.code, "MODEL_LOAD")
             self.assertEqual(runtime.state, "unprepared")
@@ -304,14 +315,14 @@ class RealtimeTests(unittest.TestCase):
         clock = [0.0]
         native = (iter([]), SimpleNamespace(language=None, language_probability=None))
         with (
-            patch("speechio.runtime.realtime.monotonic", side_effect=lambda: clock[0]),
+            patch("speechio.stt.runtime.realtime.monotonic", side_effect=lambda: clock[0]),
             patch(
                 "faster_whisper.BatchedInferencePipeline.transcribe",
                 side_effect=lambda *a, **k: (iter([]), native[1]),
             ),
         ):
-            with ASRRuntime(
-                ModelConfig(engine="whisper", model_path=self.path), realtime=RealtimeConfig()
+            with STTRuntime(
+                LocalModelConfig(adapter="whisper", model_path=self.path), realtime=RealtimeConfig()
             ) as runtime:
                 session = runtime.create_session(SessionConfig(realtime=True))
                 session.start()
@@ -353,10 +364,10 @@ class RealtimeTests(unittest.TestCase):
                 return super().get_result_all(stream)
 
         config = self.nemotron_fixture(Native())
-        with ASRRuntime(
+        with STTRuntime(
             config,
             limits=RuntimeLimits(max_tasks=1),
-            realtime=RealtimeConfig(mode="streaming", initial_delay=0),
+            realtime=RealtimeConfig(mode="streaming", initial_delay_seconds=0),
         ) as runtime:
             blocker = runtime.create_session()
             blocker.start()
@@ -366,7 +377,7 @@ class RealtimeTests(unittest.TestCase):
             live = runtime.create_session(SessionConfig(realtime=True, completion_mode="final"))
             unit = live.start()
             live.feed_audio(np.ones(515, np.int16))
-            with self.assertRaises(ASRError) as caught:
+            with self.assertRaises(STTError) as caught:
                 live.end_turn()
             self.assertEqual(caught.exception.code, "TASK_CAPACITY_EXCEEDED")
             self.assertEqual(live.state, "sealed")
@@ -398,9 +409,9 @@ class RealtimeTests(unittest.TestCase):
                     raise RuntimeError("结果读取失败")
                 return super().get_result_all(stream)
 
-        runtime = ASRRuntime(
+        runtime = STTRuntime(
             self.nemotron_fixture(Native()),
-            realtime=RealtimeConfig(mode="streaming", initial_delay=0),
+            realtime=RealtimeConfig(mode="streaming", initial_delay_seconds=0),
         )
         runtime.prepare()
         self.addCleanup(runtime.close)
@@ -421,16 +432,16 @@ class RealtimeTests(unittest.TestCase):
 
     def test_native_capacity_refusal_preserves_next_unit_id_and_recovers_after_drain(self):
         config = self.nemotron_fixture(RuntimeRecognizer())
-        with ASRRuntime(
+        with STTRuntime(
             config,
             realtime=RealtimeConfig(
-                mode="streaming", initial_delay=0, max_units=1, max_audio_samples=1024
+                mode="streaming", initial_delay_seconds=0, max_units=1, max_audio_samples=1024
             ),
         ) as runtime:
             first = runtime.create_session(SessionConfig(realtime=True, max_audio_samples=1024))
             second = runtime.create_session(SessionConfig(realtime=True, max_audio_samples=1024))
             first.start()
-            with self.assertRaises(ASRError) as caught:
+            with self.assertRaises(STTError) as caught:
                 second.start()
             self.assertEqual(caught.exception.code, "REALTIME_CAPACITY_EXCEEDED")
             self.assertEqual(second.state, "idle")
@@ -469,9 +480,11 @@ class RealtimeTests(unittest.TestCase):
                         gate[1].wait(5)
                 return super().get_result_all(stream)
 
-        with ASRRuntime(
+        with STTRuntime(
             self.nemotron_fixture(Native()),
-            realtime=RealtimeConfig(mode="streaming", initial_delay=0, interval=0.001),
+            realtime=RealtimeConfig(
+                mode="streaming", initial_delay_seconds=0, interval_seconds=0.001
+            ),
         ) as runtime:
             live = runtime.create_session(SessionConfig(realtime=True))
             live.start()
@@ -519,9 +532,9 @@ class RealtimeTests(unittest.TestCase):
                 boundary.release()
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=native):
-            with ASRRuntime(
-                ModelConfig(engine="whisper", model_path=self.path),
-                realtime=RealtimeConfig(initial_delay=0),
+            with STTRuntime(
+                LocalModelConfig(adapter="whisper", model_path=self.path),
+                realtime=RealtimeConfig(initial_delay_seconds=0),
             ) as runtime:
                 session = runtime.create_session(SessionConfig(realtime=True))
                 first = session.start()
@@ -559,9 +572,9 @@ class RealtimeTests(unittest.TestCase):
             )
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=native):
-            with ASRRuntime(
-                ModelConfig(engine="whisper", model_path=self.path),
-                realtime=RealtimeConfig(initial_delay=0, interval=0.001),
+            with STTRuntime(
+                LocalModelConfig(adapter="whisper", model_path=self.path),
+                realtime=RealtimeConfig(initial_delay_seconds=0, interval_seconds=0.001),
             ) as runtime:
                 session = runtime.create_session(SessionConfig(realtime=True))
                 session.start()
@@ -592,11 +605,13 @@ class RealtimeTests(unittest.TestCase):
             )
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=native):
-            with ASRRuntime(
-                ModelConfig(engine="whisper", model_path=self.path),
-                realtime=RealtimeConfig(initial_delay=0, interval=10),
+            with STTRuntime(
+                LocalModelConfig(adapter="whisper", model_path=self.path),
+                realtime=RealtimeConfig(initial_delay_seconds=0, interval_seconds=10),
             ) as runtime:
-                session = runtime.create_session(SessionConfig(realtime=True, language="en"))
+                session = runtime.create_session(
+                    SessionConfig(realtime=True, options=TranscriptionOptions(language="en"))
+                )
                 unit = session.start()
                 session.feed_audio(np.full(1024, 100, np.int16))
                 observation = session.next_event(timeout=1)

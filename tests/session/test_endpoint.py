@@ -9,14 +9,14 @@ from unittest.mock import patch
 import numpy as np
 
 from speechio import (
-    EndpointConfig,
-    ModelConfig,
+    LocalModelConfig,
     RealtimeConfig,
     SegmentationConfig,
     SessionConfig,
+    SpeechEndConfig,
     StabilizationConfig,
 )
-from speechio.runtime.asr import ASRRuntime
+from speechio.stt.runtime.asr import STTRuntime
 from tests.session import test_automatic
 
 
@@ -33,11 +33,11 @@ class EndpointTests(unittest.TestCase):
     def test_exact_early_result_is_reused_but_new_audio_is_not(self):
         for resume in (False, True):
             self.final_audio.clear()
-            with ASRRuntime(ModelConfig(engine="whisper", model_path=self.path)) as runtime:
+            with STTRuntime(LocalModelConfig(adapter="whisper", model_path=self.path)) as runtime:
                 session = runtime.create_auto_session(
                     vad=self.vad,
                     segmentation=SegmentationConfig(silence_confirmation=0),
-                    endpoint=EndpointConfig(early_transcription_silence=0.1),
+                    endpoint=SpeechEndConfig(early_transcription_silence=0.1),
                 )
                 audio = np.concatenate((np.full(16384, 500, np.int16), np.zeros(2560, np.int16)))
                 session.feed_audio(audio)
@@ -53,7 +53,7 @@ class EndpointTests(unittest.TestCase):
                 session.close()
 
     def test_dynamic_wait_uses_current_text_without_restarting_silence(self):
-        endpoint = EndpointConfig(dynamic_silence=True, sentence_pause=0.2, unknown_pause=0.5)
+        endpoint = SpeechEndConfig(dynamic_silence=True, sentence_pause=0.2, unknown_pause=0.5)
         self.assertEqual(endpoint.pause_for("还要继续...", 0.6), 2.5)
         self.assertEqual(endpoint.pause_for("数值是3.", 0.6), 0.5)
         info = SimpleNamespace(language="zh", language_probability=1)
@@ -64,9 +64,9 @@ class EndpointTests(unittest.TestCase):
                 info,
             ),
         ):
-            with ASRRuntime(
-                ModelConfig(engine="whisper", model_path=self.path),
-                realtime=RealtimeConfig(initial_delay=0),
+            with STTRuntime(
+                LocalModelConfig(adapter="whisper", model_path=self.path),
+                realtime=RealtimeConfig(initial_delay_seconds=0),
             ) as runtime:
                 session = runtime.create_auto_session(
                     vad=self.vad,
@@ -103,14 +103,14 @@ class EndpointTests(unittest.TestCase):
             ), SimpleNamespace(language="en", language_probability=1)
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=model):
-            with ASRRuntime(
-                ModelConfig(engine="whisper", model_path=self.path),
+            with STTRuntime(
+                LocalModelConfig(adapter="whisper", model_path=self.path),
                 limits=RuntimeLimits(max_tasks=1),
             ) as runtime:
                 session = runtime.create_auto_session(
                     vad=self.vad,
                     segmentation=SegmentationConfig(silence_confirmation=0),
-                    endpoint=EndpointConfig(early_transcription_silence=0.1),
+                    endpoint=SpeechEndConfig(early_transcription_silence=0.1),
                 )
                 session.feed_audio(
                     np.concatenate((np.full(16384, 500, np.int16), np.zeros(2560, np.int16)))
@@ -143,11 +143,11 @@ class EndpointTests(unittest.TestCase):
             ), SimpleNamespace(language="zh", language_probability=1)
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=model):
-            with ASRRuntime(ModelConfig(engine="whisper", model_path=self.path)) as runtime:
+            with STTRuntime(LocalModelConfig(adapter="whisper", model_path=self.path)) as runtime:
                 session = runtime.create_auto_session(
                     vad=self.vad,
                     segmentation=SegmentationConfig(silence_confirmation=0),
-                    endpoint=EndpointConfig(early_transcription_silence=0.1),
+                    endpoint=SpeechEndConfig(early_transcription_silence=0.1),
                 )
                 session.feed_audio(
                     np.concatenate((np.full(16384, 500, np.int16), np.zeros(2560, np.int16)))
@@ -181,11 +181,11 @@ class EndpointTests(unittest.TestCase):
             ), SimpleNamespace(language="en", language_probability=1)
 
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=model):
-            with ASRRuntime(ModelConfig(engine="whisper", model_path=self.path)) as runtime:
+            with STTRuntime(LocalModelConfig(adapter="whisper", model_path=self.path)) as runtime:
                 session = runtime.create_auto_session(
                     vad=self.vad,
                     segmentation=SegmentationConfig(silence_confirmation=0),
-                    endpoint=EndpointConfig(early_transcription_silence=0.1),
+                    endpoint=SpeechEndConfig(early_transcription_silence=0.1),
                 )
                 session.feed_audio(
                     np.concatenate((np.full(16384, 500, np.int16), np.zeros(2560, np.int16)))
@@ -262,14 +262,14 @@ class EndpointTests(unittest.TestCase):
             punctuation_confirmations=4 if chinese else 2,
         )
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=model):
-            with ASRRuntime(
-                ModelConfig(engine="whisper", model_path=self.path),
-                realtime=RealtimeConfig(initial_delay=0, interval=0.001),
+            with STTRuntime(
+                LocalModelConfig(adapter="whisper", model_path=self.path),
+                realtime=RealtimeConfig(initial_delay_seconds=0, interval_seconds=0.001),
             ) as runtime:
                 session = runtime.create_auto_session(
                     vad=self.vad,
                     config=SessionConfig(realtime=True, stabilization=stable),
-                    endpoint=EndpointConfig(punctuation_split=True),
+                    endpoint=SpeechEndConfig(punctuation_split=True),
                 )
                 session.feed_audio(np.full(1024, 500, np.int16))
                 session.next_event(timeout=5)

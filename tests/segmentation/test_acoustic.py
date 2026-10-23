@@ -4,7 +4,7 @@ import unittest
 
 import numpy as np
 
-from speechio.segmentation.acoustic import AcousticBoundaryDetector
+from speechio.stt.segmentation.acoustic import AcousticBoundaryDetector
 
 
 class AcousticTests(unittest.TestCase):

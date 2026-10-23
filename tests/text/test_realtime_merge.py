@@ -3,8 +3,8 @@
 import unittest
 
 import speechio as sdk
-from speechio.text.realtime_merge import RealtimeMerger
-from speechio.text.stabilizer import TextObservation
+from speechio.stt.text.realtime_merge import RealtimeMerger
+from speechio.stt.text.stabilizer import TextObservation
 
 
 class RealtimeMergeTests(unittest.TestCase):

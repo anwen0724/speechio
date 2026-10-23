@@ -6,9 +6,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from speechio import ModelConfig
-from speechio.engines.whisper import WhisperEngine
-from speechio.runtime.models.manifest import create_manifest
+from speechio import LocalModelConfig
+from speechio.adapters.local.whisper import WhisperEngine
+from speechio.models.manifest import create_manifest
 
 
 @contextmanager
@@ -21,7 +21,7 @@ def whisper_engine():
         create_manifest(path, backend="whisper", model_id="tiny", source="test", revision="abc")
         model = SimpleNamespace(feature_extractor=SimpleNamespace(chunk_length=30))
         with patch("faster_whisper.WhisperModel", return_value=model):
-            engine = WhisperEngine(ModelConfig(engine="whisper", model_path=path))
+            engine = WhisperEngine(LocalModelConfig(adapter="whisper", model_path=path))
             try:
                 yield engine
             finally:

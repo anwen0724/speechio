@@ -6,7 +6,7 @@ from math import isfinite
 import numpy as np
 
 from speechio.audio.formats import AudioFormat, _positive_integer
-from speechio.errors import ASRError
+from speechio.errors import STTError
 
 SAMPLE_RATE = 16000
 
@@ -19,7 +19,7 @@ def validate_max_audio_seconds(value):
         or value <= 0
         or (isinstance(value, float) and not isfinite(value))
     ):
-        raise ASRError(
+        raise STTError(
             "INVALID_CONFIGURATION", "configure", "max_audio_seconds 应为有限正数或 None"
         )
 
@@ -38,7 +38,7 @@ class AudioConverter:
 
     def __init__(self, format: AudioFormat, *, frame_samples: int = 512, max_audio_seconds=None):
         if not isinstance(format, AudioFormat) or not _positive_integer(frame_samples):
-            raise ASRError("INVALID_AUDIO_FORMAT", "convert_audio", "格式或标准块长无效")
+            raise STTError("INVALID_AUDIO_FORMAT", "convert_audio", "格式或标准块长无效")
         self._format = format
         validate_max_audio_seconds(max_audio_seconds)
         self._max_audio_seconds = max_audio_seconds
@@ -78,7 +78,7 @@ class AudioConverter:
                 self.format.sample_rate * self.format.channels * scalar_bytes
             )
             if seconds > self._max_audio_seconds:
-                raise ASRError("AUDIO_CAPACITY_EXCEEDED", "convert_audio", "音频超过配置的时长上限")
+                raise STTError("AUDIO_CAPACITY_EXCEEDED", "convert_audio", "音频超过配置的时长上限")
         array, representation, remainder, nonempty = self._parse_chunk(chunk)
         if not nonempty:
             return []
@@ -107,7 +107,7 @@ class AudioConverter:
         self._require_open()
         if self._source_remainder:
             self._state = "failed"
-            raise ASRError("AUDIO_INPUT_TRUNCATED", "convert_audio", "尾部缺少完整源采样帧")
+            raise STTError("AUDIO_INPUT_TRUNCATED", "convert_audio", "尾部缺少完整源采样帧")
         if self._resampler is not None:
             self._append_pcm(self._resample(np.empty(0, np.float32), last=True))
         self._state = "finished"
@@ -129,18 +129,18 @@ class AudioConverter:
                 try:
                     import soxr
                 except (ImportError, OSError) as exc:
-                    raise ASRError(
+                    raise STTError(
                         "DEPENDENCY_MISSING", "convert_audio", "请安装 audio 依赖"
                     ) from exc
                 self._resampler = soxr.ResampleStream(
                     self.format.sample_rate, SAMPLE_RATE, 1, dtype="float32", quality="HQ"
                 )
             return self._resampler.resample_chunk(mono, last=last)
-        except ASRError:
+        except STTError:
             raise
         except Exception as exc:
             self._state = "failed"
-            raise ASRError("AUDIO_CONVERSION_FAILED", "convert_audio", str(exc)) from exc
+            raise STTError("AUDIO_CONVERSION_FAILED", "convert_audio", str(exc)) from exc
 
     def _require_open(self):
         codes = {
@@ -149,7 +149,7 @@ class AudioConverter:
             "closed": "CONVERTER_CLOSED",
         }
         if self.state != "open":
-            raise ASRError(codes[self.state], "convert_audio", "转换器不再接受输入")
+            raise STTError(codes[self.state], "convert_audio", "转换器不再接受输入")
 
     def _parse_chunk(self, chunk):
         """校验外部表示并解析完整源帧；只返回候选余量，不改写状态。"""
@@ -158,7 +158,7 @@ class AudioConverter:
             if isinstance(chunk, memoryview) and (
                 chunk.ndim != 1 or chunk.itemsize != 1 or not chunk.c_contiguous
             ):
-                raise ASRError("INVALID_AUDIO", "convert_audio", "memoryview 应为连续字节")
+                raise STTError("INVALID_AUDIO", "convert_audio", "memoryview 应为连续字节")
             representation = "bytes"
             nonempty = len(chunk) > 0
             raw = self._source_remainder + bytes(chunk)
@@ -177,16 +177,16 @@ class AudioConverter:
                 else chunk.dtype.kind == "f" and chunk.dtype.itemsize in (4, 8)
             )
             if not valid_shape or not valid_dtype:
-                raise ASRError("INVALID_AUDIO", "convert_audio", "数组形状或类型不符合格式")
+                raise STTError("INVALID_AUDIO", "convert_audio", "数组形状或类型不符合格式")
             array = chunk.astype(np.float32) if self.format.sample_type == "float32" else chunk
             remainder = b""
             nonempty = chunk.size > 0
         else:
-            raise ASRError("INVALID_AUDIO", "convert_audio", "输入应为字节或 NumPy 数组")
+            raise STTError("INVALID_AUDIO", "convert_audio", "输入应为字节或 NumPy 数组")
         if nonempty and self._representation not in (None, representation):
-            raise ASRError("INVALID_AUDIO", "convert_audio", "同一音频不能混用字节和数组")
+            raise STTError("INVALID_AUDIO", "convert_audio", "同一音频不能混用字节和数组")
         if not np.isfinite(array).all():
-            raise ASRError("INVALID_AUDIO", "convert_audio", "输入含非有限采样")
+            raise STTError("INVALID_AUDIO", "convert_audio", "输入含非有限采样")
         return array, representation, remainder, nonempty
 
     def _append_pcm(self, mono):
@@ -222,17 +222,17 @@ class AudioConverter:
 def as_audio(audio, *, allow_empty=False, allow_column=False):
     """将合法单声道输入转换为连续 float32。"""
     if audio is None:
-        raise ASRError("INVALID_AUDIO", "audio", "音频不能为 None")
+        raise STTError("INVALID_AUDIO", "audio", "音频不能为 None")
     try:
         array = np.asarray(audio, dtype=np.float32)
     except (TypeError, ValueError) as exc:
-        raise ASRError("INVALID_AUDIO", "audio", "音频应为数值数组") from exc
+        raise STTError("INVALID_AUDIO", "audio", "音频应为数值数组") from exc
     if allow_column and array.ndim == 2 and array.shape[1] == 1:
         array = array.reshape(-1)
     if array.ndim != 1 or (array.size == 0 and not allow_empty):
-        raise ASRError("INVALID_AUDIO", "audio", "音频应为非空单声道数组")
+        raise STTError("INVALID_AUDIO", "audio", "音频应为非空单声道数组")
     if not np.isfinite(array).all():
-        raise ASRError("INVALID_AUDIO", "audio", "音频不能含 NaN 或无穷值")
+        raise STTError("INVALID_AUDIO", "audio", "音频不能含 NaN 或无穷值")
     return np.ascontiguousarray(array)
 
 
@@ -243,4 +243,4 @@ def validate_sample_rate(sample_rate):
         or not isinstance(sample_rate, (int, np.integer))
         or sample_rate != SAMPLE_RATE
     ):
-        raise ASRError("INVALID_SAMPLE_RATE", "accept_audio", "采样率应为整数 16000")
+        raise STTError("INVALID_SAMPLE_RATE", "accept_audio", "采样率应为整数 16000")

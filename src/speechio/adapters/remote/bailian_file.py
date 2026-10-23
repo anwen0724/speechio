@@ -6,10 +6,10 @@ from time import monotonic, sleep
 from urllib.parse import quote, urlsplit
 from uuid import uuid4
 
-from speechio.adapters.contracts import BaseTranscriptionEngine
+from speechio.adapters.contracts import STTAdapter
 from speechio.adapters.remote.bailian_stt import transcript_from_sentences
 from speechio.audio.files import audio_file_chunks, read_audio_info
-from speechio.errors import ASRError
+from speechio.errors import STTError
 from speechio.resources import CloseResult
 
 _FILE_SUFFIXES = {
@@ -50,22 +50,24 @@ def validate_file_url(url, *, operation="transcribe_url"):
     except (TypeError, ValueError, AttributeError):
         valid = False
     if not valid:
-        raise ASRError("INVALID_CONFIGURATION", operation, "文件地址必须为有效的 HTTP 或 HTTPS URL")
+        raise STTError("INVALID_CONFIGURATION", operation, "文件地址必须为有效的 HTTP 或 HTTPS URL")
 
 
-class BailianFileEngine(BaseTranscriptionEngine):
+class BailianFileEngine(STTAdapter):
     """拥有 HTTP 客户端；一次调用提交一个任务，不自动重试计费请求。"""
 
     def __init__(self, config):
         self.config = config
         if not config.api_key or any(not 33 <= ord(char) <= 126 for char in config.api_key):
-            raise ASRError("INVALID_CONFIGURATION", "configure", "百炼需要有效的 api_key")
+            raise STTError("INVALID_CONFIGURATION", "configure", "百炼需要有效的 api_key")
         self._http = None
         self._root = (config.base_url or "https://dashscope.aliyuncs.com").rstrip("/")
 
     @property
     def capabilities(self):
-        return self.config.capabilities
+        from speechio.models.factory import engine_capabilities
+
+        return engine_capabilities(self.config)
 
     def prepare(self):
         """仅创建传输客户端；不上传音频、不提交任务。"""
@@ -74,7 +76,7 @@ class BailianFileEngine(BaseTranscriptionEngine):
         try:
             import httpx
         except ImportError:
-            raise ASRError(
+            raise STTError(
                 "DEPENDENCY_MISSING", "prepare", '请安装远程依赖：pip install "speechio[remote]"'
             ) from None
         self._http = httpx.Client(timeout=self.config.timeout_seconds, follow_redirects=False)
@@ -88,9 +90,9 @@ class BailianFileEngine(BaseTranscriptionEngine):
         try:
             response = self._http.request(method, url, **options)
         except httpx.TimeoutException:
-            raise ASRError("REMOTE_TIMEOUT", operation, "百炼文件请求超时，未自动重试") from None
+            raise STTError("REMOTE_TIMEOUT", operation, "百炼文件请求超时，未自动重试") from None
         except httpx.HTTPError:
-            raise ASRError(
+            raise STTError(
                 "REMOTE_CONNECTION", operation, "百炼文件请求连接失败，未自动重试"
             ) from None
         if deadline is not None:
@@ -99,7 +101,7 @@ class BailianFileEngine(BaseTranscriptionEngine):
             code = {401: "REMOTE_AUTH", 403: "REMOTE_AUTH", 429: "REMOTE_RATE_LIMIT"}.get(
                 response.status_code, "REMOTE_SERVICE"
             )
-            raise ASRError(code, operation, f"百炼文件请求失败，HTTP {response.status_code}")
+            raise STTError(code, operation, f"百炼文件请求失败，HTTP {response.status_code}")
         return response
 
     @staticmethod
@@ -111,14 +113,16 @@ class BailianFileEngine(BaseTranscriptionEngine):
                 raise ValueError
             return value
         except ValueError:
-            raise ASRError(
+            raise STTError(
                 "REMOTE_PROTOCOL", "transcribe_file", "百炼文件响应不是有效对象"
             ) from None
 
     def _headers(self):
         return {"Authorization": f"Bearer {self.config.api_key}"}
 
-    def transcribe_file(self, path, language=None, *, word_timestamps=False):
+    def transcribe_file(
+        self, path, language=None, *, word_timestamps=False, task_timeout_seconds=3600.0
+    ):
         """校验并分块上传原始文件；不构造整份 PCM 或 Base64 副本。"""
         path = Path(path)
         try:
@@ -126,11 +130,11 @@ class BailianFileEngine(BaseTranscriptionEngine):
                 raise OSError
             size = path.stat().st_size
         except OSError:
-            raise ASRError("AUDIO_READ_FAILED", "read_file", "无法读取本地音频文件") from None
+            raise STTError("AUDIO_READ_FAILED", "read_file", "无法读取本地音频文件") from None
         if size > 1024**3:
-            raise ASRError("AUDIO_TOO_LARGE", "upload_file", "百炼临时上传最多支持 1 GB")
+            raise STTError("AUDIO_TOO_LARGE", "upload_file", "百炼临时上传最多支持 1 GB")
         if not size or path.suffix.lower() not in _FILE_SUFFIXES:
-            raise ASRError("INVALID_AUDIO", "read_file", "文件为空或格式不受百炼长音频模型支持")
+            raise STTError("INVALID_AUDIO", "read_file", "文件为空或格式不受百炼长音频模型支持")
         info = read_audio_info(path)
         duration = info.duration_seconds
         if duration is None:
@@ -138,18 +142,28 @@ class BailianFileEngine(BaseTranscriptionEngine):
             for format, chunk in audio_file_chunks(path, max_audio_seconds=12 * 3600):
                 duration += len(chunk) / format.sample_rate
         if duration <= 0:
-            raise ASRError("INVALID_AUDIO", "read_file", "文件没有音频采样")
+            raise STTError("INVALID_AUDIO", "read_file", "文件没有音频采样")
         if duration > 12 * 3600:
-            raise ASRError("AUDIO_TOO_LONG", "transcribe_file", "百炼长音频最多支持 12 小时")
+            raise STTError("AUDIO_TOO_LONG", "transcribe_file", "百炼长音频最多支持 12 小时")
         self.prepare()
         url = self._upload(path)
-        return self._transcribe(url, language, word_timestamps, temporary=True)
+        return self._transcribe(
+            url,
+            language,
+            word_timestamps,
+            temporary=True,
+            task_timeout_seconds=task_timeout_seconds,
+        )
 
-    def transcribe_url(self, url, language=None, *, word_timestamps=False):
+    def transcribe_url(
+        self, url, language=None, *, word_timestamps=False, task_timeout_seconds=3600.0
+    ):
         """直接提交已有 HTTP(S) 地址，不下载或重新上传音频。"""
         validate_file_url(url)
         self.prepare()
-        return self._transcribe(url, language, word_timestamps)
+        return self._transcribe(
+            url, language, word_timestamps, task_timeout_seconds=task_timeout_seconds
+        )
 
     def _upload(self, path):
         """使用模型绑定的临时凭证上传；凭证不写入配置、日志或结果。"""
@@ -175,8 +189,8 @@ class BailianFileEngine(BaseTranscriptionEngine):
             if any(not isinstance(value, str) or not value for value in fields.values()):
                 raise ValueError
             validate_file_url(host, operation="upload_file")
-        except (KeyError, TypeError, ValueError, ASRError):
-            raise ASRError("REMOTE_PROTOCOL", "upload_file", "百炼上传凭证格式无效") from None
+        except (KeyError, TypeError, ValueError, STTError):
+            raise STTError("REMOTE_PROTOCOL", "upload_file", "百炼上传凭证格式无效") from None
         try:
             with path.open("rb") as source:
                 self._request(
@@ -187,16 +201,18 @@ class BailianFileEngine(BaseTranscriptionEngine):
                     files={"file": (path.name, source, "application/octet-stream")},
                 )
         except OSError:
-            raise ASRError("AUDIO_READ_FAILED", "upload_file", "读取上传文件失败") from None
+            raise STTError("AUDIO_READ_FAILED", "upload_file", "读取上传文件失败") from None
         return "oss://" + fields["key"]
 
     def _remaining(self, deadline):
         remaining = deadline - monotonic()
         if remaining <= 0:
-            raise ASRError("REMOTE_TIMEOUT", "wait_task", "等待百炼文件任务超时，云端任务未取消")
+            raise STTError("REMOTE_TIMEOUT", "wait_task", "等待百炼文件任务超时，云端任务未取消")
         return remaining
 
-    def _transcribe(self, url, language, word_timestamps, *, temporary=False):
+    def _transcribe(
+        self, url, language, word_timestamps, *, temporary=False, task_timeout_seconds=3600.0
+    ):
         """提交一次任务，在总等待时限内查询并读取结果。"""
         headers = {**self._headers(), "X-DashScope-Async": "enable"}
         if temporary:
@@ -221,8 +237,8 @@ class BailianFileEngine(BaseTranscriptionEngine):
             if not isinstance(task_id, str) or not task_id:
                 raise ValueError
         except (KeyError, TypeError, ValueError):
-            raise ASRError("REMOTE_PROTOCOL", "submit_task", "百炼响应缺少任务编号") from None
-        deadline = monotonic() + self.config.task_timeout_seconds
+            raise STTError("REMOTE_PROTOCOL", "submit_task", "百炼响应缺少任务编号") from None
+        deadline = monotonic() + task_timeout_seconds
         while True:
             response = self._request(
                 "GET",
@@ -237,24 +253,24 @@ class BailianFileEngine(BaseTranscriptionEngine):
                     raise ValueError
                 status = output["task_status"]
                 if status in ("FAILED", "CANCELED"):
-                    raise ASRError("REMOTE_SERVICE", "wait_task", "百炼文件任务失败或已取消")
+                    raise STTError("REMOTE_SERVICE", "wait_task", "百炼文件任务失败或已取消")
                 if status == "SUCCEEDED":
                     results = output["results"]
                     if not isinstance(results, list) or len(results) != 1:
                         raise ValueError
                     if results[0]["subtask_status"] != "SUCCEEDED":
-                        raise ASRError("REMOTE_SERVICE", "wait_task", "百炼文件识别子任务失败")
+                        raise STTError("REMOTE_SERVICE", "wait_task", "百炼文件识别子任务失败")
                     result_url = results[0]["transcription_url"]
                     break
                 if status not in ("PENDING", "RUNNING"):
                     raise ValueError
             except (KeyError, TypeError, ValueError):
-                raise ASRError("REMOTE_PROTOCOL", "wait_task", "百炼文件任务响应格式无效") from None
+                raise STTError("REMOTE_PROTOCOL", "wait_task", "百炼文件任务响应格式无效") from None
             sleep(min(2.0, self._remaining(deadline)))
         try:
             validate_file_url(result_url, operation="read_result")
-        except ASRError:
-            raise ASRError("REMOTE_PROTOCOL", "read_result", "百炼结果地址无效") from None
+        except STTError:
+            raise STTError("REMOTE_PROTOCOL", "read_result", "百炼结果地址无效") from None
         response = self._request("GET", result_url, "read_result", deadline=deadline)
         data = self._json(response)
         try:
@@ -271,7 +287,7 @@ class BailianFileEngine(BaseTranscriptionEngine):
             if not isinstance(sentences, list):
                 raise ValueError
         except (KeyError, TypeError, ValueError):
-            raise ASRError(
+            raise STTError(
                 "REMOTE_PROTOCOL", "read_result", "百炼文件结果缺少有效文本或时长"
             ) from None
         return transcript_from_sentences(

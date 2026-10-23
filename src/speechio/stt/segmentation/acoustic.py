@@ -6,7 +6,7 @@ from math import ceil, log10, sqrt
 
 import numpy as np
 
-from speechio.errors import ASRError
+from speechio.errors import STTError
 
 
 @dataclass(frozen=True)
@@ -39,7 +39,7 @@ class AcousticBoundaryDetector:
 
     def __init__(self, sensitivity=0.6):
         if not isinstance(sensitivity, (int, float)) or not 0 <= sensitivity <= 1:
-            raise ASRError("INVALID_CONFIGURATION", "configure", "声学灵敏度应在 0 至 1 内")
+            raise STTError("INVALID_CONFIGURATION", "configure", "声学灵敏度应在 0 至 1 内")
         self.speech_margin = 10.5 - 4.5 * sensitivity
         self.vowel_margin = 14 - 5 * sensitivity
         self.drop = 5.8 - 3.2 * sensitivity
@@ -56,7 +56,7 @@ class AcousticBoundaryDetector:
     def feed(self, pcm):
         """接纳相邻 PCM16；短帧保留到下一调用，不补零。"""
         if not isinstance(pcm, bytes) or len(pcm) % 2:
-            raise ASRError("INVALID_AUDIO", "acoustic", "声学输入应为完整 PCM16 字节")
+            raise STTError("INVALID_AUDIO", "acoustic", "声学输入应为完整 PCM16 字节")
         data = self._pending + pcm
         complete = len(data) // 320 * 320
         self._pending = data[complete:]

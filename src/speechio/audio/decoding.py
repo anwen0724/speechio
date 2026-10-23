@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from speechio.audio.formats import AudioFormat
-from speechio.errors import ASRError
+from speechio.errors import STTError
 
 
 @dataclass(frozen=True)
@@ -47,7 +47,7 @@ class PyAVSource:
     def __init__(self, container):
         self.container = container
         if not container.streams.audio:
-            raise ASRError("AUDIO_TRACK_MISSING", "read_file", "文件中没有音轨")
+            raise STTError("AUDIO_TRACK_MISSING", "read_file", "文件中没有音轨")
         self.stream = container.streams.audio[0]
         context = self.stream.codec_context
         duration = self.stream.duration
@@ -87,7 +87,7 @@ class PyAVSource:
 def open_audio_source(path):
     """只在打开时选择解码器；读取中途失败不回退，不访问远程地址。"""
     if not isinstance(path, (str, os.PathLike)):
-        raise ASRError("INVALID_AUDIO", "read_file", "输入应为本地文件路径")
+        raise STTError("INVALID_AUDIO", "read_file", "输入应为本地文件路径")
     try:
         import soundfile as sf
 
@@ -109,13 +109,13 @@ def open_audio_source(path):
         with open(path, "rb") as file:
             with av.open(file, options={"protocol_whitelist": "file,pipe"}) as container:
                 yield PyAVSource(container)
-    except ASRError:
+    except STTError:
         raise
     except ImportError as error:
-        raise ASRError(
+        raise STTError(
             "DEPENDENCY_MISSING", "read_file", "缺少音频解码依赖，请重新安装 speechio"
         ) from error
     except Exception as error:
-        raise ASRError(
+        raise STTError(
             "AUDIO_READ_FAILED", "read_file", f"无法读取或解码音频文件：{error}"
         ) from error

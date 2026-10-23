@@ -3,7 +3,7 @@
 import unittest
 
 from speechio import Transcript, WordTimestamp
-from speechio.text.endpoint import SentenceBoundaryPolicy
+from speechio.stt.text.endpoint import SentenceBoundaryPolicy
 
 
 class SentencePolicyTests(unittest.TestCase):

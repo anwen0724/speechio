@@ -9,17 +9,18 @@ from unittest.mock import patch
 import numpy as np
 
 from speechio import (
-    ASRError,
     AudioFormat,
-    ModelConfig,
+    LocalModelConfig,
     RealtimeConfig,
     RuntimeLimits,
     SegmentationConfig,
     SessionConfig,
+    STTError,
     VadConfig,
 )
-from speechio.audio.conversion import AudioConverter
-from speechio.runtime.asr import ASRRuntime
+from speechio.stt.input import AudioConverter
+from speechio.stt.options import TranscriptionOptions
+from speechio.stt.runtime.asr import STTRuntime
 from tests.engines.test_stream import RuntimeRecognizer, RuntimeStream
 from tests.runtime import test_realtime, test_transcriber
 
@@ -64,7 +65,7 @@ class AutomaticTests(unittest.TestCase):
                 np.full(515, 700, np.int16),
             )
         )
-        with ASRRuntime(ModelConfig(engine="whisper", model_path=self.path)) as runtime:
+        with STTRuntime(LocalModelConfig(adapter="whisper", model_path=self.path)) as runtime:
             session = runtime.create_auto_session(vad=self.vad)
             for start in range(0, len(audio), 317):
                 session.feed_audio(audio[start : start + 317])
@@ -84,7 +85,7 @@ class AutomaticTests(unittest.TestCase):
                 )
 
     def test_cancel_current_segment_keeps_listening_without_recreating_cancelled_audio(self):
-        with ASRRuntime(ModelConfig(engine="whisper", model_path=self.path)) as runtime:
+        with STTRuntime(LocalModelConfig(adapter="whisper", model_path=self.path)) as runtime:
             session = runtime.create_auto_session(vad=self.vad)
             session.feed_audio(np.full(1024, 500, np.int16))
             self.assertTrue(session.cancel_turn())
@@ -97,13 +98,13 @@ class AutomaticTests(unittest.TestCase):
             np.testing.assert_array_equal(self.final_audio[-1], np.full(515, 700) / 32768)
 
     def test_detection_failure_fails_active_unit_and_reset_recovers(self):
-        with ASRRuntime(ModelConfig(engine="whisper", model_path=self.path)) as runtime:
+        with STTRuntime(LocalModelConfig(adapter="whisper", model_path=self.path)) as runtime:
             session = runtime.create_auto_session(vad=self.vad)
             session.feed_audio(np.full(1024, 500, np.int16))
             with patch(
                 "onnxruntime.InferenceSession.run", side_effect=RuntimeError("graph failed")
             ):
-                with self.assertRaises(ASRError) as caught:
+                with self.assertRaises(STTError) as caught:
                     session.feed_audio(np.full(512, 500, np.int16))
             self.assertEqual(caught.exception.code, "VAD_FAILED")
             self.assertEqual(session.input_state, "failed")
@@ -118,7 +119,7 @@ class AutomaticTests(unittest.TestCase):
     def test_close_during_detection_does_not_wait_or_register_late_segment(self):
         entered, release = Event(), Event()
         outcomes = []
-        with ASRRuntime(ModelConfig(engine="whisper", model_path=self.path)) as runtime:
+        with STTRuntime(LocalModelConfig(adapter="whisper", model_path=self.path)) as runtime:
             session = runtime.create_auto_session(vad=self.vad)
 
             def blocked(names, feeds):
@@ -130,7 +131,7 @@ class AutomaticTests(unittest.TestCase):
             def feed():
                 try:
                     session.feed_audio(np.full(512, 500, np.int16))
-                except ASRError as exc:
+                except STTError as exc:
                     outcomes.append(exc.code)
 
             with patch("onnxruntime.InferenceSession.run", side_effect=blocked):
@@ -159,8 +160,8 @@ class AutomaticTests(unittest.TestCase):
         config = SessionConfig(max_audio_samples=16000)
         segmentation = SegmentationConfig(max_buffer_samples=40000)
         with patch("faster_whisper.BatchedInferencePipeline.transcribe", side_effect=blocked):
-            with ASRRuntime(
-                ModelConfig(engine="whisper", model_path=self.path),
+            with STTRuntime(
+                LocalModelConfig(adapter="whisper", model_path=self.path),
                 limits=RuntimeLimits(max_tasks=1),
             ) as runtime:
                 session = runtime.create_auto_session(
@@ -171,7 +172,7 @@ class AutomaticTests(unittest.TestCase):
                     self.assertTrue(entered.wait(5))
                     session.feed_audio(np.full(16000, 700, np.int16))
                     block = np.full(35000, 900, np.int16)
-                    with self.assertRaises(ASRError) as caught:
+                    with self.assertRaises(STTError) as caught:
                         session.feed_audio(block)
                     self.assertEqual(caught.exception.code, "AUDIO_CAPACITY_EXCEEDED")
                 finally:
@@ -203,12 +204,15 @@ class AutomaticTests(unittest.TestCase):
                 np.full(515, 700, np.int16),
             )
         )
-        with ASRRuntime(
-            config, realtime=RealtimeConfig(mode="streaming", initial_delay=0, interval=0.01)
+        with STTRuntime(
+            config,
+            realtime=RealtimeConfig(
+                mode="streaming", initial_delay_seconds=0, interval_seconds=0.01
+            ),
         ) as runtime:
             session = runtime.create_auto_session(
                 vad=self.vad,
-                config=SessionConfig(realtime=True, language="zh-CN"),
+                config=SessionConfig(realtime=True, options=TranscriptionOptions(language="zh-CN")),
                 segmentation=SegmentationConfig(backdate_duration=0.2),
             )
             session.feed_audio(audio[:10240])
@@ -242,7 +246,7 @@ class AutomaticTests(unittest.TestCase):
         converter = AudioConverter(format)
         expected = b"".join(f.pcm for f in converter.feed(source) + converter.finish())
         outputs = []
-        with ASRRuntime(ModelConfig(engine="whisper", model_path=self.path)) as runtime:
+        with STTRuntime(LocalModelConfig(adapter="whisper", model_path=self.path)) as runtime:
             for block_size in (317, 2000):
                 self.final_audio.clear()
                 session = runtime.create_auto_session(
@@ -269,7 +273,7 @@ class AutomaticTests(unittest.TestCase):
             np.testing.assert_array_equal(actual, np.frombuffer(expected, "<i2") / 32768)
 
     def test_explicit_finish_seals_short_segment_and_keeps_listening(self):
-        with ASRRuntime(ModelConfig(engine="whisper", model_path=self.path)) as runtime:
+        with STTRuntime(LocalModelConfig(adapter="whisper", model_path=self.path)) as runtime:
             session = runtime.create_auto_session(vad=self.vad)
             session.feed_audio(np.full(512, 500, np.int16))
             task = session.end_turn()
@@ -287,7 +291,7 @@ class AutomaticTests(unittest.TestCase):
             self.assertEqual([event.audio_samples for event in finals], [512, 515])
 
     def test_silent_input_finishes_without_creating_a_task(self):
-        with ASRRuntime(ModelConfig(engine="whisper", model_path=self.path)) as runtime:
+        with STTRuntime(LocalModelConfig(adapter="whisper", model_path=self.path)) as runtime:
             session = runtime.create_auto_session(vad=self.vad)
             session.feed_audio(bytes(32000))
             session.end_input()

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 from math import isfinite
 
-from speechio.errors import ASRError
+from speechio.errors import STTError
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -54,7 +54,7 @@ class StabilizationConfig:
             or not 0 <= self.outlier_similarity <= 1
             or self.language_mode not in ("auto", "character", "space-tokenized")
         ):
-            raise ASRError("INVALID_CONFIGURATION", "configure", "稳定文本配置无效")
+            raise STTError("INVALID_CONFIGURATION", "configure", "稳定文本配置无效")
 
 
 @dataclass(frozen=True)
@@ -141,7 +141,7 @@ class TextStabilizer:
         self.turn = unit
         self.config = config if config is not None else StabilizationConfig()
         if not isinstance(self.config, StabilizationConfig):
-            raise ASRError("INVALID_CONFIGURATION", "configure", "需要 StabilizationConfig")
+            raise STTError("INVALID_CONFIGURATION", "configure", "需要 StabilizationConfig")
         self._records = deque(maxlen=self.config.max_observations)
         self._outlier = None
         self._sequence = 0

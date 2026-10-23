@@ -6,14 +6,15 @@ from threading import Event
 import numpy as np
 
 from speechio import (
-    ASRError,
     AudioFormat,
-    ModelConfig,
+    LocalModelConfig,
     SessionConfig,
+    STTError,
     Transcriber,
     Transcript,
 )
-from speechio.runtime.asr import ASRRuntime
+from speechio.stt.options import TranscriptionOptions
+from speechio.stt.runtime.asr import STTRuntime
 
 
 class RecordingEngine:
@@ -26,9 +27,9 @@ class RecordingEngine:
 
     @property
     def capabilities(self):
-        from speechio import EngineCapabilities
+        from speechio import STTCapabilities
 
-        return EngineCapabilities(engine="remote-test", device="remote", snapshot=True)
+        return STTCapabilities(engine="remote-test", device="remote", snapshot=True)
 
     def prepare(self):
         self.preparations += 1
@@ -42,29 +43,25 @@ class RecordingEngine:
 
 
 class EngineInjectionTests(unittest.TestCase):
-    def test_builtin_engine_names_accept_local_options_and_preserve_config_conflicts(self):
+    def test_builtin_adapter_selection_preserves_local_configuration(self):
         for name in ("whisper", "nemotron"):
             with self.subTest(engine=name):
                 recognizer = Transcriber(
-                    model_path="test-model", engine=name, compute_type="default"
+                    LocalModelConfig(model_path="test-model", adapter=name, compute_type="default")
                 )
                 self.addCleanup(recognizer.close)
-                self.assertEqual(recognizer.config.engine, name)
+                self.assertEqual(recognizer.config.adapter, name)
                 self.assertEqual(recognizer.state, "unprepared")
-        with self.assertRaises(ASRError) as caught:
-            Transcriber(ModelConfig(engine="whisper", model_path="tiny"), engine="whisper")
-        self.assertEqual(caught.exception.code, "INVALID_CONFIGURATION")
 
     def test_custom_engine_receives_complete_audio_and_owns_one_lifecycle(self):
         engine = RecordingEngine()
-        recognizer = Transcriber(engine=engine)
+        recognizer = Transcriber.from_adapter(adapter=engine)
         self.addCleanup(recognizer.close)
         source = np.arange(525, dtype=np.int16)
         result = recognizer.transcribe_chunks(
             (source[:511], source[511:]),
             format=AudioFormat(),
-            language="zh-CN",
-            word_timestamps=True,
+            options=TranscriptionOptions(language="zh-CN", word_timestamps=True),
         )
         recognizer.prepare()
         self.assertEqual(result.text, "收到完整音频")
@@ -82,10 +79,10 @@ class EngineInjectionTests(unittest.TestCase):
 
         final = RecordingEngine()
         streaming = RecordingStreamingEngine()
-        runtime = ASRRuntime(
-            engine=final,
-            realtime=RealtimeConfig(
-                mode="streaming", engine=streaming, initial_delay=0, interval=0.01
+        runtime = STTRuntime.from_adapter(
+            adapter=final,
+            realtime=RealtimeConfig.from_adapter(
+                mode="streaming", adapter=streaming, initial_delay_seconds=0, interval_seconds=0.01
             ),
         )
         self.addCleanup(runtime.close)
@@ -127,10 +124,14 @@ class EngineInjectionTests(unittest.TestCase):
         from speechio import RealtimeConfig
 
         engine = RecordingEngine()
-        runtime = ASRRuntime(engine=engine, realtime=RealtimeConfig(initial_delay=0))
+        runtime = STTRuntime.from_adapter(
+            adapter=engine, realtime=RealtimeConfig(initial_delay_seconds=0)
+        )
         self.addCleanup(runtime.close)
         runtime.prepare()
-        session = runtime.create_session(SessionConfig(realtime=True, language="zh-CN"))
+        session = runtime.create_session(
+            SessionConfig(realtime=True, options=TranscriptionOptions(language="zh-CN"))
+        )
         source = np.arange(1027, dtype=np.int16)
         session.start()
         session.feed_audio(source[:1024])
@@ -153,14 +154,16 @@ class EngineInjectionTests(unittest.TestCase):
         class SharedEngine(RecordingStreamingEngine):
             @property
             def capabilities(self):
-                from speechio import EngineCapabilities
+                from speechio import STTCapabilities
 
-                return EngineCapabilities(engine="shared", streaming=True)
+                return STTCapabilities(engine="shared", streaming=True)
 
         engine = SharedEngine()
-        runtime = ASRRuntime(
-            engine=engine,
-            realtime=RealtimeConfig(mode="streaming", engine=engine, initial_delay=0),
+        runtime = STTRuntime.from_adapter(
+            adapter=engine,
+            realtime=RealtimeConfig.from_adapter(
+                mode="streaming", adapter=engine, initial_delay_seconds=0
+            ),
         )
         self.addCleanup(runtime.close)
         runtime.prepare()
@@ -195,7 +198,7 @@ class EngineInjectionTests(unittest.TestCase):
                 )
 
         engine = BlockingEngine()
-        runtime = ASRRuntime(engine=engine)
+        runtime = STTRuntime.from_adapter(adapter=engine)
         self.addCleanup(runtime.close)
         runtime.prepare()
         session = runtime.create_session()
@@ -227,7 +230,7 @@ class EngineInjectionTests(unittest.TestCase):
             def transcribe(self, audio, language=None, *, role="final", word_timestamps=False):
                 return "厂商原始字符串"
 
-        runtime = ASRRuntime(engine=InvalidEngine())
+        runtime = STTRuntime.from_adapter(adapter=InvalidEngine())
         self.addCleanup(runtime.close)
         runtime.prepare()
         session = runtime.create_session()
@@ -246,8 +249,8 @@ class EngineInjectionTests(unittest.TestCase):
                 raise ConnectionError("外部服务无法连接")
 
         engine = FailedEngine()
-        runtime = ASRRuntime(engine=engine)
-        with self.assertRaises(ASRError) as caught:
+        runtime = STTRuntime.from_adapter(adapter=engine)
+        with self.assertRaises(STTError) as caught:
             runtime.prepare()
         self.assertIsInstance(caught.exception.__cause__, ConnectionError)
         self.assertEqual(runtime.state, "closed")
@@ -289,9 +292,9 @@ class RecordingStreamingEngine(RecordingEngine):
 
     @property
     def capabilities(self):
-        from speechio import EngineCapabilities
+        from speechio import STTCapabilities
 
-        return EngineCapabilities(engine="remote-stream", transcription=False, streaming=True)
+        return STTCapabilities(engine="remote-stream", transcription=False, streaming=True)
 
     def create_streaming_session(self, language=None):
         stream = RecordingStream()

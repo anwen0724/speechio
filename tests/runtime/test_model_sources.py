@@ -6,8 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from speechio import ASRError, ModelConfig, Transcriber
-from speechio.runtime.models.files import MODEL_FILES
+from speechio import LocalModelConfig, STTError, Transcriber
+from speechio.models.files import MODEL_FILES
 
 
 class ModelSourceTests(unittest.TestCase):
@@ -19,16 +19,11 @@ class ModelSourceTests(unittest.TestCase):
             (self.path / name).write_bytes(b"test-model")
         self.model = SimpleNamespace(feature_extractor=SimpleNamespace(chunk_length=30))
 
-    def test_no_implicit_model_and_old_download_options_report_migration(self):
-        for options in ({}, {"model": "tiny"}, {"engine": "whisper", "download_root": self.path}):
-            with self.subTest(options=options), self.assertRaises(ASRError) as caught:
-                Transcriber(**options)
-            self.assertEqual(caught.exception.code, "INVALID_CONFIGURATION")
-            self.assertIn("model_path", caught.exception.message)
-
     def test_whisper_directory_without_manifest_loads_offline(self):
         with patch("faster_whisper.WhisperModel", return_value=self.model) as loader:
-            with Transcriber(engine="whisper", model_path=self.path) as recognizer:
+            with Transcriber(
+                LocalModelConfig(adapter="whisper", model_path=self.path)
+            ) as recognizer:
                 self.assertEqual(recognizer.state, "ready")
         self.assertEqual(Path(loader.call_args.args[0]), self.path.resolve())
         self.assertTrue(loader.call_args.kwargs["local_files_only"])
@@ -39,7 +34,9 @@ class ModelSourceTests(unittest.TestCase):
         record.write_text('{"files": [{"sha256": "old digest"}]}', encoding="utf-8")
         before = record.read_bytes()
         with patch("faster_whisper.WhisperModel", return_value=self.model):
-            with Transcriber(ModelConfig(engine="whisper", model_path=self.path)) as recognizer:
+            with Transcriber(
+                LocalModelConfig(adapter="whisper", model_path=self.path)
+            ) as recognizer:
                 self.assertEqual(recognizer.state, "ready")
         self.assertEqual(record.read_bytes(), before)
 
@@ -50,19 +47,21 @@ class ModelSourceTests(unittest.TestCase):
                 with patch(
                     "faster_whisper.WhisperModel", side_effect=AssertionError("不应尝试加载")
                 ):
-                    with self.assertRaises(ASRError) as caught:
-                        with Transcriber(engine="whisper", model_path=path):
+                    with self.assertRaises(STTError) as caught:
+                        with Transcriber(LocalModelConfig(adapter="whisper", model_path=path)):
                             pass
                 self.assertEqual(caught.exception.code, "MODEL_INCOMPLETE")
 
     def test_gpu_and_compute_type_reach_whisper_runtime(self):
         with patch("faster_whisper.WhisperModel", return_value=self.model) as loader:
             with Transcriber(
-                engine="whisper",
-                model_path=self.path,
-                device="gpu",
-                device_index=1,
-                compute_type="float16",
+                LocalModelConfig(
+                    adapter="whisper",
+                    model_path=self.path,
+                    device="gpu",
+                    device_index=1,
+                    compute_type="float16",
+                )
             ):
                 pass
         self.assertEqual(loader.call_args.kwargs["device"], "cuda")
@@ -73,18 +72,24 @@ class ModelSourceTests(unittest.TestCase):
         for name in MODEL_FILES["nemotron"]:
             (self.path / name).write_bytes(b"test-model")
         with patch("sherpa_onnx.OnlineRecognizer.from_transducer") as loader:
-            with Transcriber(engine="nemotron", model_path=self.path) as recognizer:
+            with Transcriber(
+                LocalModelConfig(adapter="nemotron", model_path=self.path)
+            ) as recognizer:
                 self.assertEqual(recognizer.state, "ready")
             self.assertEqual(loader.call_args.kwargs["provider"], "cpu")
-            with self.assertRaises(ASRError) as caught:
-                with Transcriber(engine="nemotron", model_path=self.path, device="gpu"):
+            with self.assertRaises(STTError) as caught:
+                with Transcriber(
+                    LocalModelConfig(adapter="nemotron", model_path=self.path, device="gpu")
+                ):
                     pass
             self.assertEqual(caught.exception.code, "DEVICE_UNAVAILABLE")
 
     def test_engine_options_cannot_override_device_selection(self):
-        with self.assertRaises(ASRError) as caught:
+        with self.assertRaises(STTError) as caught:
             Transcriber(
-                engine="nemotron", model_path=self.path, engine_options={"provider": "cuda"}
+                LocalModelConfig(
+                    adapter="nemotron", model_path=self.path, adapter_options={"provider": "cuda"}
+                )
             )
         self.assertEqual(caught.exception.code, "INVALID_CONFIGURATION")
 
@@ -97,7 +102,9 @@ class ModelSourceTests(unittest.TestCase):
             ) as run,
         ):
             with Transcriber(
-                engine="whisper", model_path=self.path, engine_options={"beam_size": 2}
+                LocalModelConfig(
+                    adapter="whisper", model_path=self.path, adapter_options={"beam_size": 2}
+                )
             ) as recognizer:
                 from speechio import AudioFormat
 
@@ -106,10 +113,12 @@ class ModelSourceTests(unittest.TestCase):
 
     def test_invalid_engine_and_options_are_rejected(self):
         for options in (
-            {"engine": "other"},
-            {"engine_options": ["beam_size"]},
-            {"engine_options": {"beam_size": 0}},
+            {"adapter": "other"},
+            {"adapter_options": ["beam_size"]},
+            {"adapter_options": {"beam_size": 0}},
         ):
-            with self.subTest(options=options), self.assertRaises(ASRError):
-                with Transcriber(**{"engine": "whisper", "model_path": self.path, **options}):
+            with self.subTest(options=options), self.assertRaises(STTError):
+                with Transcriber(
+                    LocalModelConfig(**{"adapter": "whisper", "model_path": self.path, **options})
+                ):
                     pass

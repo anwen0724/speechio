@@ -5,7 +5,7 @@ from queue import Queue
 from threading import Event, Thread
 
 from speechio import AudioFormat
-from speechio.adapters.contracts import BaseSynthesisEngine, SynthesisCapabilities
+from speechio.adapters.contracts import TTSAdapter, TTSCapabilities
 from speechio.audio.results import AudioChunk
 from speechio.errors import TTSError
 from speechio.resources import CloseResult
@@ -43,8 +43,8 @@ class ControlledBackend:
         self.closed.set()
 
 
-class StreamingEngine(BaseSynthesisEngine):
-    capabilities = SynthesisCapabilities(
+class StreamingEngine(TTSAdapter):
+    capabilities = TTSCapabilities(
         default_sample_rate=24000, audio_streaming=True, text_streaming=True
     )
 
@@ -67,7 +67,7 @@ class StreamingEngine(BaseSynthesisEngine):
 class StreamTests(unittest.TestCase):
     def test_read_timeout_is_recoverable_and_cancel_wakes_reader(self):
         engine = StreamingEngine()
-        synth = Synthesizer(engine=engine)
+        synth = Synthesizer.from_adapter(adapter=engine)
         self.addCleanup(synth.close)
         stream = synth.open_stream(options=SynthesisOptions(voice="test"))
         with self.assertRaises(TTSError) as caught:
@@ -97,7 +97,7 @@ class StreamTests(unittest.TestCase):
 
     def test_buffer_overflow_fails_without_delivering_queued_audio(self):
         engine = StreamingEngine()
-        with Synthesizer(engine=engine, max_buffer_seconds=0.001) as synth:
+        with Synthesizer.from_adapter(adapter=engine, max_buffer_seconds=0.001) as synth:
             with synth.stream("Hello.", options=SynthesisOptions(voice="test")) as stream:
                 engine.backend.queue.put(AudioChunk(b"\x01\x00" * 25, stream.format))
                 with self.assertRaises(TTSError) as caught:
@@ -107,7 +107,7 @@ class StreamTests(unittest.TestCase):
 
     def test_stream_owns_task_until_read_to_end_and_can_then_be_reused(self):
         engine = StreamingEngine()
-        with Synthesizer(engine=engine) as synth:
+        with Synthesizer.from_adapter(adapter=engine) as synth:
             stream = synth.stream("One.", options=SynthesisOptions(voice="test"))
             with self.assertRaises(TTSError) as caught:
                 synth.open_stream(options=SynthesisOptions(voice="test"))
@@ -122,7 +122,7 @@ class StreamTests(unittest.TestCase):
 
     def test_backend_failure_does_not_become_successful_end(self):
         engine = StreamingEngine()
-        with Synthesizer(engine=engine) as synth:
+        with Synthesizer.from_adapter(adapter=engine) as synth:
             with synth.stream("Hello.", options=SynthesisOptions(voice="test")) as stream:
                 engine.backend.queue.put(RuntimeError("private backend detail"))
                 with self.assertRaises(TTSError) as caught:
@@ -137,7 +137,7 @@ class StreamTests(unittest.TestCase):
             raise SystemExit("worker exited")
 
         engine.backend.read = stop_worker
-        with Synthesizer(engine=engine) as synth:
+        with Synthesizer.from_adapter(adapter=engine) as synth:
             with synth.stream("Hello.", options=SynthesisOptions(voice="test")) as stream:
                 with self.assertRaises(TTSError) as caught:
                     stream.read(timeout=0.1)
@@ -156,7 +156,7 @@ class StreamTests(unittest.TestCase):
             return CloseResult()
 
         engine.backend.close = close_backend
-        synth = Synthesizer(engine=engine)
+        synth = Synthesizer.from_adapter(adapter=engine)
         stream = synth.open_stream(options=SynthesisOptions(voice="test"))
         stream.cancel()
         self.assertTrue(cleanup_attempted.wait(1))
@@ -170,7 +170,7 @@ class StreamTests(unittest.TestCase):
 
     def test_incremental_text_preserves_spaces_and_waits_for_final_audio(self):
         engine = StreamingEngine()
-        with Synthesizer(engine=engine) as synth:
+        with Synthesizer.from_adapter(adapter=engine) as synth:
             with synth.open_stream(options=SynthesisOptions(voice="test")) as stream:
                 stream.send_text("Hello")
                 stream.send_text(" ")

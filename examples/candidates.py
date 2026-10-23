@@ -4,9 +4,9 @@ import argparse
 from contextlib import closing
 from pathlib import Path
 
-from speechio import CandidateConfig, ModelConfig, SessionConfig
+from speechio import LocalModelConfig, OnDemandConfig, SessionConfig
 from speechio.audio.files import audio_file_chunks
-from speechio.runtime.asr import ASRRuntime
+from speechio.stt.runtime.asr import STTRuntime
 
 
 def wait_for(session, kind):
@@ -26,8 +26,8 @@ def main():
     parser.add_argument("model_path", type=Path)
     parser.add_argument("audio", type=Path)
     args = parser.parse_args()
-    with ASRRuntime(
-        ModelConfig(engine="whisper", model_path=args.model_path), candidate=CandidateConfig()
+    with STTRuntime(
+        LocalModelConfig(adapter="whisper", model_path=args.model_path), on_demand=OnDemandConfig()
     ) as runtime:
         with closing(audio_file_chunks(args.audio)) as blocks:
             format, first = next(blocks)
@@ -38,11 +38,11 @@ def main():
             )
             unit = session.start()
             session.feed_audio(first)
-            session.request_candidate(hint=True)
+            session.request_transcription(hint=True)
             session.resume()
             for _, block in blocks:
                 session.feed_audio(block)
-            session.request_candidate()
+            session.request_transcription()
             event = wait_for(session, "candidate")
             print("整轮候选：", event.candidate.text)
             session.end_turn()

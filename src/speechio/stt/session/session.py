@@ -9,13 +9,18 @@ from uuid import uuid4
 import numpy as np
 
 from speechio.audio.formats import AudioFormat
-from speechio.errors import ASRError
+from speechio.errors import STTError
 from speechio.stt.input import AudioConverter
+from speechio.stt.options import TranscriptionOptions, resolve_options
 from speechio.stt.results import Transcript
 from speechio.stt.runtime.tasks import InferenceRequest
 from speechio.stt.segmentation.acoustic import AcousticBoundary
 from speechio.stt.segmentation.gate import SegmentBoundary
-from speechio.stt.session.candidates import CandidateResult, CandidateState, RetainedCorrection
+from speechio.stt.session.candidates import (
+    CandidateState,
+    RetainedCorrection,
+    SessionTranscriptionResult,
+)
 from speechio.stt.text.realtime_merge import (
     RealtimeMergeConfig,
     RealtimeMerger,
@@ -40,7 +45,7 @@ def _validate_timeout(timeout, *, allow_none=False):
         or not isfinite(timeout)
         or timeout < 0
     ):
-        raise ASRError("INVALID_CONFIGURATION", "wait", "超时应为有限非负秒数")
+        raise STTError("INVALID_CONFIGURATION", "wait", "超时应为有限非负秒数")
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -48,21 +53,21 @@ class SessionConfig:
     """固定一个会话的源格式、语言和缓冲上限。"""
 
     format: AudioFormat = field(default_factory=AudioFormat)
-    language: str | None = None
+    options: TranscriptionOptions = field(default_factory=TranscriptionOptions)
     max_audio_samples: int = 480000
     max_pending_units: int = 8
     realtime: bool = False
     stabilization: StabilizationConfig | None = None
-    word_timestamps: bool = False
     merge: RealtimeMergeConfig | None = None
     completion_mode: str = "auto"
     retain_for_correction: bool = False
 
     def __post_init__(self):
         """创建时检查外部配置，不在每个输入块重复验证配置。"""
+        object.__setattr__(self, "options", resolve_options(self.options))
         if (
             not isinstance(self.realtime, bool)
-            or type(self.word_timestamps) is not bool
+            or type(self.options.word_timestamps) is not bool
             or self.completion_mode not in ("auto", "final", "candidate")
             or type(self.retain_for_correction) is not bool
             or (
@@ -75,14 +80,16 @@ class SessionConfig:
             )
             or not isinstance(self.format, AudioFormat)
             or (
-                self.language is not None
-                and (not isinstance(self.language, str) or not self.language.strip())
+                self.options.language is not None
+                and (
+                    not isinstance(self.options.language, str) or not self.options.language.strip()
+                )
             )
         ):
-            raise ASRError("INVALID_CONFIGURATION", "configure", "会话格式或语言无效")
+            raise STTError("INVALID_CONFIGURATION", "configure", "会话格式或语言无效")
         for limit in (self.max_audio_samples, self.max_pending_units):
             if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
-                raise ASRError("INVALID_CONFIGURATION", "configure", "会话容量应为正整数")
+                raise STTError("INVALID_CONFIGURATION", "configure", "会话容量应为正整数")
 
     def resolve_completion_source(self, realtime_mode=None):
         """默认采用流式结束结果；快照或未启用实时识别时执行整段识别。"""
@@ -162,7 +169,7 @@ class SessionEvent:
     optimization: dict | None = None
     realtime_role: str | None = None
     merge: RealtimeMergeResult | None = None
-    candidate: CandidateResult | None = None
+    candidate: SessionTranscriptionResult | None = None
     resume_epoch: int = 0
     resume_id: str | None = None
     candidate_start_sample: int = 0
@@ -207,15 +214,15 @@ class Session:
 
     def __init__(self, runtime, config: SessionConfig):
         if not runtime.final_enabled and config.completion_mode != "candidate":
-            raise ASRError("BACKEND_INCOMPATIBLE", "create_session", "候选专用宿主要求候选完成策略")
+            raise STTError("BACKEND_INCOMPATIBLE", "create_session", "候选专用宿主要求候选完成策略")
         if (config.completion_mode == "candidate" or config.retain_for_correction) and (
-            runtime.candidate_config is None
+            runtime.on_demand_config is None
         ):
-            raise ASRError("CANDIDATE_NOT_CONFIGURED", "create_session", "完成或修正需要候选角色")
+            raise STTError("CANDIDATE_NOT_CONFIGURED", "create_session", "完成或修正需要候选角色")
         if config.merge is not None and (
             runtime.realtime is None or not runtime.realtime.has_ultrafast
         ):
-            raise ASRError("REALTIME_NOT_CONFIGURED", "create_session", "运行时未配置极速角色")
+            raise STTError("REALTIME_NOT_CONFIGURED", "create_session", "运行时未配置极速角色")
         self._runtime = runtime
         self._config = config
         realtime_mode = runtime.realtime.accurate_config.mode if runtime.realtime else None
@@ -285,9 +292,9 @@ class Session:
     def _require_open(self):
         if self._runtime_error is not None:
             error = self._runtime_error
-            raise ASRError(error.code, error.operation, error.message)
+            raise STTError(error.code, error.operation, error.message)
         if self._closed:
-            raise ASRError("SESSION_CLOSED", "session", "会话已经关闭")
+            raise STTError("SESSION_CLOSED", "session", "会话已经关闭")
 
     def start(self) -> TurnRef:
         """开始独立音频单元；不覆盖仍在接收的输入。"""
@@ -299,13 +306,13 @@ class Session:
         with self._runtime.coordination:
             self._require_open()
             if self._active is not None:
-                raise ASRError("UNIT_ACTIVE", "start", "已有活动音频单元")
+                raise STTError("UNIT_ACTIVE", "start", "已有活动音频单元")
             if len(self._units) >= self.config.max_pending_units:
-                raise ASRError("RESULT_CAPACITY_EXCEEDED", "start", "未消费单元达到容量上限")
+                raise STTError("RESULT_CAPACITY_EXCEEDED", "start", "未消费单元达到容量上限")
             ref = TurnRef(self.session_id, self._generation, self._next_unit)
             unit = self._new_unit(ref, format)
             unit.completion_source = self._completion_source
-            if self._runtime.candidate_config is not None:
+            if self._runtime.on_demand_config is not None:
                 unit.candidates = CandidateState(ref)
             if self.config.merge is not None:
                 unit.merger = RealtimeMerger(ref, self.config.merge)
@@ -364,7 +371,7 @@ class Session:
         result = deepcopy(event.result)
         if (
             result is not None
-            and self.config.word_timestamps
+            and self.config.options.word_timestamps
             and (not self._runtime.realtime_capabilities.word_timestamps or result.words is None)
         ):
             result = replace(result, timestamp_status="unavailable")
@@ -430,7 +437,7 @@ class Session:
             return
         value = replace(value, replaces_task_id=context.task_id)
         if error is None and not value.text:
-            error = ASRError("CANDIDATE_EMPTY", "correct", "重试后仍无修正正文，保留原最终正文")
+            error = STTError("CANDIDATE_EMPTY", "correct", "重试后仍无修正正文，保留原最终正文")
         if error is not None:
             value = replace(value, status="failed", **getattr(error, "candidate_execution", {}))
         submitted, started, completed = timing
@@ -460,21 +467,21 @@ class Session:
             self._require_open()
             context = self._retained
             if context is None or context.turn != unit:
-                raise ASRError("CORRECTION_UNAVAILABLE", "correct", "目标没有可用的整轮修正上下文")
+                raise STTError("CORRECTION_UNAVAILABLE", "correct", "目标没有可用的整轮修正上下文")
             samples = len(context.pcm) // 2
             request = context.state.describe("correction", False, 0, samples)
             task = FinalTask(unit, request.request_id, samples, samples)
             job = InferenceRequest(
                 task,
                 context.pcm,
-                self.config.language,
-                self.config.word_timestamps,
+                self.config.options.language,
+                self.config.options.word_timestamps,
                 priority="auxiliary",
                 role="candidate",
                 retry_empty=True,
             )
             if not self._runtime.submit(job, replace_task_id=context.state.replacing("correction")):
-                raise ASRError("CANDIDATE_CAPACITY_EXCEEDED", "correct", "修正任务容量不足")
+                raise STTError("CANDIDATE_CAPACITY_EXCEEDED", "correct", "修正任务容量不足")
             context.state.accept(request, "", job.pcm)
             context.event = None
             return request
@@ -503,8 +510,8 @@ class Session:
             InferenceRequest(
                 task,
                 pcm,
-                self.config.language,
-                self.config.word_timestamps,
+                self.config.options.language,
+                self.config.options.word_timestamps,
                 role="candidate" if self.config.completion_mode == "candidate" else "final",
                 retry_empty=self.config.completion_mode == "candidate",
             )
@@ -523,22 +530,22 @@ class Session:
             self._require_open()
             unit = self._require_active()
             if unit.converter.state == "finished":
-                raise ASRError("UNIT_SEALED", "feed_audio", "音频单元已经封口")
+                raise STTError("UNIT_SEALED", "feed_audio", "音频单元已经封口")
             scalar_bytes = 2 if self.config.format.sample_type == "int16" else 4
             if isinstance(chunk, (bytes, bytearray, memoryview)):
                 source_bytes = len(chunk)
             elif isinstance(chunk, np.ndarray):
                 source_bytes = chunk.size * scalar_bytes
             else:
-                raise ASRError("INVALID_AUDIO", "feed_audio", "输入应为字节或 NumPy 数组")
+                raise STTError("INVALID_AUDIO", "feed_audio", "输入应为字节或 NumPy 数组")
             source_frames = self.config.max_audio_samples * self.config.format.sample_rate // 16000
             source_limit = source_frames * self.config.format.channels * scalar_bytes
             if unit.source_bytes + source_bytes > source_limit:
-                raise ASRError("AUDIO_CAPACITY_EXCEEDED", "feed_audio", "当前块超过音频容量")
+                raise STTError("AUDIO_CAPACITY_EXCEEDED", "feed_audio", "当前块超过音频容量")
             before = len(unit.pcm)
             try:
                 frames = unit.converter.feed(chunk)
-            except ASRError as exc:
+            except STTError as exc:
                 if exc.code != "INVALID_AUDIO":
                     self._terminal(unit, "failed", error=exc)
                 raise
@@ -551,7 +558,7 @@ class Session:
 
     def _require_active(self):
         if self._active is None:
-            raise ASRError("NO_ACTIVE_UNIT", "session", "没有活动音频单元")
+            raise STTError("NO_ACTIVE_UNIT", "session", "没有活动音频单元")
         return self._active
 
     def _drain_ready_audio(self, unit):
@@ -565,60 +572,60 @@ class Session:
             self._require_open()
             unit = self._require_active()
             if unit.task is not None:
-                raise ASRError("NO_ACTIVE_UNIT", "current_audio", "当前单元已经封口")
+                raise STTError("NO_ACTIVE_UNIT", "current_audio", "当前单元已经封口")
             self._drain_ready_audio(unit)
             pcm = bytes(unit.pcm)
             start = unit.stream_start_sample or 0
             return AudioSnapshot(unit.ref, pcm, start, start + len(pcm) // 2)
 
-    def request_candidate(self, *, kind="whole", hint=False):
+    def request_transcription(self, *, scope="whole", hint=False):
         """固定当前输入与准确正文，接纳后立即返回请求描述。"""
         with self._runtime.coordination:
             self._require_open()
-            config = self._runtime.candidate_config
+            config = self._runtime.on_demand_config
             if config is None:
-                raise ASRError("CANDIDATE_NOT_CONFIGURED", "candidate", "运行时未配置候选角色")
-            if kind not in ("tail", "whole") or type(hint) is not bool:
-                raise ASRError("INVALID_CONFIGURATION", "candidate", "候选种类或提示开关无效")
+                raise STTError("CANDIDATE_NOT_CONFIGURED", "candidate", "运行时未配置候选角色")
+            if scope not in ("tail", "whole") or type(hint) is not bool:
+                raise STTError("INVALID_CONFIGURATION", "candidate", "候选种类或提示开关无效")
             unit = self._require_active()
             if unit.converter.state != "open":
-                raise ASRError("UNIT_SEALED", "candidate", "候选只接受未封口输入")
+                raise STTError("UNIT_SEALED", "candidate", "候选只接受未封口输入")
             self._drain_ready_audio(unit)
             end = len(unit.pcm) // 2
             if not end:
-                raise ASRError("INVALID_AUDIO", "candidate", "候选输入没有标准样本")
-            start = max(0, end - config.tail_samples) if kind == "tail" else 0
-            request = unit.candidates.describe(kind, hint, start, end)
+                raise STTError("INVALID_AUDIO", "candidate", "候选输入没有标准样本")
+            start = max(0, end - config.tail_samples) if scope == "tail" else 0
+            request = unit.candidates.describe(scope, hint, start, end)
             task = FinalTask(unit.ref, request.request_id, end - start, end)
             job = InferenceRequest(
                 task,
                 bytes(unit.pcm[start * 2 :]),
-                self.config.language,
-                word_timestamps=self.config.word_timestamps,
+                self.config.options.language,
+                word_timestamps=self.config.options.word_timestamps,
                 priority="auxiliary",
                 role="candidate",
                 retry_empty=not hint,
             )
-            if not self._runtime.submit(job, replace_task_id=unit.candidates.replacing(kind)):
-                raise ASRError("CANDIDATE_CAPACITY_EXCEEDED", "candidate", "候选任务容量不足")
+            if not self._runtime.submit(job, replace_task_id=unit.candidates.replacing(scope)):
+                raise STTError("CANDIDATE_CAPACITY_EXCEEDED", "candidate", "候选任务容量不足")
             unit.candidates.accept(request, unit.last_realtime_text, job.pcm)
-            unit.candidate_events.pop(kind, None)
+            unit.candidate_events.pop(scope, None)
             return request
 
     def resume(self, *, expected_audio_samples=None):
         """确认标准输入边界，保留同一单元的完整音频和源转换状态。"""
         with self._runtime.coordination:
             self._require_open()
-            if self._runtime.candidate_config is None:
-                raise ASRError("CANDIDATE_NOT_CONFIGURED", "resume", "运行时未配置候选角色")
+            if self._runtime.on_demand_config is None:
+                raise STTError("CANDIDATE_NOT_CONFIGURED", "resume", "运行时未配置候选角色")
             unit = self._require_active()
             self._drain_ready_audio(unit)
             samples = len(unit.pcm) // 2
             if expected_audio_samples is not None:
                 if type(expected_audio_samples) is not int or expected_audio_samples < 0:
-                    raise ASRError("INVALID_CONFIGURATION", "resume", "预期采样边界应为非负整数")
+                    raise STTError("INVALID_CONFIGURATION", "resume", "预期采样边界应为非负整数")
                 if expected_audio_samples != samples:
-                    raise ASRError(
+                    raise STTError(
                         "RESUME_BOUNDARY_MISMATCH", "resume", "采样边界与已接纳输入不一致"
                     )
             ack, old_requests = unit.candidates.resume(samples)
@@ -656,8 +663,8 @@ class Session:
                 for frame in unit.converter.finish():
                     unit.pcm.extend(frame.pcm)
                 if not unit.pcm:
-                    raise ASRError("INVALID_AUDIO", "end_turn", "完整输入没有标准采样")
-            except ASRError as exc:
+                    raise STTError("INVALID_AUDIO", "end_turn", "完整输入没有标准采样")
+            except STTError as exc:
                 self._terminal(unit, "failed", error=exc)
                 raise
             if self.config.realtime:
@@ -766,7 +773,7 @@ class Session:
                     or target.turn_id < 1
                     or target.turn_id >= self._next_unit
                 ):
-                    raise ASRError("INVALID_TARGET", "cancel", "目标不属于已创建的会话单元")
+                    raise STTError("INVALID_TARGET", "cancel", "目标不属于已创建的会话单元")
                 if target.generation < self._generation:
                     return False
                 if self._retained is not None and self._retained.turn == target:
@@ -774,7 +781,7 @@ class Session:
                     return True
                 unit = self._units.get(target.turn_id)
                 if unit is not None and unit.ref != target:
-                    raise ASRError("INVALID_TARGET", "cancel", "目标代次与音频单元不匹配")
+                    raise STTError("INVALID_TARGET", "cancel", "目标代次与音频单元不匹配")
             if unit is None or unit.events is not None:
                 return False
             if unit.task is not None:
@@ -935,7 +942,7 @@ class Session:
             available_event = self._next_event()
             if available_event is None and self._runtime_error is not None:
                 error = self._runtime_error
-                raise ASRError(error.code, error.operation, error.message)
+                raise STTError(error.code, error.operation, error.message)
             unit, source = available_event
             self._sequence += 1
             if source == "correction":

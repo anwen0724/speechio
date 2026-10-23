@@ -7,8 +7,9 @@ import wave
 from dataclasses import asdict
 from pathlib import Path
 
-from speechio import ModelConfig, RealtimeConfig, SessionConfig
-from speechio.runtime.asr import ASRRuntime
+from speechio import LocalModelConfig, RealtimeConfig, SessionConfig
+from speechio.stt.options import TranscriptionOptions
+from speechio.stt.runtime.asr import STTRuntime
 
 
 def main():
@@ -18,13 +19,15 @@ def main():
     parser.add_argument("--backend", choices=("whisper", "nemotron"), default="whisper")
     parser.add_argument("--language")
     args = parser.parse_args()
-    model = ModelConfig(model_path=args.model_path, engine=args.backend)
+    model = LocalModelConfig(model_path=args.model_path, adapter=args.backend)
     mode = model.capabilities.realtime_mode
-    with ASRRuntime(
+    with STTRuntime(
         model,
         realtime=RealtimeConfig(mode=mode),
     ) as runtime:
-        session = runtime.create_session(SessionConfig(realtime=True, language=args.language))
+        session = runtime.create_session(
+            SessionConfig(realtime=True, options=TranscriptionOptions(language=args.language))
+        )
         completed = 0
 
         def consume(timeout=0):

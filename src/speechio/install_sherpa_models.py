@@ -4,7 +4,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from speechio.errors import ASRError
+from speechio.errors import STTError
 from speechio.model_manifests import nemotron_manifests
 from speechio.models.files import check_model_files
 from speechio.models.manifest import sha256_file
@@ -80,7 +80,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         installed = install_models(args.root, args.model, offline=args.offline)
-    except (ModelInstallError, ASRError) as exc:
+    except (ModelInstallError, STTError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
     for name, path in installed.items():

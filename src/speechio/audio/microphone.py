@@ -7,7 +7,7 @@ from math import isfinite
 from threading import Condition, Event, Thread
 
 from speechio.audio.formats import AudioFormat
-from speechio.errors import ASRError
+from speechio.errors import STTError
 from speechio.resources import CloseError, CloseResult
 
 SAMPLE_RATES = (8000, 9600, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000)
@@ -53,7 +53,7 @@ class MicrophoneConfig:
                 or self.queue_seconds <= 0
             )
         ):
-            raise ASRError("INVALID_CONFIGURATION", "configure_microphone", "麦克风配置无效")
+            raise STTError("INVALID_CONFIGURATION", "configure_microphone", "麦克风配置无效")
 
 
 def _portaudio():
@@ -61,7 +61,7 @@ def _portaudio():
     try:
         import pyaudio
     except ImportError as exc:
-        raise ASRError(
+        raise STTError(
             "OPTIONAL_DEPENDENCY_MISSING",
             "open_microphone",
             '麦克风运行库缺失，请运行 pip install "speechio[microphone]"',
@@ -74,9 +74,9 @@ def _device(interface, index, channels, default_index, pcm_type):
     try:
         info = interface.get_device_info_by_index(index)
     except Exception as exc:
-        raise ASRError("INPUT_DEVICE_INVALID", "select_device", str(exc)) from exc
+        raise STTError("INPUT_DEVICE_INVALID", "select_device", str(exc)) from exc
     if info["maxInputChannels"] < channels:
-        raise ASRError("INPUT_DEVICE_INVALID", "select_device", "设备没有所需输入声道")
+        raise STTError("INPUT_DEVICE_INVALID", "select_device", "设备没有所需输入声道")
     rates = []
     for rate in SAMPLE_RATES:
         try:
@@ -100,7 +100,7 @@ def _device(interface, index, channels, default_index, pcm_type):
 def list_input_devices(*, channels=1):
     """枚举拥有输入声道的设备；操作结束后回收自己的 PortAudio 实例。"""
     if type(channels) is not int or channels <= 0:
-        raise ASRError("INVALID_CONFIGURATION", "list_devices", "声道应为正整数")
+        raise STTError("INVALID_CONFIGURATION", "list_devices", "声道应为正整数")
     library = _portaudio()
     interface = None
     try:
@@ -120,10 +120,10 @@ def list_input_devices(*, channels=1):
                     device = replace(device, supported_sample_rates=())
                 devices.append(device)
         return tuple(devices)
-    except ASRError:
+    except STTError:
         raise
     except Exception as exc:
-        raise ASRError("DEVICE_ENUMERATION_FAILED", "list_devices", str(exc)) from exc
+        raise STTError("DEVICE_ENUMERATION_FAILED", "list_devices", str(exc)) from exc
     finally:
         if interface is not None:
             primary = sys.exception()
@@ -134,7 +134,7 @@ def list_input_devices(*, channels=1):
                 if primary is not None:
                     primary.cleanup_errors = (cleanup,)
                 else:
-                    raise ASRError(cleanup.code, cleanup.operation, cleanup.message) from exc
+                    raise STTError(cleanup.code, cleanup.operation, cleanup.message) from exc
 
 
 class MicrophoneInput:
@@ -143,7 +143,7 @@ class MicrophoneInput:
     def __init__(self, config=None):
         self.config = config if config is not None else MicrophoneConfig()
         if not isinstance(self.config, MicrophoneConfig):
-            raise ASRError("INVALID_CONFIGURATION", "configure_microphone", "需要 MicrophoneConfig")
+            raise STTError("INVALID_CONFIGURATION", "configure_microphone", "需要 MicrophoneConfig")
         self.state = "new"
         self.format = None
         self.device = None
@@ -163,7 +163,7 @@ class MicrophoneInput:
         if self.state in ("ready", "running"):
             return self.format
         if self.state != "new":
-            raise ASRError("MICROPHONE_CLOSED", "prepare_microphone", "采集器不能重新准备")
+            raise STTError("MICROPHONE_CLOSED", "prepare_microphone", "采集器不能重新准备")
         library = _portaudio()
         try:
             self._interface = library.PyAudio()
@@ -172,7 +172,7 @@ class MicrophoneInput:
                 default_index = int(self._interface.get_default_input_device_info()["index"])
             except OSError:
                 if self.config.device_index is None:
-                    raise ASRError("INPUT_DEVICE_INVALID", "select_device", "没有系统默认输入设备")
+                    raise STTError("INPUT_DEVICE_INVALID", "select_device", "没有系统默认输入设备")
             index = (
                 self.config.device_index if self.config.device_index is not None else default_index
             )
@@ -200,10 +200,10 @@ class MicrophoneInput:
                 except ValueError:
                     continue
             if rate is None:
-                raise ASRError("DEVICE_FORMAT_UNSUPPORTED", "open_microphone", "设备不支持请求格式")
+                raise STTError("DEVICE_FORMAT_UNSUPPORTED", "open_microphone", "设备不支持请求格式")
             format = AudioFormat(rate, self.config.channels, "int16")
             if int(rate * self.config.queue_seconds) < self.config.chunk_frames:
-                raise ASRError("INVALID_CONFIGURATION", "open_microphone", "缓冲不足一个采集块")
+                raise STTError("INVALID_CONFIGURATION", "open_microphone", "缓冲不足一个采集块")
             self._stream = self._interface.open(
                 format=library.paInt16,
                 rate=rate,
@@ -220,9 +220,9 @@ class MicrophoneInput:
             cleanup = self._release()
             if cleanup.errors:
                 exc.cleanup_errors = cleanup.errors
-            if isinstance(exc, (ASRError, KeyboardInterrupt, SystemExit)):
+            if isinstance(exc, (STTError, KeyboardInterrupt, SystemExit)):
                 raise
-            raise ASRError("MICROPHONE_OPEN_FAILED", "open_microphone", str(exc)) from exc
+            raise STTError("MICROPHONE_OPEN_FAILED", "open_microphone", str(exc)) from exc
 
     def _release(self):
         """每项资源分别清理，前一项失败仍继续执行后续项。"""
@@ -282,7 +282,7 @@ class MicrophoneInput:
             if self.state == "new":
                 self.prepare()
             if self.state != "ready":
-                raise ASRError("MICROPHONE_CLOSED", "start_microphone", "采集器不可启动")
+                raise STTError("MICROPHONE_CLOSED", "start_microphone", "采集器不可启动")
             try:
                 self._stream.start_stream()
                 self.state = "running"
@@ -294,7 +294,7 @@ class MicrophoneInput:
                 if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                     exc.cleanup_errors = cleanup.errors
                     raise
-                error = ASRError("MICROPHONE_OPEN_FAILED", "start_microphone", str(exc))
+                error = STTError("MICROPHONE_OPEN_FAILED", "start_microphone", str(exc))
                 error.cleanup_errors = cleanup.errors
                 raise error from exc
             return self.format
@@ -313,14 +313,14 @@ class MicrophoneInput:
                         if exc.errno == library.paInputOverflowed
                         else "MICROPHONE_READ_FAILED"
                     )
-                    raise ASRError(code, "read_microphone", str(exc)) from exc
+                    raise STTError(code, "read_microphone", str(exc)) from exc
                 frame_bytes = self.format.channels * 2
                 if not pcm or len(pcm) % frame_bytes:
-                    raise ASRError("MICROPHONE_READ_FAILED", "read_microphone", "设备返回无效源帧")
+                    raise STTError("MICROPHONE_READ_FAILED", "read_microphone", "设备返回无效源帧")
                 frames = len(pcm) // frame_bytes
                 with self._condition:
                     if self.buffered_frames + frames > limit:
-                        raise ASRError(
+                        raise STTError(
                             "CAPTURE_CAPACITY_EXCEEDED", "read_microphone", "采集缓冲已满，输入停止"
                         )
                     self._queue.append(bytes(pcm))
@@ -329,8 +329,8 @@ class MicrophoneInput:
                     self._condition.notify_all()
         except Exception as exc:
             with self._condition:
-                self.error = ASRError(
-                    exc.code if isinstance(exc, ASRError) else "MICROPHONE_READ_FAILED",
+                self.error = STTError(
+                    exc.code if isinstance(exc, STTError) else "MICROPHONE_READ_FAILED",
                     "read_microphone",
                     str(exc),
                 )
@@ -356,7 +356,7 @@ class MicrophoneInput:
                 self.buffered_frames -= len(pcm) // (self.format.channels * 2)
                 return pcm
             if self.error is not None:
-                raise ASRError(self.error.code, self.error.operation, self.error.message)
+                raise STTError(self.error.code, self.error.operation, self.error.message)
             return None
 
     def __enter__(self):
@@ -366,7 +366,7 @@ class MicrophoneInput:
     def __exit__(self, exc_type, exc, tb):
         result = self.close()
         if exc_type is None and result.status != "ok":
-            raise ASRError("MICROPHONE_CLEANUP_FAILED", "close_microphone", result.status)
+            raise STTError("MICROPHONE_CLEANUP_FAILED", "close_microphone", result.status)
         if exc is not None and result.errors:
             exc.cleanup_errors = result.errors
         return False
@@ -382,4 +382,4 @@ def _timeout(value, *, allow_none=False):
         or not isfinite(value)
         or value < 0
     ):
-        raise ASRError("INVALID_CONFIGURATION", "wait_microphone", "等待秒数应为有限非负值")
+        raise STTError("INVALID_CONFIGURATION", "wait_microphone", "等待秒数应为有限非负值")

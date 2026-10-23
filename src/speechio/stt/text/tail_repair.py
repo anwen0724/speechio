@@ -3,7 +3,7 @@
 import re
 from dataclasses import dataclass
 
-from speechio.errors import ASRError
+from speechio.errors import STTError
 from speechio.stt.text.stabilizer import project_text
 
 
@@ -125,7 +125,7 @@ def _fuzzy_anchor(live, tail):
 def repair_tail(live_text: str, tail_text: str) -> TailRepairResult:
     """准确前缀与独立尾部对齐，返回修复结果而不修改任何会话状态。"""
     if not isinstance(live_text, str) or not isinstance(tail_text, str):
-        raise ASRError("INVALID_CONFIGURATION", "repair_tail", "实时与尾部正文应为字符串")
+        raise STTError("INVALID_CONFIGURATION", "repair_tail", "实时与尾部正文应为字符串")
     live_text, tail_text = live_text.strip(), tail_text.strip()
     if not tail_text:
         return TailRepairResult(live_text, "empty")

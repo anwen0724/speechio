@@ -2,7 +2,7 @@
 
 from importlib import import_module
 
-from speechio.errors import ASRError
+from speechio.errors import STTError
 
 # 名字只用于选择实现；所有适配器只加载已有本地目录。
 ENGINE_CLASSES = {
@@ -31,9 +31,9 @@ def available_engines():
 
 def create_engine(config):
     """按配置创建本地适配器；未知名字在组装边界立即失败。"""
-    name = str(config.engine or "whisper").strip().lower().replace("-", "_")
+    name = str(config.adapter or "whisper").strip().lower().replace("-", "_")
     if name not in ENGINE_CLASSES:
-        raise ASRError(
+        raise STTError(
             "BACKEND_INCOMPATIBLE",
             "configure",
             f"不支持的引擎 {name}；可用：{', '.join(available_engines())}",
@@ -64,14 +64,14 @@ REMOTE_MODELS = {
 
 def engine_capabilities(config):
     """集中声明已适配模型的能力，不加载运行库或联网探测。"""
-    from speechio.adapters.contracts import EngineCapabilities
+    from speechio.adapters.contracts import STTCapabilities
     from speechio.models.config import LocalModelConfig, RemoteModelConfig
 
     if isinstance(config, LocalModelConfig):
-        name = normalize_engine(config.engine)
+        name = normalize_engine(config.adapter)
         if name not in LOCAL_CAPABILITIES:
-            raise ASRError("BACKEND_INCOMPATIBLE", "configure", "未知本地引擎")
-        return EngineCapabilities(
+            raise STTError("BACKEND_INCOMPATIBLE", "configure", "未知本地引擎")
+        return STTCapabilities(
             engine=name,
             model=str(config.model_path),
             device=config.device,
@@ -80,9 +80,9 @@ def engine_capabilities(config):
     if isinstance(config, RemoteModelConfig):
         key = (config.provider, config.model)
         if key not in REMOTE_MODELS:
-            raise ASRError("BACKEND_INCOMPATIBLE", "configure", "尚未适配该远程服务或模型")
-        return EngineCapabilities(engine=config.provider, model=config.model, **REMOTE_MODELS[key])
-    raise ASRError("INVALID_CONFIGURATION", "configure", "需要本地或远程模型配置")
+            raise STTError("BACKEND_INCOMPATIBLE", "configure", "尚未适配该远程服务或模型")
+        return STTCapabilities(engine=config.provider, model=config.model, **REMOTE_MODELS[key])
+    raise STTError("INVALID_CONFIGURATION", "configure", "需要本地或远程模型配置")
 
 
 def build_engine(config):
@@ -107,11 +107,22 @@ def build_engine(config):
 def build_synthesis_engine(config):
     """按合成操作选择适配器，不使用原识别能力查询猜测功能。"""
     from speechio.errors import TTSError
-    from speechio.models.config import RemoteModelConfig
+    from speechio.models.config import LocalModelConfig, RemoteModelConfig
 
-    if not isinstance(config, RemoteModelConfig) or (
-        config.provider, config.model
-    ) != ("bailian", "qwen-audio-3.1-tts-flash"):
+    if isinstance(config, LocalModelConfig):
+        adapters = {
+            "qwen_tts": ("speechio.adapters.local.qwen_tts", "QwenTTSAdapter"),
+            "kokoro": ("speechio.adapters.local.kokoro", "KokoroAdapter"),
+        }
+        selected = adapters.get(config.adapter)
+        if selected is None:
+            raise TTSError("CAPABILITY_UNSUPPORTED", "configure", "未知本地合成适配器")
+        module, name = selected
+        return getattr(import_module(module), name)(config)
+    if not isinstance(config, RemoteModelConfig) or (config.provider, config.model) != (
+        "bailian",
+        "qwen-audio-3.1-tts-flash",
+    ):
         raise TTSError("CAPABILITY_UNSUPPORTED", "configure", "尚未适配该来源的合成模型")
     from speechio.adapters.remote.bailian_tts import BailianSynthesisEngine
 

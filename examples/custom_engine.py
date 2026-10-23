@@ -4,6 +4,7 @@ import argparse
 from importlib import import_module
 
 from speechio import Transcriber
+from speechio.stt.options import TranscriptionOptions
 
 
 def main():
@@ -15,8 +16,10 @@ def main():
     args = parser.parse_args()
     module_name, function_name = args.factory.split(":", 1)
     factory = getattr(import_module(module_name), function_name)
-    with Transcriber(engine=factory()) as recognizer:
-        result = recognizer.transcribe_file(args.file, language=args.language)
+    with Transcriber.from_adapter(adapter=factory()) as recognizer:
+        result = recognizer.transcribe_file(
+            args.file, options=TranscriptionOptions(language=args.language)
+        )
         print(result.text)
 
 

@@ -4,20 +4,21 @@ import argparse
 from contextlib import closing
 
 from speechio import (
-    ASRError,
-    ModelConfig,
+    LocalModelConfig,
     RealtimeConfig,
     RealtimeMergeConfig,
     SessionConfig,
+    STTError,
 )
 from speechio.audio.files import audio_file_chunks
-from speechio.runtime.asr import ASRRuntime
+from speechio.stt.options import TranscriptionOptions
+from speechio.stt.runtime.asr import STTRuntime
 
 
 def show(event):
     """模型错误保留分类；合并文本只作为预览，不替代最终正文。"""
     if event.error is not None:
-        raise ASRError(event.error.code, event.error.operation, event.error.message)
+        raise STTError(event.error.code, event.error.operation, event.error.message)
     print(
         event.kind,
         event.realtime_role,
@@ -33,19 +34,19 @@ def main():
     parser.add_argument("--ultrafast-model", required=True)
     parser.add_argument("--language")
     args = parser.parse_args()
-    accurate = ModelConfig(model_path=args.accurate_model, engine="nemotron")
-    fast = ModelConfig(model_path=args.ultrafast_model, engine="nemotron")
-    with ASRRuntime(
+    accurate = LocalModelConfig(model_path=args.accurate_model, adapter="nemotron")
+    fast = LocalModelConfig(model_path=args.ultrafast_model, adapter="nemotron")
+    with STTRuntime(
         accurate,
         realtime=RealtimeConfig(mode="streaming"),
-        ultrafast=RealtimeConfig(mode="streaming", model=fast),
+        ultrafast=RealtimeConfig(mode="streaming", config=fast),
     ) as runtime:
         with closing(audio_file_chunks(args.file)) as chunks:
             format, first = next(chunks)
             session = runtime.create_session(
                 SessionConfig(
                     format=format,
-                    language=args.language,
+                    options=TranscriptionOptions(language=args.language),
                     realtime=True,
                     merge=RealtimeMergeConfig(),
                 )

@@ -4,7 +4,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from speechio.errors import ASRError
+from speechio.errors import STTError
 from tests.support import whisper_engine
 
 
@@ -39,6 +39,6 @@ class WhisperTests(unittest.TestCase):
                 "faster_whisper.BatchedInferencePipeline.transcribe",
                 return_value=(segments(), info),
             ):
-                with self.assertRaises(ASRError) as caught:
+                with self.assertRaises(STTError) as caught:
                     engine.transcribe([0.1])
         self.assertEqual(caught.exception.code, "INFERENCE_FAILED")

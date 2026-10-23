@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from speechio.errors import ASRError
+from speechio.errors import STTError
 
 SAMPLE_RATE = 16000
 
@@ -19,9 +19,9 @@ class AudioFormat:
 
     def __post_init__(self):
         if not _positive_integer(self.sample_rate):
-            raise ASRError("INVALID_SAMPLE_RATE", "convert_audio", "采样率应为正整数")
+            raise STTError("INVALID_SAMPLE_RATE", "convert_audio", "采样率应为正整数")
         if not _positive_integer(self.channels) or self.sample_type not in ("int16", "float32"):
-            raise ASRError("INVALID_AUDIO_FORMAT", "convert_audio", "声道或采样类型无效")
+            raise STTError("INVALID_AUDIO_FORMAT", "convert_audio", "声道或采样类型无效")
 
 
 def _positive_integer(value):

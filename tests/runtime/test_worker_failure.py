@@ -4,8 +4,8 @@ import unittest
 from threading import Event
 from unittest.mock import patch
 
-from speechio import ASRError, Transcript
-from speechio.runtime.asr import ASRRuntime
+from speechio import STTError, Transcript
+from speechio.stt.runtime.asr import STTRuntime
 from tests.runtime.test_engine_injection import RecordingEngine
 from tests.test_api import SpeechDetector
 
@@ -40,7 +40,7 @@ class BlockingEngine(RecordingEngine):
 class WorkerFailureTests(unittest.TestCase):
     def prepare_queue(self, *, broken_metadata=False):
         engine = BlockingEngine(broken_metadata=broken_metadata)
-        runtime = ASRRuntime(engine=engine)
+        runtime = STTRuntime.from_adapter(adapter=engine)
         self.addCleanup(runtime.close)
         self.addCleanup(engine.release.set)
         runtime.prepare()
@@ -69,7 +69,7 @@ class WorkerFailureTests(unittest.TestCase):
         self.assertEqual(runtime.capacity.task_audio_samples, 0)
         self.assertEqual(engine.closes, 1)
         self.assertIs(runtime.close(), result)
-        with self.assertRaises(ASRError):
+        with self.assertRaises(STTError):
             runtime.create_session()
 
     def test_unexpected_execution_error_fails_running_and_queued_tasks(self):
@@ -80,7 +80,7 @@ class WorkerFailureTests(unittest.TestCase):
             self.assertIsNotNone(event)
             self.assertEqual((event.kind, event.turn), ("failed", turn))
             self.assertEqual(event.error.code, "RUNTIME_WORKER_FAILED")
-        with self.assertRaises(ASRError):
+        with self.assertRaises(STTError):
             session.start()
         self.assert_failed_shutdown(runtime, engine)
 
@@ -122,11 +122,11 @@ class WorkerFailureTests(unittest.TestCase):
                 return Transcript(text="result", backend_metadata={"bad": BrokenMetadata()})
 
         engine = Engine()
-        runtime = ASRRuntime(engine=engine)
+        runtime = STTRuntime.from_adapter(adapter=engine)
         self.addCleanup(runtime.close)
         self.addCleanup(release.set)
         runtime.prepare()
-        session = runtime.create_auto_session(detector_factory=SpeechDetector)
+        session = runtime.create_auto_session_from_detector(detector_factory=SpeechDetector)
         session.feed_audio(b"\xd0\x07" * 16000)
         session.end_turn()
         self.assertTrue(entered.wait(2))
@@ -140,7 +140,7 @@ class WorkerFailureTests(unittest.TestCase):
         self.assertEqual(session.input_state, "failed")
         while session.pending_segments:
             self.assertEqual(session.next_event(timeout=2).kind, "failed")
-        with self.assertRaises(ASRError) as caught:
+        with self.assertRaises(STTError) as caught:
             session.next_event(timeout=None)
         self.assertEqual(caught.exception.code, "RUNTIME_WORKER_FAILED")
         self.assert_failed_shutdown(runtime, engine)

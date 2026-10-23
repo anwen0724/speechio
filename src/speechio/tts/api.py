@@ -3,7 +3,13 @@
 from speechio.tts.synthesizer import Synthesizer
 
 
-def synthesize(text, *, options, config=None, engine=None):
+def synthesize(text, *, config, options):
     """完整文本合成；重复调用宜显式复用 Synthesizer。"""
-    with Synthesizer(config, engine=engine) as synthesizer:
+    with Synthesizer(config) as synthesizer:
         return synthesizer.synthesize(text, options=options)
+
+
+def clone_voice(reference_audio, *, config, reference_text=None):
+    """一次性使用指定模型克隆声音，结果独立于模型实例。"""
+    with Synthesizer(config) as synthesizer:
+        return synthesizer.clone_voice(reference_audio, reference_text=reference_text)

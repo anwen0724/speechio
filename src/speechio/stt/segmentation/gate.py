@@ -4,7 +4,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from math import ceil, isfinite
 
-from speechio.errors import ASRError
+from speechio.errors import STTError
 from speechio.stt.input import AudioFrame
 
 
@@ -43,7 +43,7 @@ class SegmentationConfig:
             or type(self.max_buffer_samples) is not int
             or self.max_buffer_samples <= 0
         ):
-            raise ASRError("INVALID_CONFIGURATION", "configure", "自动分句配置无效")
+            raise STTError("INVALID_CONFIGURATION", "configure", "自动分句配置无效")
 
 
 @dataclass(frozen=True)
@@ -271,7 +271,7 @@ class SegmentationGate:
         """按已核实时间固定左段；右侧直接续接，不重复前置历史。"""
         left = self.active
         if left is None or not left.start_sample < sample < self.position:
-            raise ASRError("INVALID_BOUNDARY", "split", "切点应在活动段内部")
+            raise STTError("INVALID_BOUNDARY", "split", "切点应在活动段内部")
         offset = sample - left.start_sample
         right = RecordingSegment(
             sample, "punctuation_continuation", bytearray(left.pcm[offset * 2 :])

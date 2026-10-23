@@ -5,8 +5,8 @@ import unittest
 import numpy as np
 
 from speechio import SegmentationConfig
-from speechio.runtime.asr import ASRRuntime
-from speechio.segmentation.vad import VoiceActivity
+from speechio.stt.runtime.asr import STTRuntime
+from speechio.stt.segmentation.vad import VoiceActivity
 from tests.runtime.test_engine_injection import RecordingEngine
 
 
@@ -34,10 +34,10 @@ class DetectorInjectionTests(unittest.TestCase):
             contexts.append(detector)
             return detector
 
-        runtime = ASRRuntime(engine=RecordingEngine())
+        runtime = STTRuntime.from_adapter(adapter=RecordingEngine())
         self.addCleanup(runtime.close)
         runtime.prepare()
-        session = runtime.create_auto_session(
+        session = runtime.create_auto_session_from_detector(
             detector_factory=factory,
             segmentation=SegmentationConfig(
                 silence_confirmation=0,

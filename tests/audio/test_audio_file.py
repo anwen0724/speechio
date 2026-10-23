@@ -13,7 +13,7 @@ import soundfile as sf
 
 from speechio import Transcriber
 from speechio.audio.files import audio_file_chunks, read_audio_file, read_audio_info
-from speechio.errors import ASRError
+from speechio.errors import STTError
 from tests.audio.encoded_samples import encoded_audio, video_with_optional_audio
 from tests.runtime.test_engine_injection import RecordingEngine
 
@@ -37,7 +37,7 @@ class AudioFileTests(unittest.TestCase):
             path.write_bytes(encoded_audio())
             # 仅在 FFmpeg 解码边界注入读取失败，其他处理仍执行真实逻辑。
             with patch("av.open", side_effect=failing_decoder):
-                with self.assertRaises(ASRError) as caught:
+                with self.assertRaises(STTError) as caught:
                     read_audio_file(path)
             self.assertEqual(caught.exception.code, "AUDIO_READ_FAILED")
             path.unlink()
@@ -48,7 +48,7 @@ class AudioFileTests(unittest.TestCase):
             path.write_bytes(encoded_audio("webm", "libopus"))
             self.assertIsNone(read_audio_info(path).duration_seconds)
             for mode in ("batch", "chunks"):
-                with self.subTest(mode=mode), self.assertRaises(ASRError) as caught:
+                with self.subTest(mode=mode), self.assertRaises(STTError) as caught:
                     if mode == "batch":
                         read_audio_file(path, max_audio_seconds=0.1)
                     else:
@@ -64,7 +64,7 @@ class AudioFileTests(unittest.TestCase):
             self.assertEqual(len(output), 8000)
             self.assertLessEqual(np.max(np.abs(output[100:-100].astype(int) - 8000)), 2)
             path.write_bytes(video_with_optional_audio())
-            with self.assertRaises(ASRError) as caught:
+            with self.assertRaises(STTError) as caught:
                 read_audio_file(path)
             self.assertEqual(caught.exception.code, "AUDIO_TRACK_MISSING")
             path.unlink()
@@ -79,7 +79,7 @@ class AudioFileTests(unittest.TestCase):
             # Windows 上未关闭的文件不能删除。
             path.unlink()
             path.write_bytes(b"not an audio file")
-            with self.assertRaises(ASRError) as caught:
+            with self.assertRaises(STTError) as caught:
                 read_audio_file(path)
             self.assertEqual(caught.exception.code, "AUDIO_READ_FAILED")
             path.unlink()
@@ -97,7 +97,7 @@ class AudioFileTests(unittest.TestCase):
                     path = Path(folder) / "upload.audio"
                     path.write_bytes(encoded_audio(container, codec))
                     engine = RecordingEngine()
-                    with Transcriber(engine=engine) as transcriber:
+                    with Transcriber.from_adapter(adapter=engine) as transcriber:
                         transcriber.transcribe_file(path)
                         chunks = audio_file_chunks(path, chunk_frames=701)
                         try:
@@ -152,7 +152,7 @@ class AudioFileTests(unittest.TestCase):
                     source, "read", side_effect=[np.ones((1, 1), np.int16), OSError("读取失败")]
                 ),
             ):
-                with self.assertRaises(ASRError) as caught:
+                with self.assertRaises(STTError) as caught:
                     read_audio_file(path)
             self.assertEqual(caught.exception.code, "AUDIO_READ_FAILED")
             self.assertTrue(source.closed)

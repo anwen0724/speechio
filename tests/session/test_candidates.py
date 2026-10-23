@@ -6,7 +6,7 @@ from threading import Event
 import numpy as np
 
 import speechio as sdk
-from speechio.runtime.asr import ASRRuntime
+from speechio.stt.runtime.asr import STTRuntime
 from tests.runtime.test_engine_injection import RecordingEngine
 
 
@@ -28,7 +28,7 @@ class BlockingEngine(RecordingEngine):
 
 class CandidateTests(unittest.TestCase):
     def test_public_audio_snapshot_includes_short_tail_and_is_independent(self):
-        with ASRRuntime(engine=RecordingEngine()) as runtime:
+        with STTRuntime.from_adapter(adapter=RecordingEngine()) as runtime:
             session = runtime.create_session()
             unit = session.start()
             source = np.arange(525, dtype=np.int16)
@@ -51,7 +51,7 @@ class CandidateTests(unittest.TestCase):
                 return sdk.Transcript(text="原正文" if role == "final" else "")
 
         engine = EmptyCorrection()
-        with ASRRuntime(engine=engine, candidate=sdk.CandidateConfig()) as runtime:
+        with STTRuntime.from_adapter(adapter=engine, on_demand=sdk.OnDemandConfig()) as runtime:
             session = runtime.create_session(sdk.SessionConfig(retain_for_correction=True))
             unit = session.start()
             session.feed_audio(np.arange(525, dtype=np.int16))
@@ -69,18 +69,18 @@ class CandidateTests(unittest.TestCase):
 
     def test_rejected_new_request_does_not_invalidate_running_candidate(self):
         engine = BlockingEngine()
-        with ASRRuntime(
-            engine=engine, candidate=sdk.CandidateConfig(), limits=sdk.RuntimeLimits(max_tasks=1)
+        with STTRuntime.from_adapter(
+            adapter=engine, on_demand=sdk.OnDemandConfig(), limits=sdk.RuntimeLimits(max_tasks=1)
         ) as runtime:
             session = runtime.create_session()
             session.start()
             session.feed_audio(np.arange(525, dtype=np.int16))
-            original = session.request_candidate()
+            original = session.request_transcription()
             try:
                 self.assertTrue(engine.entered.wait(5))
                 session.feed_audio(np.arange(13, dtype=np.int16))
-                with self.assertRaises(sdk.ASRError) as caught:
-                    session.request_candidate()
+                with self.assertRaises(sdk.STTError) as caught:
+                    session.request_transcription()
                 self.assertEqual(caught.exception.code, "CANDIDATE_CAPACITY_EXCEEDED")
             finally:
                 engine.release.set()
@@ -90,13 +90,13 @@ class CandidateTests(unittest.TestCase):
 
     def test_reset_and_close_keep_running_candidate_capacity_until_return(self):
         engine = BlockingEngine()
-        runtime = ASRRuntime(engine=engine, candidate=sdk.CandidateConfig())
+        runtime = STTRuntime.from_adapter(adapter=engine, on_demand=sdk.OnDemandConfig())
         self.addCleanup(runtime.close)
         runtime.prepare()
         session = runtime.create_session()
         session.start()
         session.feed_audio(np.arange(525, dtype=np.int16))
-        session.request_candidate()
+        session.request_transcription()
         try:
             self.assertTrue(engine.entered.wait(5))
             self.assertEqual(session.reset().pending_tasks, 1)
@@ -116,10 +116,12 @@ class CandidateTests(unittest.TestCase):
                 return sdk.Transcript(text="旧观察" if len(self.inputs) == 1 else "新观察")
 
         engine = SnapshotEngine()
-        with ASRRuntime(
-            engine=engine,
-            candidate=sdk.CandidateConfig(),
-            realtime=sdk.RealtimeConfig(initial_delay=0, interval=0.01, min_snapshot_samples=512),
+        with STTRuntime.from_adapter(
+            adapter=engine,
+            on_demand=sdk.OnDemandConfig(),
+            realtime=sdk.RealtimeConfig(
+                initial_delay_seconds=0, interval_seconds=0.01, min_snapshot_samples=512
+            ),
         ) as runtime:
             session = runtime.create_session(sdk.SessionConfig(realtime=True))
             session.start()
@@ -146,7 +148,7 @@ class CandidateTests(unittest.TestCase):
                 return sdk.Transcript(text="修正完成") if role == "candidate" else result
 
         engine = CorrectingEngine()
-        with ASRRuntime(engine=engine, candidate=sdk.CandidateConfig()) as runtime:
+        with STTRuntime.from_adapter(adapter=engine, on_demand=sdk.OnDemandConfig()) as runtime:
             session = runtime.create_session(sdk.SessionConfig(retain_for_correction=True))
             unit = session.start()
             source = np.arange(525, dtype=np.int16)
@@ -163,15 +165,13 @@ class CandidateTests(unittest.TestCase):
             self.assertEqual(session.retained_audio_samples, 525)
             session.start()
             self.assertEqual(session.retained_audio_samples, 0)
-            with self.assertRaises(sdk.ASRError) as caught:
+            with self.assertRaises(sdk.STTError) as caught:
                 session.request_correction(unit)
             self.assertEqual(caught.exception.code, "CORRECTION_UNAVAILABLE")
 
     def test_candidate_only_runtime_requires_no_final_model(self):
         engine = RecordingEngine()
-        with ASRRuntime(
-            candidate=sdk.CandidateConfig(engine=engine), final_enabled=False
-        ) as runtime:
+        with STTRuntime.from_on_demand(sdk.OnDemandConfig.from_adapter(adapter=engine)) as runtime:
             self.assertFalse(runtime.final_enabled)
             session = runtime.create_session(sdk.SessionConfig(completion_mode="candidate"))
             session.start()
@@ -188,11 +188,13 @@ class CandidateTests(unittest.TestCase):
         for append in (False, True):
             with self.subTest(append=append):
                 engine = RecordingEngine()
-                with ASRRuntime(engine=engine, candidate=sdk.CandidateConfig()) as runtime:
+                with STTRuntime.from_adapter(
+                    adapter=engine, on_demand=sdk.OnDemandConfig()
+                ) as runtime:
                     session = runtime.create_session(sdk.SessionConfig(completion_mode="candidate"))
                     session.start()
                     session.feed_audio(np.arange(525, dtype=np.int16))
-                    session.request_candidate()
+                    session.request_transcription()
                     self.assertEqual(session.next_event(timeout=5).kind, "candidate")
                     if append:
                         session.feed_audio(np.arange(13, dtype=np.int16))
@@ -216,11 +218,13 @@ class CandidateTests(unittest.TestCase):
         for hint in (False, True):
             with self.subTest(hint=hint):
                 engine = EmptyFirst()
-                with ASRRuntime(engine=engine, candidate=sdk.CandidateConfig()) as runtime:
+                with STTRuntime.from_adapter(
+                    adapter=engine, on_demand=sdk.OnDemandConfig()
+                ) as runtime:
                     session = runtime.create_session()
                     session.start()
                     session.feed_audio(source)
-                    session.request_candidate(hint=hint)
+                    session.request_transcription(hint=hint)
                     event = session.next_event(timeout=5)
                     self.assertEqual(event.kind, "candidate")
                     self.assertEqual(event.candidate.attempts, 1 if hint else 2)
@@ -251,17 +255,17 @@ class CandidateTests(unittest.TestCase):
                 return result
 
         engine = BlockingFirst()
-        runtime = ASRRuntime(engine=engine, candidate=sdk.CandidateConfig())
+        runtime = STTRuntime.from_adapter(adapter=engine, on_demand=sdk.OnDemandConfig())
         self.addCleanup(runtime.close)
         runtime.prepare()
         session = runtime.create_session()
         unit = session.start()
         first, second = np.arange(525, dtype=np.int16), -np.arange(513, dtype=np.int16)
         session.feed_audio(first)
-        old = session.request_candidate()
+        old = session.request_transcription()
         try:
             self.assertTrue(engine.entered.wait(5))
-            with self.assertRaises(sdk.ASRError) as caught:
+            with self.assertRaises(sdk.STTError) as caught:
                 session.resume(expected_audio_samples=524)
             self.assertEqual(caught.exception.code, "RESUME_BOUNDARY_MISMATCH")
             ack = session.resume(expected_audio_samples=525)
@@ -269,7 +273,7 @@ class CandidateTests(unittest.TestCase):
                 (ack.turn, ack.resume_epoch, ack.candidate_start_sample), (unit, 1, 525)
             )
             session.feed_audio(second)
-            current = session.request_candidate()
+            current = session.request_transcription()
             self.assertEqual((current.start_sample, current.end_sample), (0, 1038))
             self.assertEqual((current.resume_epoch, current.resume_id), (1, ack.resume_id))
             self.assertEqual(runtime.capacity.tasks, 2)
@@ -302,14 +306,16 @@ class CandidateTests(unittest.TestCase):
                 return result
 
         engine = BlockingCandidate()
-        runtime = ASRRuntime(engine=engine, candidate=sdk.CandidateConfig(tail_seconds=0.02))
+        runtime = STTRuntime.from_adapter(
+            adapter=engine, on_demand=sdk.OnDemandConfig(tail_seconds=0.02)
+        )
         self.addCleanup(runtime.close)
         runtime.prepare()
         session = runtime.create_session()
         session.start()
         source = np.arange(525, dtype=np.int16)
         session.feed_audio(source)
-        request = session.request_candidate(kind="tail")
+        request = session.request_transcription(scope="tail")
         try:
             self.assertTrue(engine.entered.wait(5))
             self.assertEqual((request.start_sample, request.end_sample), (205, 525))

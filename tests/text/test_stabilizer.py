@@ -3,7 +3,7 @@
 import unittest
 
 from speechio import TurnRef
-from speechio.text.stabilizer import StabilizationConfig, TextObservation, TextStabilizer
+from speechio.stt.text.stabilizer import StabilizationConfig, TextObservation, TextStabilizer
 
 
 class StabilizerTests(unittest.TestCase):

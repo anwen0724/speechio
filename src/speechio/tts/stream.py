@@ -130,12 +130,30 @@ class SynthesisStream:
                         break
                     if not isinstance(chunk, AudioChunk) or chunk.format != self.format:
                         raise TTSError("PROTOCOL_ERROR", "read", "音频块格式不一致")
-                    if self._buffer_bytes + len(chunk.data) > self._max_bytes:
-                        raise TTSError("BUFFER_EXCEEDED", "read", "待读取音频超过缓冲上限")
-                    if chunk.data:
-                        self._queue.append(chunk)
-                        self._buffer_bytes += len(chunk.data)
-                        self._condition.notify_all()
+                    if getattr(self._backend, "pull_based", False):
+                        # 本地生成可以等待消费者；保持每次入队不超过配置容量。
+                        offset = 0
+                        capacity = max(2, int(self._max_bytes) // 2 * 2)
+                        while offset < len(chunk.data):
+                            data = chunk.data[offset : offset + capacity]
+                            while self._buffer_bytes + len(data) > capacity and self._state not in (
+                                "cancelled",
+                                "failed",
+                            ):
+                                self._condition.wait()
+                            if self._state in ("cancelled", "failed"):
+                                break
+                            self._queue.append(AudioChunk(data, self.format))
+                            self._buffer_bytes += len(data)
+                            offset += len(data)
+                            self._condition.notify_all()
+                    else:
+                        if self._buffer_bytes + len(chunk.data) > self._max_bytes:
+                            raise TTSError("BUFFER_EXCEEDED", "read", "待读取音频超过缓冲上限")
+                        if chunk.data:
+                            self._queue.append(chunk)
+                            self._buffer_bytes += len(chunk.data)
+                            self._condition.notify_all()
         except BaseException as exc:
             self._fail(exc, "read")
         finally:
@@ -170,6 +188,7 @@ class SynthesisStream:
                 if self._queue:
                     chunk = self._queue.popleft()
                     self._buffer_bytes -= len(chunk.data)
+                    self._condition.notify_all()
                     return chunk
                 if self._state == "completed" and self._done.is_set():
                     self._drained = True

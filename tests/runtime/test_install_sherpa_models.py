@@ -14,7 +14,7 @@ from speechio.install_sherpa_models import (
     verify_archive,
 )
 from speechio.model_manifests import ModelManifest
-from speechio.runtime.models.pinned import NEMOTRON_MODELS
+from speechio.models.pinned import NEMOTRON_MODELS
 
 
 class InstallSherpaModelsTests(unittest.TestCase):

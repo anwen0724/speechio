@@ -1,5 +1,4 @@
 """通过公开 SDK 和本机协议服务验证远程适配，不访问真实百炼账户。"""
-
 import base64
 import io
 import json
@@ -11,17 +10,17 @@ from threading import Event, Thread
 from unittest.mock import patch
 
 from speechio import (
-    ASRError,
     AudioFormat,
     LocalModelConfig,
-    ModelConfig,
     RealtimeConfig,
     RemoteModelConfig,
     SessionConfig,
+    STTError,
     Transcriber,
     transcribe_audio,
 )
-from speechio.runtime.asr import ASRRuntime
+from speechio.stt.options import TranscriptionOptions
+from speechio.stt.runtime.asr import STTRuntime
 from tests.runtime.test_engine_injection import RecordingEngine
 
 FLASH = "qwen-audio-3.1-asr-flash"
@@ -148,21 +147,21 @@ class RemoteTests(unittest.TestCase):
                 )
                 with (
                     patch(
-                        "speechio.engines.remote.bailian_stream._DirectConnection",
+                        "speechio.adapters.remote.bailian_stream._DirectConnection",
                         return_value=connection,
                     ),
                     patch(
-                        "speechio.engines.remote.bailian_stream.monotonic",
+                        "speechio.adapters.remote.bailian_stream.monotonic",
                         side_effect=lambda: now[0],
                     ),
                 ):
                     if outcome == "progress":
-                        result = transcribe_audio(bytes(3200), config=config)
+                        result = transcribe_audio(bytes(3200), format=AudioFormat(), config=config)
                         self.assertEqual(result.text, "你好")
                         self.assertEqual(now[0], 60)
                     else:
-                        with self.assertRaises(ASRError) as caught:
-                            transcribe_audio(bytes(3200), config=config)
+                        with self.assertRaises(STTError) as caught:
+                            transcribe_audio(bytes(3200), format=AudioFormat(), config=config)
                         self.assertEqual(caught.exception.code, "REMOTE_TIMEOUT")
                         self.assertEqual(now[0], 30 if outcome == "heartbeat" else 50)
                     self.assertTrue(connection.closed)
@@ -182,9 +181,10 @@ class RemoteTests(unittest.TestCase):
                 return response
 
             with websocket_service(lambda ws: None, process_request=redirect) as url:
-                with self.assertRaises(ASRError) as caught:
+                with self.assertRaises(STTError) as caught:
                     transcribe_audio(
                         bytes(1024),
+                        format=AudioFormat(),
                         config=RemoteModelConfig(
                             provider="bailian",
                             model=STREAMING,
@@ -218,7 +218,8 @@ class RemoteTests(unittest.TestCase):
                 with http_service(response) as (url, _):
                     result = transcribe_audio(
                         bytes(3200),
-                        word_timestamps=True,
+                        format=AudioFormat(),
+                        options=TranscriptionOptions(word_timestamps=True),
                         config=RemoteModelConfig(
                             provider="bailian", model=FLASH, api_key="test-secret", base_url=url
                         ),
@@ -239,9 +240,10 @@ class RemoteTests(unittest.TestCase):
             (200, {"output": {"text": None}}, "REMOTE_PROTOCOL"),
         ):
             with self.subTest(status=status), http_service(response, status) as (url, requests):
-                with self.assertRaises(ASRError) as caught:
+                with self.assertRaises(STTError) as caught:
                     transcribe_audio(
                         bytes(1024),
+                        format=AudioFormat(),
                         config=RemoteModelConfig(
                             provider="bailian",
                             model=FLASH,
@@ -254,26 +256,26 @@ class RemoteTests(unittest.TestCase):
                 self.assertEqual(len(requests), 1)
 
     def test_optional_dependencies_and_config_validation_do_not_load_local_models(self):
-        self.assertIs(ModelConfig, LocalModelConfig)
+        self.assertIs(LocalModelConfig, LocalModelConfig)
         config = RemoteModelConfig(provider="bailian", model=FLASH, api_key="test-secret")
         with patch.dict("sys.modules", {"httpx": None}):
-            self.assertFalse(config.capabilities.streaming)
-            local = Transcriber(LocalModelConfig(engine="whisper", model_path="unused"))
+            self.assertFalse(Transcriber(config).capabilities.streaming)
+            local = Transcriber(LocalModelConfig(adapter="whisper", model_path="unused"))
             self.assertEqual(local.state, "unprepared")
             local.close()
             remote = Transcriber(config)
             try:
-                with self.assertRaises(ASRError) as caught:
+                with self.assertRaises(STTError) as caught:
                     remote.prepare()
                 self.assertEqual(caught.exception.code, "DEPENDENCY_MISSING")
             finally:
                 remote.close()
-        with self.assertRaises(ASRError) as caught:
+        with self.assertRaises(STTError) as caught:
             Transcriber(
                 RemoteModelConfig(provider="bailian", model="unknown", api_key="test-secret")
             )
         self.assertEqual(caught.exception.code, "BACKEND_INCOMPATIBLE")
-        with self.assertRaises(ASRError) as caught:
+        with self.assertRaises(STTError) as caught:
             Transcriber(RemoteModelConfig(provider="bailian", model=FLASH))
         self.assertEqual(caught.exception.code, "INVALID_CONFIGURATION")
 
@@ -350,15 +352,17 @@ class RemoteTests(unittest.TestCase):
                     if expected is None:
                         # 文件整段也可使用流式模型，超过五分钟仍应完整发送。
                         pcm = bytes(301 * 16000 * 2)
-                        with self.assertRaises(ASRError) as limited:
-                            transcribe_audio(pcm, config=config, max_audio_seconds=300)
+                        with self.assertRaises(STTError) as limited:
+                            transcribe_audio(
+                                pcm, format=AudioFormat(), config=config, max_audio_seconds=300
+                            )
                         self.assertEqual(limited.exception.code, "AUDIO_CAPACITY_EXCEEDED")
-                        result = transcribe_audio(pcm, config=config)
+                        result = transcribe_audio(pcm, format=AudioFormat(), config=config)
                         self.assertEqual(result.text, "hello")
                     else:
                         pcm = bytes(3210)
-                        with self.assertRaises(ASRError) as caught:
-                            transcribe_audio(pcm, config=config)
+                        with self.assertRaises(STTError) as caught:
+                            transcribe_audio(pcm, format=AudioFormat(), config=config)
                         self.assertEqual(caught.exception.code, expected)
                         self.assertNotIn("test-secret", str(caught.exception))
                     self.assertEqual(b"".join(received), pcm)
@@ -370,9 +374,10 @@ class RemoteTests(unittest.TestCase):
 
         with http_service({}) as (url, requests):
             for seconds, code in ((301, "AUDIO_TOO_LONG"), (250, "AUDIO_TOO_LARGE")):
-                with self.subTest(seconds=seconds), self.assertRaises(ASRError) as caught:
+                with self.subTest(seconds=seconds), self.assertRaises(STTError) as caught:
                     transcribe_audio(
                         np.zeros(seconds * 16000, dtype=np.int16),
+                        format=AudioFormat(),
                         config=RemoteModelConfig(
                             provider="bailian", model=FLASH, api_key="test-secret", base_url=url
                         ),
@@ -439,15 +444,17 @@ class RemoteTests(unittest.TestCase):
                 base_url=url,
             )
             main = RecordingEngine()
-            runtime = ASRRuntime(
-                engine=main,
+            runtime = STTRuntime.from_adapter(
+                adapter=main,
                 realtime=RealtimeConfig(
-                    mode="streaming", model=config, interval=0.01, initial_delay=0
+                    mode="streaming", config=config, interval_seconds=0.01, initial_delay_seconds=0
                 ),
             )
             try:
                 runtime.prepare()
-                session = runtime.create_session(SessionConfig(realtime=True, language="zh"))
+                session = runtime.create_session(
+                    SessionConfig(realtime=True, options=TranscriptionOptions(language="zh"))
+                )
                 session.start()
                 session.feed_audio(b"\x01\x00" * 512)
                 previews = []
@@ -497,7 +504,9 @@ class RemoteTests(unittest.TestCase):
                 base_url=url,
             )
             with Transcriber(config) as recognizer:
-                result = recognizer.transcribe(pcm, format=AudioFormat(), language="zh")
+                result = recognizer.transcribe(
+                    pcm, format=AudioFormat(), options=TranscriptionOptions(language="zh")
+                )
             self.assertEqual(result.text, "你好，hello。")
             self.assertEqual(result.requested_language, "zh")
             self.assertEqual(result.backend_metadata["request_id"], "request-1")

@@ -1,11 +1,11 @@
 """语音识别与语音合成 SDK；不管理应用业务或播放设备。"""
 
 from speechio.adapters.contracts import (
-    BaseSynthesisEngine,
-    BaseTranscriptionEngine,
-    EngineCapabilities,
-    StreamingSession,
-    SynthesisCapabilities,
+    STTAdapter,
+    STTCapabilities,
+    STTStream,
+    TTSAdapter,
+    TTSCapabilities,
 )
 from speechio.audio.formats import AudioFormat
 from speechio.audio.microphone import (
@@ -15,19 +15,26 @@ from speechio.audio.microphone import (
     list_input_devices,
 )
 from speechio.audio.results import AudioChunk, AudioResult
-from speechio.errors import ASRError, SpeechioError, TTSError
+from speechio.errors import SpeechioError, STTError, TTSError
 from speechio.models.config import LocalModelConfig, RemoteModelConfig
 from speechio.resources import CloseResult
-from speechio.stt.api import StreamTranscriber, transcribe_audio, transcribe_stream, transcribe_url
+from speechio.stt.api import (
+    MicrophoneTranscriber,
+    transcribe_audio,
+    transcribe_microphone,
+    transcribe_url,
+)
 from speechio.stt.input import AudioFrame
+from speechio.stt.options import TranscriptionOptions
 from speechio.stt.results import Transcript, WordTimestamp
-from speechio.stt.runtime.asr import RuntimeLimits
-from speechio.stt.runtime.candidates import CandidateConfig
+from speechio.stt.runtime.asr import RuntimeLimits, STTRuntime
+from speechio.stt.runtime.candidates import OnDemandConfig
 from speechio.stt.runtime.realtime import RealtimeConfig
 from speechio.stt.segmentation.gate import SegmentationConfig
 from speechio.stt.segmentation.vad import VadConfig
-from speechio.stt.segmentation.wakeword import WakeConfig
-from speechio.stt.session.automatic import LiveSession
+from speechio.stt.segmentation.wakeword import WakeWordConfig
+from speechio.stt.session.automatic import AutoSession
+from speechio.stt.session.candidates import SessionTranscriptionRequest, SessionTranscriptionResult
 from speechio.stt.session.session import (
     AudioSnapshot,
     Session,
@@ -35,44 +42,50 @@ from speechio.stt.session.session import (
     SessionEvent,
     TurnRef,
 )
-from speechio.stt.text.endpoint import EndpointConfig
+from speechio.stt.text.endpoint import SpeechEndConfig
 from speechio.stt.text.realtime_merge import RealtimeMergeConfig
 from speechio.stt.text.stabilizer import StabilizationConfig
-from speechio.stt.transcriber import ModelConfig, Transcriber
-from speechio.tts.api import synthesize
+from speechio.stt.transcriber import Transcriber
+from speechio.tts.api import clone_voice, synthesize
 from speechio.tts.options import SynthesisOptions
 from speechio.tts.stream import SynthesisStream
 from speechio.tts.synthesizer import Synthesizer
+from speechio.tts.voices import Voice
 
 __all__ = [
+    "clone_voice",
+    "Voice",
+    "TranscriptionOptions",
+    "STTRuntime",
+    "SessionTranscriptionRequest",
+    "SessionTranscriptionResult",
     "synthesize",
     "Synthesizer",
     "SynthesisOptions",
     "SynthesisStream",
-    "SynthesisCapabilities",
-    "BaseSynthesisEngine",
+    "TTSCapabilities",
+    "TTSAdapter",
     "AudioResult",
     "AudioChunk",
     "SpeechioError",
     "TTSError",
     "transcribe_audio",
     "transcribe_url",
-    "transcribe_stream",
+    "transcribe_microphone",
     "Transcriber",
-    "StreamTranscriber",
+    "MicrophoneTranscriber",
     "Session",
-    "LiveSession",
+    "AutoSession",
     "LocalModelConfig",
     "RemoteModelConfig",
-    "ModelConfig",
     "RealtimeConfig",
     "SessionConfig",
     "VadConfig",
     "SegmentationConfig",
-    "EndpointConfig",
+    "SpeechEndConfig",
     "StabilizationConfig",
-    "WakeConfig",
-    "CandidateConfig",
+    "WakeWordConfig",
+    "OnDemandConfig",
     "RealtimeMergeConfig",
     "RuntimeLimits",
     "Transcript",
@@ -87,8 +100,8 @@ __all__ = [
     "MicrophoneInput",
     "InputDevice",
     "list_input_devices",
-    "BaseTranscriptionEngine",
-    "EngineCapabilities",
-    "StreamingSession",
-    "ASRError",
+    "STTAdapter",
+    "STTCapabilities",
+    "STTStream",
+    "STTError",
 ]

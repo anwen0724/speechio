@@ -3,8 +3,8 @@
 import unittest
 from threading import Event
 
-from speechio import ASRError, RealtimeConfig, SessionConfig, Transcript
-from speechio.runtime.asr import ASRRuntime
+from speechio import RealtimeConfig, SessionConfig, STTError, Transcript
+from speechio.stt.runtime.asr import STTRuntime
 from tests.runtime.test_engine_injection import (
     RecordingEngine,
     RecordingStream,
@@ -20,9 +20,11 @@ class StreamCompletionTests(unittest.TestCase):
                 return stream
 
         main = RecordingEngine()
-        runtime = ASRRuntime(
-            engine=main,
-            realtime=RealtimeConfig(mode="streaming", engine=Engine(), initial_delay=0),
+        runtime = STTRuntime.from_adapter(
+            adapter=main,
+            realtime=RealtimeConfig.from_adapter(
+                mode="streaming", adapter=Engine(), initial_delay_seconds=0
+            ),
         )
         self.addCleanup(runtime.close)
         runtime.prepare()
@@ -51,10 +53,10 @@ class StreamCompletionTests(unittest.TestCase):
                 class FailedStream(RecordingStream):
                     def decode(self):
                         if stage == "decode":
-                            raise ASRError("INFERENCE_FAILED", "decode", "服务断开")
+                            raise STTError("INFERENCE_FAILED", "decode", "服务断开")
 
                     def finish(self):
-                        raise ASRError("REMOTE_TIMEOUT", "finish", "结束确认超时")
+                        raise STTError("REMOTE_TIMEOUT", "finish", "结束确认超时")
 
                 runtime, session, main = self.open_session(FailedStream())
                 if stage == "decode":
