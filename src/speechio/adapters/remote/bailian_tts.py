@@ -47,7 +47,7 @@ class BailianSynthesisEngine(TTSAdapter):
             import websockets.sync.client  # noqa: F401
         except ImportError:
             raise TTSError(
-                "OPTIONAL_DEPENDENCY_MISSING", "prepare", "请安装 speechio[remote]"
+                "OPTIONAL_DEPENDENCY_MISSING", "prepare", "运行库缺失，请运行 pip install speechio"
             ) from None
 
     def open_stream(self, *, options):
@@ -108,7 +108,9 @@ class BailianSynthesisEngine(TTSAdapter):
             import httpx
         except ImportError:
             raise TTSError(
-                "OPTIONAL_DEPENDENCY_MISSING", "clone_voice", "请安装 speechio[remote]"
+                "OPTIONAL_DEPENDENCY_MISSING",
+                "clone_voice",
+                "运行库缺失，请运行 pip install speechio",
             ) from None
 
         buffer = io.BytesIO()

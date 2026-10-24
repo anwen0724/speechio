@@ -64,7 +64,7 @@ def _portaudio():
         raise STTError(
             "OPTIONAL_DEPENDENCY_MISSING",
             "open_microphone",
-            '麦克风运行库缺失，请运行 pip install "speechio[microphone]"',
+            '麦克风运行库缺失，请运行 pip install speechio',
         ) from exc
     return pyaudio
 

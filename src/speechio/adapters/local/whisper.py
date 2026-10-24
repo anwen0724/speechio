@@ -28,7 +28,7 @@ class WhisperEngine:
             raise STTError(
                 "DEPENDENCY_MISSING",
                 "load_model",
-                "缺少 faster-whisper；运行 pip install speechio 后重试",
+                '缺少 faster-whisper；运行 pip install "speechio[stt-whisper]" 后重试',
             ) from exc
         self.device = config.device
         self.compute_type = config.compute_type or "default"

@@ -86,7 +86,7 @@ class BailianEngine(STTAdapter):
             from websockets.sync.client import connect  # noqa: F401
         except ImportError:
             raise STTError(
-                "DEPENDENCY_MISSING", "prepare", '请安装远程依赖：pip install "speechio[remote]"'
+                "DEPENDENCY_MISSING", "prepare", '运行库缺失，请运行 pip install speechio'
             ) from None
         if not self.capabilities.streaming:
             self._http = httpx.Client(timeout=self.config.timeout_seconds, follow_redirects=False)

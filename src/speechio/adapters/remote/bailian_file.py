@@ -77,7 +77,7 @@ class BailianFileEngine(STTAdapter):
             import httpx
         except ImportError:
             raise STTError(
-                "DEPENDENCY_MISSING", "prepare", '请安装远程依赖：pip install "speechio[remote]"'
+                "DEPENDENCY_MISSING", "prepare", '运行库缺失，请运行 pip install speechio'
             ) from None
         self._http = httpx.Client(timeout=self.config.timeout_seconds, follow_redirects=False)
 

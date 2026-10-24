@@ -129,9 +129,10 @@ class LocalWakeDetector:
                 self.close()
                 raise STTError("WAKE_MODEL_INVALID", "prepare_wake", "唤醒检测采样率应为 16000")
         except ImportError:
-            extra = "wake-porcupine" if config.backend == "porcupine" else "wake-openwakeword"
             raise STTError(
-                "OPTIONAL_DEPENDENCY_MISSING", "prepare_wake", f"请安装 speechio[{extra}]"
+                "OPTIONAL_DEPENDENCY_MISSING",
+                "prepare_wake",
+                "运行库缺失，请运行 pip install speechio",
             ) from None
         except STTError:
             raise

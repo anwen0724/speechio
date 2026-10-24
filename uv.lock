@@ -2851,43 +2851,36 @@ source = { editable = "." }
 dependencies = [
     { name = "av", version = "18.1.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "av", version = "19.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "faster-whisper" },
+    { name = "httpx" },
     { name = "huggingface-hub" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "onnxruntime" },
+    { name = "private-assistant-openwakeword", extra = ["onnx"] },
+    { name = "pvporcupine" },
+    { name = "pyaudio" },
     { name = "soundfile" },
     { name = "soxr" },
     { name = "webrtcvad-wheels" },
+    { name = "websockets" },
 ]
 
 [package.optional-dependencies]
-microphone = [
-    { name = "pyaudio" },
-]
-nemotron = [
-    { name = "requests" },
+stt-nemotron = [
     { name = "sherpa-onnx" },
 ]
-remote = [
-    { name = "httpx" },
-    { name = "websockets" },
+stt-whisper = [
+    { name = "faster-whisper" },
 ]
 tts-kokoro = [
     { name = "kokoro" },
-    { name = "misaki", extra = ["zh"] },
+    { name = "misaki", extra = ["en", "zh"] },
     { name = "torch" },
 ]
 tts-qwen = [
     { name = "qwen-tts" },
     { name = "torch" },
     { name = "torchaudio" },
-]
-wake-openwakeword = [
-    { name = "private-assistant-openwakeword", extra = ["onnx"] },
-]
-wake-porcupine = [
-    { name = "pvporcupine" },
 ]
 
 [package.dev-dependencies]
@@ -2918,29 +2911,28 @@ web-test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "av", specifier = ">=18,<20" },
-    { name = "faster-whisper", specifier = ">=1.2.1,<2" },
-    { name = "httpx", marker = "extra == 'remote'", specifier = ">=0.28.1,<0.29" },
-    { name = "huggingface-hub", specifier = ">=0.34,<1" },
-    { name = "kokoro", marker = "extra == 'tts-kokoro'", specifier = ">=0.9.4,<0.10" },
-    { name = "misaki", extras = ["zh"], marker = "extra == 'tts-kokoro'", specifier = ">=0.9.4,<0.10" },
-    { name = "numpy", specifier = ">=2,<3" },
-    { name = "onnxruntime", specifier = ">=1.20.1,<2" },
-    { name = "private-assistant-openwakeword", extras = ["onnx"], marker = "extra == 'wake-openwakeword'", specifier = ">=0.6,<0.7" },
-    { name = "pvporcupine", marker = "extra == 'wake-porcupine'", specifier = ">=4.0.3,<5" },
-    { name = "pyaudio", marker = "extra == 'microphone'", specifier = ">=0.2.14,<0.3" },
-    { name = "qwen-tts", marker = "extra == 'tts-qwen'", specifier = ">=0.1.1,<0.2" },
-    { name = "requests", marker = "extra == 'nemotron'", specifier = ">=2.33,<3" },
-    { name = "sherpa-onnx", marker = "extra == 'nemotron'", specifier = ">=1.13.4,<2" },
-    { name = "soundfile", specifier = ">=0.13,<0.15" },
-    { name = "soxr", specifier = ">=1,<2" },
-    { name = "torch", marker = "extra == 'tts-kokoro'", specifier = ">=2.7,<2.9" },
-    { name = "torch", marker = "extra == 'tts-qwen'", specifier = ">=2.7,<2.9" },
-    { name = "torchaudio", marker = "extra == 'tts-qwen'", specifier = ">=2.7,<2.9" },
-    { name = "webrtcvad-wheels", specifier = ">=2.0.14,<3" },
-    { name = "websockets", marker = "extra == 'remote'", specifier = ">=17.2,<18" },
+    { name = "av", specifier = ">=18" },
+    { name = "faster-whisper", marker = "extra == 'stt-whisper'", specifier = ">=1.2.1" },
+    { name = "httpx", specifier = ">=0.28.1" },
+    { name = "huggingface-hub", specifier = ">=0.34" },
+    { name = "kokoro", marker = "extra == 'tts-kokoro'", specifier = ">=0.9.4" },
+    { name = "misaki", extras = ["en", "zh"], marker = "extra == 'tts-kokoro'", specifier = ">=0.9.4" },
+    { name = "numpy", specifier = ">=1.26.4" },
+    { name = "onnxruntime", specifier = ">=1.20.1" },
+    { name = "private-assistant-openwakeword", extras = ["onnx"], specifier = ">=0.6" },
+    { name = "pvporcupine", specifier = ">=4.0.3" },
+    { name = "pyaudio", specifier = ">=0.2.14" },
+    { name = "qwen-tts", marker = "extra == 'tts-qwen'", specifier = ">=0.1.1" },
+    { name = "sherpa-onnx", marker = "extra == 'stt-nemotron'", specifier = ">=1.13.4" },
+    { name = "soundfile", specifier = ">=0.13" },
+    { name = "soxr", specifier = ">=1" },
+    { name = "torch", marker = "extra == 'tts-kokoro'", specifier = ">=2.7" },
+    { name = "torch", marker = "extra == 'tts-qwen'", specifier = ">=2.7" },
+    { name = "torchaudio", marker = "extra == 'tts-qwen'", specifier = ">=2.7" },
+    { name = "webrtcvad-wheels", specifier = ">=2.0.14" },
+    { name = "websockets", specifier = ">=17.2" },
 ]
-provides-extras = ["tts-qwen", "tts-kokoro", "remote", "microphone", "nemotron", "wake-porcupine", "wake-openwakeword"]
+provides-extras = ["stt-whisper", "stt-nemotron", "tts-qwen", "tts-kokoro"]
 
 [package.metadata.requires-dev]
 dev = [

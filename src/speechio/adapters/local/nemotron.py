@@ -41,7 +41,11 @@ class NemotronEngine:
         try:
             from sherpa_onnx import OnlineRecognizer
         except ImportError as exc:
-            raise STTError("DEPENDENCY_MISSING", "load_model", str(exc)) from exc
+            raise STTError(
+                "DEPENDENCY_MISSING",
+                "load_model",
+                '缺少 sherpa-onnx；运行 pip install "speechio[stt-nemotron]" 后重试',
+            ) from exc
         if self.provider == "cuda":
             # 当前 INT8 适配器只承诺 CPU，不能把 provider 请求当成 GPU 执行成功。
             raise STTError(
