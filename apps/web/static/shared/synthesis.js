@@ -82,7 +82,7 @@ export function mountSynthesis(root, debug, models) {
   function config() {
     return {
       model: $('model').value,
-      ...(model()?.source === 'local' && !voices?.cloning() ? { device: $('device').value } : {}),
+      ...(model()?.source === 'local' ? { device: $('device').value } : {}),
       mode: mode(),
       ...(voices?.source() === 'saved' ? { saved_voice_id: voices.savedId() }
         : voices?.source() === 'reference' ? {
@@ -107,7 +107,7 @@ export function mountSynthesis(root, debug, models) {
     const cloning = voices?.cloning(), reference = voices?.source() === 'reference';
     const py = value => value == null ? 'None' : JSON.stringify(value);
     $('config').textContent = JSON.stringify(cloning ? {
-      model: c.model, reference_audio: '页面选择的参考音频',
+      model: c.model, device: c.device, reference_audio: '页面选择的参考音频',
       reference_text: voices.referenceText(), save_dir: voices.saveDir(), timeout_seconds: c.timeout_seconds,
     } : { ...c, ...(reference ? { reference_audio: '页面选择的参考音频' } : {}) }, null, 2);
     const local = m.source === 'local';
@@ -399,7 +399,9 @@ ${call}`;
       }
     },
     busy(value) { active = value; if (value) $('error').hidden = true; controls(); },
-    cloneOptions: () => debug && model()?.source === 'remote' ? { timeout_seconds: Number($('timeout').value) } : {},
+    cloneOptions: () => model()?.source === 'local'
+      ? { device: $('device').value }
+      : debug ? { timeout_seconds: Number($('timeout').value) } : {},
     result(value) {
       if (debug) {
         $('effective').textContent = JSON.stringify(value.effective_config, null, 2);

@@ -96,3 +96,18 @@ speed = 1.0
 # voice = "zf_001"
 # speed = 1.0
 # 不指定 language 时，核心适配器根据音色选择中文或英文。
+
+# 本地 Qwen Base：先准备模型并安装 speechio[tts-qwen]。
+# 两个版本分别管理克隆音色；没有预设音色，先克隆或直接上传参考录音。
+# 不填 compute_type，由核心包按设备选择：GPU 使用 bfloat16，CPU 使用 float32。
+# [models."qwen3-tts-0.6b-base"]
+# task = "synthesis"
+# adapter = "qwen_tts"
+# model_path = ".runtime/models/qwen3-tts-0.6b-base"
+# device = "gpu" # 页面可为本次克隆或合成切换 cpu / gpu。
+#
+# [models."qwen3-tts-1.7b-base"]
+# task = "synthesis"
+# adapter = "qwen_tts"
+# model_path = ".runtime/models/qwen3-tts-1.7b-base"
+# device = "gpu"

@@ -14,7 +14,7 @@ export function mountVoices(root, hooks) {
       </div>
       <div id="voice-device-slot"></div>
       <div id="voice-selection-tools">
-        <p class="help" id="voice-empty" hidden>这个模型还没有可用音色，请先克隆或导入音色。</p>
+        <p class="help" id="voice-empty" hidden>这个模型还没有可用音色，请先克隆、导入音色，或使用参考录音生成。</p>
         <div class="voice-links"><button id="voice-direct">用参考录音生成</button><button id="voice-refresh">刷新音色</button></div>
         <details class="voice-file-tools"><summary>音色文件与其他音色</summary>
           <div id="voice-selected-file" hidden><p class="help voice-path" id="voice-file-path"></p>
@@ -59,7 +59,7 @@ export function mountVoices(root, hooks) {
   /** 返回只切换视图，不取消正在执行的克隆任务。 */
   function update() {
     const model = hooks.model(), cap = Boolean(model?.capabilities.voice_cloning);
-    $('device-slot').hidden = cloning || model?.source !== 'local';
+    $('device-slot').hidden = model?.source !== 'local';
     $('title').textContent = cloning ? '创建你的音色' : direct ? '使用参考录音' : '选择声音';
     hooks.modelField.querySelector('.field-title').textContent = cloning ? '克隆模型' : '模型';
     hooks.modelField.querySelectorAll('option').forEach(option => {

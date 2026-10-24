@@ -142,7 +142,10 @@ class SynthesisService:
     async def clone(self, request, *, debug):
         """占用同一任务槽，调用独立克隆并保存；断线也等待 SDK 释放。"""
         config = SynthesisConfig(
-            model=request.model, mode="full", timeout_seconds=request.timeout_seconds
+            model=request.model,
+            device=request.device,
+            mode="full",
+            timeout_seconds=request.timeout_seconds,
         )
         model, _, _ = self.resolve(config, debug=debug)
         if not self.settings.synthesis_models[request.model].capabilities.voice_cloning:

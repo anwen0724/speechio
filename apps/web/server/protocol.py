@@ -94,6 +94,7 @@ class CloneVoiceRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, allow_inf_nan=False)
     model: str
+    device: Literal["cpu", "gpu"] | None = None
     name: str = Field(min_length=1, max_length=100)
     reference_audio_token: str
     reference_text: str | None = None
