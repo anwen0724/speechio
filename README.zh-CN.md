@@ -2,169 +2,143 @@
 
 [English](https://github.com/anwen0724/speechio/blob/main/README.md)
 
-SpeechIO 是一个 Python 语音转写库。你可以把音频文件转成文字，也可以接入麦克风，边说边显示文字，并在每段说话结束后取得最终结果。
+speechio 是一个 Python 语音处理库，提供语音识别、语音合成和声音克隆。你可以使用本地模型，也可以通过 API Key 调用已接入的云端服务，将语音能力加入自己的应用。
 
-支持本地模型和云端服务：本地识别使用已有模型目录，音频在本机处理；云端识别使用你的 API Key，将音频发送给所选服务。
+## 主要功能
 
-## 功能
+- **语音识别**：将音频文件、内存音频或麦克风声音转换为文字，支持实时结果与分段识别。
+- **语音合成**：将文字转换为完整音频，或使用支持流式输出的模型逐块接收音频。
+- **声音克隆**：根据参考录音创建音色，保存后重复使用，也可以提供参考录音直接合成。
+- **模型扩展**：通过自定义适配器接入其他本地模型或云端服务。
+- **示例应用**：在浏览器中体验识别、合成和克隆，通过调试台查看参数与事件。
 
-- 转写音频文件、PCM 音频和音频块序列。
-- 从麦克风持续采集，自动检测语音和停顿，按段返回结果。
-- 在说话过程中提供实时文字回调。
-- 支持手动分段、唤醒词和自定义识别引擎。
-- 提供 Web 示例应用和调试台，便于体验和检查调用结果。
-
-当前已适配：
-
-| 模型 | 运行位置 | 文件转写 | 说话过程中的文字 |
-| --- | --- | --- | --- |
-| Whisper | 本地 | 支持 | 定期识别已收到的音频，更新预览 |
-| Nemotron 3.5 ASR 0.6B | 本地 | 支持 | 原生流式返回 |
-| `qwen-audio-3.1-asr-flash` | 阿里云百炼 | 支持短音频 | 不支持；可在分段结束后识别 |
-| `qwen-audio-3.1-asr-flash-streaming` | 阿里云百炼 | 支持短音频 | 原生流式返回 |
-
-百炼首版提供短音频和实时识别，不包含长录音文件任务。整段调用最多接受 300 秒音频，HTTP 调用还受编码后大小限制，超限会报错。
+具体能力取决于所选模型。对话回复、业务流程和音频播放由使用 speechio 的应用实现。
 
 ## 安装
 
-需要 64 位 Python 3.11–3.13。
+需要 Python 3.11–3.13：
 
 ```bash
 pip install speechio
 ```
 
-按所需功能安装可选依赖，以下命令也会安装 SpeechIO：
+默认安装包含云端调用、音频处理、麦克风、语音活动检测和唤醒词所需的依赖。云端调用需要你自己的服务凭据；部分唤醒词引擎还需要模型文件或 AccessKey。
 
-| 用途 | 命令 |
+使用本地识别或合成模型时，选择对应的可选依赖组：
+
+| 本地模型 | 安装命令 |
 | --- | --- |
-| 麦克风输入 | `python -m pip install "speechio[microphone]"` |
-| 百炼云端识别 | `python -m pip install "speechio[remote]"` |
-| 百炼 + 麦克风 | `python -m pip install "speechio[remote,microphone]"` |
-| 本地 Nemotron | `python -m pip install "speechio[nemotron]"` |
-| OpenWakeWord 唤醒词 | `python -m pip install "speechio[wake-openwakeword]"` |
-| Porcupine 唤醒词 | `python -m pip install "speechio[wake-porcupine]"` |
+| Whisper | `pip install "speechio[stt-whisper]"` |
+| Nemotron | `pip install "speechio[stt-nemotron]"` |
+| Qwen3-TTS Base | `pip install "speechio[tts-qwen]"` |
+| Kokoro | `pip install "speechio[tts-kokoro]"` |
 
-这些命令安装库和依赖，不会下载语音识别模型。使用本地识别时，还需按下面的示例准备模型目录。
-
-在 Linux 或 macOS 上安装麦克风依赖前，还需要准备 PortAudio，具体见 [PyAudio 安装说明](https://pypi.org/project/PyAudio/)。唤醒词还需要相应模型文件；Porcupine 需要 AccessKey。
+安装依赖不会自动下载识别或合成模型。已有完整模型目录时可直接加载；否则先单独下载。系统依赖、Python 版本和 GPU 支持因运行库而异，见[安装与运行环境](https://github.com/anwen0724/speechio/blob/main/docs/basic-usage.md#2-安装与运行环境)。
 
 ## 快速开始
 
-下面用 Whisper base 在 CPU 上转写一个本地音频文件。
+详细使用介绍请阅读[基本使用指南](https://github.com/anwen0724/speechio/blob/main/docs/basic-usage.md)，其中包含模型配置、接口参数、语音识别、语音合成和声音克隆的使用方法。
 
-先单独运行一次下载代码，把模型保存到指定目录。已有可供 faster-whisper 使用的模型目录时，可以跳过下载。
-
-```python
-from speechio.models import download_model
-
-download_model(
-    engine="whisper",
-    model_id="base",
-    destination="models/whisper-base",
-)
-```
-
-将待识别的音频保存为 `speech.wav`，然后运行：
-
-```python
-from speechio import LocalModelConfig, transcribe_audio
-
-config = LocalModelConfig(
-    engine="whisper",
-    model_path="models/whisper-base",
-    device="cpu",
-    compute_type="int8",
-)
-
-result = transcribe_audio("speech.wav", config=config, language="zh")
-print(result.text)
-```
-
-以上相对路径都以运行 Python 时的工作目录为准。识别时只加载 `model_path` 中已有的文件，不会自动下载模型。`language="zh"` 指定中文，英文使用 `"en"`，省略则不指定语言提示。
-
-## 使用示例
-
-### 云端转写
-
-安装 `remote` 可选依赖，并将百炼密钥设置为 `DASHSCOPE_API_KEY` 环境变量。以下代码读取该变量；SDK 本身不会自动读取 `.env` 文件。
+以下两个示例使用阿里云百炼：
 
 ```python
 import os
 
-from speechio import RemoteModelConfig, transcribe_audio
+from speechio import RemoteModelConfig, TranscriptionOptions, transcribe_audio
 
 config = RemoteModelConfig(
     provider="bailian",
     model="qwen-audio-3.1-asr-flash",
     api_key=os.environ["DASHSCOPE_API_KEY"],
 )
-
-result = transcribe_audio("speech.wav", config=config, language="zh")
+result = transcribe_audio(
+    "speech.wav",
+    config=config,
+    options=TranscriptionOptions(language="zh"),
+)
 print(result.text)
 ```
 
-也可以通过 `api_key` 直接传入你的应用取得的密钥。调用会将音频发送至百炼，并按你的账户和所选模型计费。
+该短音频型号还检查请求大小。较长录音可选择文件任务型号。麦克风、实时音频和长文件的用法见[语音识别指南](https://github.com/anwen0724/speechio/blob/main/docs/basic-usage.md#4-将音频转换为文字)。
 
-### 麦克风实时转写
+### 文字转音频
 
-安装 `microphone` 可选依赖，并准备好快速开始中的模型目录。运行后对着默认麦克风说话，按 `Ctrl+C` 退出。
+指定模型支持的音色，生成并保存 WAV 文件：
 
 ```python
-from speechio import LocalModelConfig, StreamTranscriber
+import os
 
-config = LocalModelConfig(
-    engine="whisper",
-    model_path="models/whisper-base",
-    device="cpu",
-    compute_type="int8",
+from speechio import RemoteModelConfig, SynthesisOptions, synthesize
+
+config = RemoteModelConfig(
+    provider="bailian",
+    model="qwen-audio-3.1-tts-flash",
+    api_key=os.environ["DASHSCOPE_API_KEY"],
 )
-
-try:
-    with StreamTranscriber(
-        config=config,
-        language="zh",
-        on_partial=lambda text: print("实时：", text),
-    ) as stream:
-        for result in stream:
-            print("最终：", result.text)
-except KeyboardInterrupt:
-    pass
+audio = synthesize(
+    "你好，欢迎开始今天的练习。",
+    config=config,
+    options=SynthesisOptions(voice="yuxiaoyun_v3.1", language="zh"),
+)
+audio.save("hello.wav")
 ```
 
-`on_partial` 收到的文字可能变化，循环取得的是每段最终结果。语音和停顿由随包提供的 Silero 检测模型判断，不需要额外下载检测模型。需要选麦克风时，可用 `list_input_devices()` 查看设备编号，再传入 `input_device`。
+`hello.wav` 是生成的音频，默认不会覆盖已有文件。流式输出见[语音合成指南](https://github.com/anwen0724/speechio/blob/main/docs/basic-usage.md#5-将文字转换为音频)。使用自己的参考录音创建音色，见[声音克隆与复用](https://github.com/anwen0724/speechio/blob/main/docs/basic-usage.md#6-克隆声音与复用音色)。
 
-Whisper 在说话时更新预览，在每段结束后完整识别该段音频。Nemotron 和百炼流式模型默认直接采用流式任务的最终结果；设置 `completion_mode="final"` 才会额外识别整段音频。云端重识别会增加请求，可能增加费用。
+使用本地模型时，通过 `LocalModelConfig(adapter=..., model_path=...)` 指定适配器与已有模型目录。下载和配置步骤见[模型配置指南](https://github.com/anwen0724/speechio/blob/main/docs/basic-usage.md#3-选择与配置模型)。
 
-使用云端麦克风转写时，安装 `remote,microphone`，把上例的 `config` 换成 `RemoteModelConfig`，模型选择 `qwen-audio-3.1-asr-flash-streaming`。需要停止采集后继续获取尾部结果时，调用 `stream.end_input()` 并继续消费循环。
+## 支持的模型
 
-更多场景可参考仓库中的 [示例代码](https://github.com/anwen0724/speechio/tree/main/examples)。
+| 模型 | 运行位置 | 主要能力 |
+| --- | --- | --- |
+| Whisper | 本地 | 文件识别；通过重复识别已收到的音频更新实时文字 |
+| Nemotron 3.5 ASR 0.6B | 本地 | 文件识别、原生流式识别；当前适配器只支持 CPU |
+| Qwen3-TTS 12Hz Base，0.6B / 1.7B | 本地 | 完整语音合成、声音克隆；当前适配器不提供流式合成 |
+| Kokoro 82M v1.1-zh | 本地 | 中英文合成、按文本片段输出音频；不支持声音克隆 |
+| `qwen-audio-3.1-asr-flash` | 阿里云百炼 | 短音频整段识别 |
+| `qwen-audio-3.1-asr-flash-streaming` | 阿里云百炼 | 原生流式识别，也可处理完整音频输入 |
+| `qwen-audio-3.1-asr-flash-filetrans` | 阿里云百炼 | 长音频文件识别，支持本地文件和服务可访问的 URL |
+| `qwen-audio-3.1-tts-flash` | 阿里云百炼 | 完整与流式合成、持续追加文本、声音克隆 |
+
+本地调用使用已有模型文件；云端调用将输入发送给所选服务。输入限制、设备要求和音色兼容性见[基本使用指南](https://github.com/anwen0724/speechio/blob/main/docs/basic-usage.md)。
 
 ## Web 示例应用
 
-仓库提供两个页面：示例应用用于录音和文件转写，调试台用于调整参数、查看事件和调用示例。两者使用同一套核心包 API。通过 pip 安装的 SDK 不包含 Web 应用。
+仓库提供示例应用与调试台，支持录音和文件识别、文字合成、声音克隆与音色复用。调试台还提供参数和事件查看。两者调用同一套核心包接口，不随 `pip install speechio` 安装。
 
-先安装 [uv](https://docs.astral.sh/uv/getting-started/installation/)，再克隆仓库。已有仓库时，直接进入仓库根目录：
+先安装 [uv](https://docs.astral.sh/uv/getting-started/installation/)，克隆仓库并进入目录：
 
 ```bash
 git clone https://github.com/anwen0724/speechio.git
 cd speechio
 ```
 
-首次使用时，将 `apps/web/config.example.toml` 复制为 `apps/web/config.toml`，已有配置则直接编辑。
+首次使用时，将 `apps/web/config.example.toml` 复制为 `apps/web/config.toml`。已有配置时，直接编辑该文件：
 
-在配置中填写本地模型目录，或填写云端模型的 `apikey`。也可以将 `apps/web/.env.example` 复制为 `apps/web/.env` 并填入密钥。Web 的读取优先级是：配置文件中的 `apikey`、进程环境变量、`apps/web/.env`；空白值跳过。
+- 使用云端模型：填写对应条目的 `apikey`，或将 `apps/web/.env.example` 复制为 `apps/web/.env` 并填写密钥。读取优先级为配置中的 `apikey`、进程环境变量、`.env`，空白值跳过。
+- 使用本地模型：填写已有模型目录，并启用配置示例中的对应条目。
+
+使用云端模型时，启动命令为：
 
 ```bash
 uv run --group web python -m apps.web --enable-debug
 ```
 
+使用本地模型时，在启动命令中添加对应的 `--extra`，例如 Whisper：
+
+```bash
+uv run --group web --extra stt-whisper python -m apps.web --enable-debug
+```
+
+其他本地模型对应 `stt-nemotron`、`tts-qwen`、`tts-kokoro`。使用多组时重复添加 `--extra`。这些参数安装运行依赖，不下载模型，也不保证 GPU 运行环境已就绪。
+
 - 示例应用：<http://127.0.0.1:8767/>
 - 调试台：<http://127.0.0.1:8767/debug>
 
-在启动终端按 `Ctrl+C` 关闭服务。不需要调试台时，省略 `--enable-debug`。应用仅监听本机地址，同一时间运行一个任务；本机配置和密钥文件已加入 Git 忽略规则。
+在启动终端按 `Ctrl+C` 停止服务。不需要调试台时省略 `--enable-debug`。应用仅监听本机地址，同一时间运行一个任务；本机配置和密钥文件已加入 Git 忽略规则。
 
 ## 许可证
 
-SpeechIO 使用 [MIT 许可证](https://github.com/anwen0724/speechio/blob/main/LICENSE)，Copyright © 2026 anwen。
+speechio 使用 [MIT 许可证](https://github.com/anwen0724/speechio/blob/main/LICENSE)，Copyright © 2026 anwen。
 
-内置 Silero 模型的许可说明随包提供，见 [模型资源说明](https://github.com/anwen0724/speechio/blob/main/src/speechio/assets/README.md)。其他模型、依赖和云端服务分别遵循其提供方的许可与使用条款。
+内置 Silero 检测模型的许可随包提供，见[模型资源说明](https://github.com/anwen0724/speechio/blob/main/src/speechio/assets/README.md)。其他模型、依赖和云端服务遵循各自的许可与使用条款。

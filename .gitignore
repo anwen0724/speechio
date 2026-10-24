@@ -10,7 +10,7 @@ build/
 .ruff_cache/
 
 # 本地文档、Agent 规则和开发工具配置不进入版本库。
-/docs/
+/docs-local/
 AGENTS.md
 /.idea/
 /.codegraph/

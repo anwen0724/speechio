@@ -2,169 +2,147 @@
 
 [中文](https://github.com/anwen0724/speechio/blob/main/README.zh-CN.md)
 
-SpeechIO is a Python speech-to-text library. Transcribe audio files or connect a microphone to display text as you speak and receive a final result for each utterance.
-
-Use local models or cloud services: local recognition reads an existing model directory and processes audio on your machine; cloud recognition sends audio to the selected service using your API key.
+speechio is a Python library for speech recognition, speech synthesis, and voice cloning. Use local models or connect to supported cloud services with your API key to add speech capabilities to your application.
 
 ## Features
 
-- Transcribe audio files, PCM audio, and sequences of audio chunks.
-- Capture microphone audio, detect speech and pauses, and return results by utterance.
-- Receive live text through a callback while speaking.
-- Use manual segmentation, wake words, and custom recognition engines.
-- Try the Web example application and debug console to inspect results and API usage.
+- **Speech recognition**: transcribe audio files, in-memory audio, or microphone input, with live results and utterance segmentation.
+- **Speech synthesis**: generate complete audio or receive audio chunks from models that support streaming.
+- **Voice cloning**: create a voice from a reference recording, save it for reuse, or provide a reference recording when synthesizing speech.
+- **Model extensions**: integrate other local models or cloud services through custom adapters.
+- **Example application**: try recognition, synthesis, and cloning in a browser, and inspect parameters and events in the debug console.
 
-Currently supported:
-
-| Model | Runs on | File transcription | Text while speaking |
-| --- | --- | --- | --- |
-| Whisper | Your machine | Supported | Periodically transcribes accumulated audio to update the preview |
-| Nemotron 3.5 ASR 0.6B | Your machine | Supported | Native streaming |
-| `qwen-audio-3.1-asr-flash` | Alibaba Cloud Bailian | Short audio | Not supported; can transcribe after each utterance ends |
-| `qwen-audio-3.1-asr-flash-streaming` | Alibaba Cloud Bailian | Short audio | Native streaming |
-
-The initial Bailian integration supports short audio and realtime recognition, not long-recording file jobs. Whole-audio calls accept up to 300 seconds; HTTP calls also have an encoded-size limit. Inputs exceeding these limits are rejected.
+Available capabilities depend on the selected model. Your application handles conversation replies, business workflows, and audio playback.
 
 ## Install
 
-Requires 64-bit Python 3.11–3.13.
+Requires Python 3.11–3.13:
 
 ```bash
 pip install speechio
 ```
 
-Install optional dependencies for the features you need. Each command also installs SpeechIO:
+The default installation includes dependencies for cloud calls, audio processing, microphone input, voice activity detection, and wake words. Cloud calls require your service credentials. Some wake-word engines also require model files or an AccessKey.
 
-| Use case | Command |
+For local recognition or synthesis, install the optional dependency group for your model:
+
+| Local model | Install command |
 | --- | --- |
-| Microphone input | `python -m pip install "speechio[microphone]"` |
-| Bailian cloud recognition | `python -m pip install "speechio[remote]"` |
-| Bailian with microphone input | `python -m pip install "speechio[remote,microphone]"` |
-| Local Nemotron | `python -m pip install "speechio[nemotron]"` |
-| OpenWakeWord wake words | `python -m pip install "speechio[wake-openwakeword]"` |
-| Porcupine wake words | `python -m pip install "speechio[wake-porcupine]"` |
+| Whisper | `pip install "speechio[stt-whisper]"` |
+| Nemotron | `pip install "speechio[stt-nemotron]"` |
+| Qwen3-TTS Base | `pip install "speechio[tts-qwen]"` |
+| Kokoro | `pip install "speechio[tts-kokoro]"` |
 
-These commands install the library and its dependencies. They do not download speech recognition models. For local recognition, prepare a model directory as shown below.
-
-On Linux and macOS, prepare PortAudio before installing the microphone dependency. See the [PyAudio installation instructions](https://pypi.org/project/PyAudio/). Wake words also require the corresponding model files; Porcupine requires an AccessKey.
+Installing dependencies does not download recognition or synthesis models. Load an existing complete model directory, or download the model separately first. System dependencies, Python compatibility, and GPU support depend on the selected runtime. See [installation and runtime requirements (Chinese)](https://github.com/anwen0724/speechio/blob/main/docs/basic-usage.md#2-安装与运行环境).
 
 ## Quick start
 
-This example uses Whisper base on the CPU to transcribe a local audio file.
+For detailed usage instructions, read the [basic usage guide (Chinese)](https://github.com/anwen0724/speechio/blob/main/docs/basic-usage.md), which covers model configuration, API parameters, speech recognition, speech synthesis, and voice cloning.
 
-Run the download code separately to save the model to a directory you choose. Skip this step if you already have a model directory compatible with faster-whisper.
+The following examples use Alibaba Cloud Bailian.
 
-```python
-from speechio.models import download_model
+### Audio to text
 
-download_model(
-    engine="whisper",
-    model_id="base",
-    destination="models/whisper-base",
-)
-```
-
-Save your audio as `speech.wav`, then run:
-
-```python
-from speechio import LocalModelConfig, transcribe_audio
-
-config = LocalModelConfig(
-    engine="whisper",
-    model_path="models/whisper-base",
-    device="cpu",
-    compute_type="int8",
-)
-
-result = transcribe_audio("speech.wav", config=config, language="en")
-print(result.text)
-```
-
-Relative paths are resolved from the directory where you run Python. Recognition only loads existing files from `model_path`; it does not download models automatically. Use `language="en"` for English or `"zh"` for Chinese. Omit it to leave the language unspecified.
-
-## Usage examples
-
-### Cloud transcription
-
-Install the `remote` extra and set the `DASHSCOPE_API_KEY` environment variable to your Bailian API key. The code below reads that variable; the SDK does not automatically load `.env` files.
+Prepare a `speech.wav` recording no longer than 300 seconds. You can also use a supported format such as MP3 or M4A:
 
 ```python
 import os
 
-from speechio import RemoteModelConfig, transcribe_audio
+from speechio import RemoteModelConfig, TranscriptionOptions, transcribe_audio
 
 config = RemoteModelConfig(
     provider="bailian",
     model="qwen-audio-3.1-asr-flash",
     api_key=os.environ["DASHSCOPE_API_KEY"],
 )
-
-result = transcribe_audio("speech.wav", config=config, language="en")
+result = transcribe_audio(
+    "speech.wav",
+    config=config,
+    options=TranscriptionOptions(language="en"),
+)
 print(result.text)
 ```
 
-You can also pass a key obtained by your application directly through `api_key`. Calls send audio to Bailian and are billed according to your account and selected model.
+This short-audio model also checks request size. Use the file transcription model for longer recordings. See [speech recognition (Chinese)](https://github.com/anwen0724/speechio/blob/main/docs/basic-usage.md#4-将音频转换为文字) for microphone, realtime, and long-file examples.
 
-### Live microphone transcription
+### Text to audio
 
-Install the `microphone` extra and prepare the model directory used in the quick start. Speak into the default microphone and press `Ctrl+C` to exit.
+Select a voice supported by the model, then generate and save a WAV file:
 
 ```python
-from speechio import LocalModelConfig, StreamTranscriber
+import os
 
-config = LocalModelConfig(
-    engine="whisper",
-    model_path="models/whisper-base",
-    device="cpu",
-    compute_type="int8",
+from speechio import RemoteModelConfig, SynthesisOptions, synthesize
+
+config = RemoteModelConfig(
+    provider="bailian",
+    model="qwen-audio-3.1-tts-flash",
+    api_key=os.environ["DASHSCOPE_API_KEY"],
 )
-
-try:
-    with StreamTranscriber(
-        config=config,
-        language="en",
-        on_partial=lambda text: print("Live:", text),
-    ) as stream:
-        for result in stream:
-            print("Final:", result.text)
-except KeyboardInterrupt:
-    pass
+audio = synthesize(
+    "Hello. Welcome to today's practice.",
+    config=config,
+    options=SynthesisOptions(voice="Emily_v3.1", language="en"),
+)
+audio.save("hello.wav")
 ```
 
-Text received by `on_partial` may change. The loop yields a final result for each utterance. The bundled Silero model detects speech and pauses; no separate detection-model download is needed. To select a microphone, use `list_input_devices()` to find its index and pass it as `input_device`.
+The output is `hello.wav`; saving does not overwrite an existing file by default. See [speech synthesis (Chinese)](https://github.com/anwen0724/speechio/blob/main/docs/basic-usage.md#5-将文字转换为音频) for streaming output. To create a voice from your own recording, see [voice cloning and reuse (Chinese)](https://github.com/anwen0724/speechio/blob/main/docs/basic-usage.md#6-克隆声音与复用音色).
 
-Whisper updates previews while you speak and transcribes the complete audio when each utterance ends. Nemotron and Bailian streaming models use the streaming task's final result by default. Set `completion_mode="final"` to request an additional whole-audio transcription. Cloud retranscription adds requests and may incur additional charges.
+For local models, use `LocalModelConfig(adapter=..., model_path=...)` to select an adapter and an existing model directory. See [model configuration (Chinese)](https://github.com/anwen0724/speechio/blob/main/docs/basic-usage.md#3-选择与配置模型) for download and configuration steps.
 
-For cloud microphone transcription, install `remote,microphone`, replace `config` with a `RemoteModelConfig`, and select `qwen-audio-3.1-asr-flash-streaming`. To stop recording and receive remaining results, call `stream.end_input()` and continue consuming the loop.
+## Supported models
 
-See the repository's [examples](https://github.com/anwen0724/speechio/tree/main/examples) for more use cases.
+| Model | Runs on | Main capabilities |
+| --- | --- | --- |
+| Whisper | Local machine | File transcription; updates live text by repeatedly transcribing accumulated audio |
+| Nemotron 3.5 ASR 0.6B | Local machine | File transcription and native streaming; the current adapter supports CPU only |
+| Qwen3-TTS 12Hz Base, 0.6B / 1.7B | Local machine | Complete synthesis and voice cloning; the current adapter does not provide streaming synthesis |
+| Kokoro 82M v1.1-zh | Local machine | Chinese and English synthesis, with audio output by text segment; no voice cloning |
+| `qwen-audio-3.1-asr-flash` | Alibaba Cloud Bailian | Whole-audio transcription for short recordings |
+| `qwen-audio-3.1-asr-flash-streaming` | Alibaba Cloud Bailian | Native streaming recognition; also accepts complete audio input |
+| `qwen-audio-3.1-asr-flash-filetrans` | Alibaba Cloud Bailian | Long-file transcription from local files or URLs accessible to the service |
+| `qwen-audio-3.1-tts-flash` | Alibaba Cloud Bailian | Complete and streaming synthesis, incremental text input, and voice cloning |
+
+Local calls use existing model files. Cloud calls send input to the selected service. See the [usage guide (Chinese)](https://github.com/anwen0724/speechio/blob/main/docs/basic-usage.md) for input limits, device requirements, and voice compatibility.
 
 ## Web example application
 
-The repository includes two pages: an example application for recording and file transcription, and a debug console for adjusting parameters, inspecting events, and viewing API examples. Both use the same core SDK. The Web application is not included in the installed SDK package.
+The repository includes an example application and a debug console for recording and file transcription, speech synthesis, voice cloning, and voice reuse. The console also exposes parameters and events. Both call the same core package APIs and are not installed by `pip install speechio`.
 
-Install [uv](https://docs.astral.sh/uv/getting-started/installation/) and clone the repository. If you already have a checkout, use its root directory:
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/), clone the repository, and enter its directory:
 
 ```bash
 git clone https://github.com/anwen0724/speechio.git
 cd speechio
 ```
 
-On first use, copy `apps/web/config.example.toml` to `apps/web/config.toml`. If you already have a configuration file, edit it directly.
+On first use, copy `apps/web/config.example.toml` to `apps/web/config.toml`. If you already have a configuration file, edit it directly:
 
-Set local model directories or fill in `apikey` for cloud models. Alternatively, copy `apps/web/.env.example` to `apps/web/.env` and fill in your key. The Web application checks credentials in this order: `apikey` in the configuration file, process environment variables, then `apps/web/.env`. Blank values are skipped.
+- For cloud models, fill in `apikey` in the model entry, or copy `apps/web/.env.example` to `apps/web/.env` and set your key. Credential precedence is configuration `apikey`, process environment, then `.env`; blank values are skipped.
+- For local models, enter an existing model directory and enable the corresponding entry in the configuration example.
+
+To use cloud models, start the application with:
 
 ```bash
 uv run --group web python -m apps.web --enable-debug
 ```
 
+For local models, add the corresponding `--extra`. For example, to use Whisper:
+
+```bash
+uv run --group web --extra stt-whisper python -m apps.web --enable-debug
+```
+
+The other local groups are `stt-nemotron`, `tts-qwen`, and `tts-kokoro`. Repeat `--extra` to select multiple groups. These options install runtime dependencies; they do not download models or guarantee a working GPU environment.
+
 - Example application: <http://127.0.0.1:8767/>
 - Debug console: <http://127.0.0.1:8767/debug>
 
-Press `Ctrl+C` in the server terminal to stop it. Omit `--enable-debug` if you do not need the debug console. The application listens only on localhost and runs one task at a time. Local configuration and credential files are covered by Git ignore rules.
+Press `Ctrl+C` in the server terminal to stop it. Omit `--enable-debug` if you do not need the console. The application listens on localhost and runs one task at a time. Local configuration and credential files are covered by Git ignore rules.
 
 ## License
 
-SpeechIO is licensed under the [MIT License](https://github.com/anwen0724/speechio/blob/main/LICENSE). Copyright © 2026 anwen.
+speechio is licensed under the [MIT License](https://github.com/anwen0724/speechio/blob/main/LICENSE). Copyright © 2026 anwen.
 
-The bundled Silero model includes its license; see the [model asset notes](https://github.com/anwen0724/speechio/blob/main/src/speechio/assets/README.md). Other models, dependencies, and cloud services are subject to their providers' licenses and terms.
+The bundled Silero detection model includes its license; see the [model asset notes](https://github.com/anwen0724/speechio/blob/main/src/speechio/assets/README.md). Other models, dependencies, and cloud services have their own licenses and terms.
