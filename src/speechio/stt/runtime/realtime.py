@@ -214,7 +214,17 @@ class RealtimeExecutor:
         state.invalid = True
         state.pending.clear()
         state.followups.clear()
+        self._cancel_stream(state)
         self.runtime.coordination.notify_all()
+
+    def _cancel_stream(self, state):
+        """可选中断入口必须非阻塞；旧自定义流仍可在调用返回后清理。"""
+        cancel = getattr(state.stream, "cancel", None)
+        if cancel is not None:
+            try:
+                cancel()
+            except Exception as exc:
+                self.errors.append(CloseError("CLEANUP_FAILED", "cancel_stream", str(exc)))
 
     def is_complete(self, ref):
         """本执行器维护排空屏障，不把退出标记写回会话单元。"""
@@ -226,6 +236,7 @@ class RealtimeExecutor:
         for state in self.states.values():
             state.invalid = True
             state.pending.clear()
+            self._cancel_stream(state)
         self.runtime.coordination.notify_all()
 
     def _select(self):
@@ -320,6 +331,10 @@ class RealtimeExecutor:
             return None, self._close_stream(state)
         if state.stream is None:
             state.stream = self.model._create_stream(state.session.config.options.language)
+        # 建流期间取消时还没有流句柄；建流返回后不能继续发送。
+        if state.invalid:
+            self._cancel_stream(state)
+            return None, self._close_stream(state)
         if pcm:
             array = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768
             state.stream.accept_audio(array)

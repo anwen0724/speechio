@@ -21,6 +21,16 @@ class CloneAdapter(TTSAdapter):
 
 
 class VoiceTests(unittest.TestCase):
+    def test_truncated_reference_file_is_rejected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "reference.wav"
+            AudioResult(b"\x01\x00" * 1600, AudioFormat()).save(path)
+            path.write_bytes(path.read_bytes()[:-1600])
+            with Synthesizer.from_adapter(CloneAdapter()) as tts:
+                with self.assertRaises(TTSError) as caught:
+                    tts.clone_voice(path)
+            self.assertEqual(caught.exception.code, "INVALID_INPUT")
+
     def test_conflicting_voice_and_orphan_reference_text_are_rejected(self):
         with Synthesizer.from_adapter(CloneAdapter()) as tts:
             for arguments in (

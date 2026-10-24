@@ -132,6 +132,8 @@ class LocalTTSTests(unittest.TestCase):
             self.assertEqual(backend.assert_reference, 24000)
 
     def test_kokoro_stream_preserves_long_text_with_small_audio_buffer(self):
+        converted_texts = []
+
         class Model:
             context_length = 512
 
@@ -152,6 +154,7 @@ class LocalTTSTests(unittest.TestCase):
                 pass
 
             def __call__(self, text):
+                converted_texts.append(text)
                 return "x" * (3 * len(text)), []
 
         torch = SimpleNamespace(load=lambda *a, **kw: [0] * 510)
@@ -183,3 +186,15 @@ class LocalTTSTests(unittest.TestCase):
                 ) as stream:
                     audio = b"".join(chunk.data for chunk in stream)
             self.assertEqual(audio, b"\x00\x20" * (401 * 3))
+            for mode in ("batch", "stream"):
+                with self.subTest(mode=mode), Synthesizer(config) as tts:
+                    converted_texts.clear()
+                    options = SynthesisOptions(voice="af_test", language="en")
+                    (path / "voices" / "af_test.pt").write_text("{}", encoding="utf-8")
+                    if mode == "batch":
+                        tts.synthesize("Value 3.14. Dr. Smith.", options=options)
+                    else:
+                        with tts.stream("Value 3.14. Dr. Smith.", options=options) as stream:
+                            list(stream)
+                    self.assertTrue(any("3.14" in text for text in converted_texts))
+                    self.assertTrue(any("Dr. Smith" in text for text in converted_texts))

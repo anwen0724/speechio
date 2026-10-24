@@ -1,6 +1,7 @@
 """文件解码实现：SoundFile 保留原读取行为，PyAV 补充压缩音频格式。"""
 
 import os
+import struct
 from contextlib import contextmanager
 from dataclasses import dataclass
 
@@ -91,6 +92,7 @@ def open_audio_source(path):
     try:
         import soundfile as sf
 
+        _check_pcm_wav_length(path)
         try:
             source = sf.SoundFile(os.fspath(path))
         except sf.LibsndfileError as error:
@@ -119,3 +121,36 @@ def open_audio_source(path):
         raise STTError(
             "AUDIO_READ_FAILED", "read_file", f"无法读取或解码音频文件：{error}"
         ) from error
+
+
+def _check_pcm_wav_length(path):
+    """检查 RIFF PCM 数据块，防止解码器将截断文件当作正常短音频。"""
+    with open(path, "rb") as file:
+        header = file.read(12)
+        if len(header) != 12 or header[:4] != b"RIFF" or header[8:] != b"WAVE":
+            return
+        file_size = os.fstat(file.fileno()).st_size
+        riff_end = 8 + struct.unpack_from("<I", header, 4)[0]
+        alignment = None
+        data_blocks = []
+        offset = 12
+        while offset + 8 <= min(file_size, riff_end):
+            file.seek(offset)
+            kind, size = struct.unpack("<4sI", file.read(8))
+            start = offset + 8
+            if kind == b"fmt ":
+                fmt = file.read(min(size, 40))
+                if len(fmt) >= 16:
+                    tag = struct.unpack_from("<H", fmt)[0]
+                    pcm_guid = b"\x01\x00\x00\x00\x00\x00\x10\x00\x80\x00\x00\xaa\x00\x38\x9b\x71"
+                    if tag == 1 or (tag == 65534 and len(fmt) >= 40 and fmt[24:40] == pcm_guid):
+                        alignment = struct.unpack_from("<H", fmt, 12)[0]
+            elif kind == b"data":
+                data_blocks.append((start, size))
+            # 数据只跳过不读取；未知信息块及奇数字节填充均保留。
+            offset = start + size + size % 2
+        if alignment is not None and any(
+            start + size > min(file_size, riff_end) or not alignment or size % alignment
+            for start, size in data_blocks
+        ):
+            raise STTError("AUDIO_READ_FAILED", "read_file", "PCM WAV 音频数据已截断或采样帧不完整")

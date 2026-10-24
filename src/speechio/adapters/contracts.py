@@ -71,6 +71,9 @@ class STTStream(ABC):
     def close(self):
         """释放本流资源，不影响共享引擎或其他音频单元。"""
 
+    def cancel(self):
+        """非阻塞地请求中断；可与发送/接收并发，资源仍由 close 释放。"""
+
 
 class STTAdapter(ABC):
     """可由调用方继承或按相同契约实现的模型边界。"""
@@ -104,7 +107,11 @@ class STTAdapter(ABC):
         raise STTError("BACKEND_INCOMPATIBLE", "transcribe_url", "引擎不支持文件地址识别")
 
     def close(self):
-        """释放自有资源；没有额外资源的实现可以使用默认行为。"""
+        """释放自有资源，返回 None 表示完成，也可返回 CloseResult。
+
+        延迟释放应及时返回 pending；后续 close 继续确认释放进度。
+        ok 和 failed 是最终结果，失败即使没有错误详情也不能视为成功。
+        """
 
 
 def validate_engine(engine):

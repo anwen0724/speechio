@@ -8,7 +8,7 @@ from time import monotonic
 
 from speechio.audio.formats import AudioFormat
 from speechio.errors import STTError
-from speechio.resources import CloseError
+from speechio.resources import CloseError, CloseResult
 from speechio.stt.options import TranscriptionOptions
 from speechio.stt.runtime.candidates import OnDemandConfig, execute_candidate
 from speechio.stt.runtime.engines import EngineResources
@@ -215,14 +215,14 @@ class STTRuntime:
                 )
             except BaseException as exc:
                 # 第二角色失败时一起回收，重试使用新资源拥有者。
-                errors = self._engines.close()
-                if errors:
-                    exc.cleanup_errors = errors
+                cleanup = self._engines.close()
+                if cleanup.errors:
+                    exc.cleanup_errors = cleanup.errors
                 injected = self._engines.injected
-                if injected:
-                    self._state = "closed"
+                if injected or cleanup.status != "ok":
+                    self._state = "closing" if cleanup.status == "pending" else "closed"
                     self._close_result = RuntimeCloseResult(
-                        "failed" if errors else "ok", errors=errors
+                        cleanup.status, self._engines.pending_count, errors=cleanup.errors
                     )
                 else:
                     self._recognizer = Transcriber(self._recognizer.config)
@@ -472,18 +472,36 @@ class STTRuntime:
                 with self._condition:
                     while self._wake_resources:
                         self._condition.wait()
-                errors.extend(self._engines.close())
             except BaseException as cleanup_error:
                 errors.append(CloseError("CLEANUP_FAILED", "close", str(cleanup_error)))
             finally:
-                with self._condition:
-                    errors.extend(self._realtime.errors if self._realtime else ())
-                    errors.extend(self._wake_errors)
-                    self._close_result = RuntimeCloseResult(
-                        "failed" if errors else "ok", errors=tuple(errors)
-                    )
-                    self._state = "closed"
-                    self._condition.notify_all()
+                errors.extend(self._realtime.errors if self._realtime else ())
+                errors.extend(self._wake_errors)
+                self._complete_cleanup(errors)
+
+    def _complete_cleanup(self, errors=()):
+        """只在推理退出后继续释放；等待者的超时不丢弃未完成资源。"""
+        while True:
+            try:
+                cleanup = self._engines.close()
+            except BaseException as exc:
+                cleanup = CloseResult(
+                    status="failed", errors=(CloseError("CLEANUP_FAILED", "close", str(exc)),)
+                )
+            all_errors = tuple(dict.fromkeys((*errors, *cleanup.errors)))
+            status = cleanup.status
+            if status == "ok" and all_errors:
+                status = "failed"
+            with self._condition:
+                self._close_result = RuntimeCloseResult(
+                    status, self._engines.pending_count, errors=all_errors
+                )
+                self._state = "closing" if status == "pending" else "closed"
+                self._condition.notify_all()
+                if status != "pending":
+                    return
+                # 适配器 close 返回 pending 后定期确认，不忙循环，也不重新关闭已完成者。
+                self._condition.wait(0.05)
 
     def _work_loop(self):
         """锁外串行推理；锁内回交归属及释放物理容量。"""
@@ -571,6 +589,7 @@ class STTRuntime:
     def close(self, *, timeout=5.0) -> RuntimeCloseResult:
         """先失效会话，再限时等待；不释放仍在推理中使用的模型。"""
         _validate_timeout(timeout)
+        deadline = monotonic() + timeout
         with self._condition:
             if self._state == "closed":
                 return self._close_result
@@ -581,15 +600,19 @@ class STTRuntime:
                 self._realtime.stop()
             self._condition.notify_all()
             if self._worker is None:
-                errors = self._engines.close()
-                self._close_result = RuntimeCloseResult("failed" if errors else "ok", errors=errors)
-                self._state = "closed"
-                return self._close_result
-        self._worker.join(timeout)
+                # 尚未 prepare 的实例同样有适配器资源，不能在调用线程里无限等待。
+                self._worker = Thread(target=self._complete_cleanup, name="ASRCleanup", daemon=True)
+                self._worker.start()
+        self._worker.join(max(0, deadline - monotonic()))
         with self._condition:
-            if self._worker.is_alive():
+            if self._worker.is_alive() and self._state != "closed":
                 realtime_pending = self._realtime.pending_for() if self._realtime else 0
                 self._close_result = RuntimeCloseResult(
-                    "pending", self._tasks + realtime_pending + len(self._wake_resources)
+                    "pending",
+                    self._tasks
+                    + realtime_pending
+                    + len(self._wake_resources)
+                    + self._engines.pending_count,
+                    errors=self._close_result.errors if self._close_result else (),
                 )
             return self._close_result

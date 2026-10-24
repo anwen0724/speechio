@@ -131,7 +131,7 @@ class KokoroAdapter(TTSAdapter):
             raise TTSError("INVALID_INPUT", "synthesize", "单个字符的发音超过模型容量")
         midpoint = len(text) // 2
         boundaries = [
-            m.end() for m in re.finditer(r"[\s，。！？,;.!?]", text) if 0 < m.end() < len(text)
+            m.end() for m in re.finditer(r"[\s，。！？,;!?]", text) if 0 < m.end() < len(text)
         ]
         split = min(boundaries, key=lambda i: abs(i - midpoint)) if boundaries else midpoint
         yield from self._phonemes(text[:split], g2p, limit)
@@ -141,7 +141,8 @@ class KokoroAdapter(TTSAdapter):
         pack = self._voice(options.voice)
         g2p = self._phonemizer(self._language(options))
         limit = min(self._model.context_length - 2, len(pack))
-        for sentence in re.findall(r"[^。！？.!?\n]+[。！？.!?]*|[。！？.!?]+", text):
+        # 英文句点保留给 G2P 解释小数、缩写；超长输入再按词边界拆分。
+        for sentence in re.findall(r"[^。！？!?\n]+[。！？!?]*|[。！？!?]+", text):
             for phonemes in self._phonemes(sentence, g2p, limit):
                 output = self._model(
                     phonemes, pack[len(phonemes) - 1], options.speed, return_output=True

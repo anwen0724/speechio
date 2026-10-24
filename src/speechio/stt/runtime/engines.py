@@ -2,6 +2,7 @@
 
 from threading import Lock
 
+from speechio.resources import CloseResult
 from speechio.stt.transcriber import Transcriber
 
 
@@ -39,5 +40,21 @@ class EngineResources:
             owner.prepare()
 
     def close(self):
-        """仅在所有执行线程退出后调用；每个拥有者保存自己的关闭结果。"""
-        return tuple(error for owner, _ in self._owners for error in owner.close().errors)
+        """保留未完成状态及各拥有者的失败；不能仅靠错误列表判断完成。"""
+        results = [owner.close() for owner, _ in self._owners]
+        errors = tuple(error for result in results for error in result.errors)
+        status = (
+            "pending"
+            if any(result.status == "pending" for result in results)
+            else "failed"
+            if any(result.status == "failed" for result in results)
+            else "ok"
+        )
+        return CloseResult(status=status, errors=errors)
+
+    @property
+    def pending_count(self):
+        return sum(
+            owner.close_result is not None and owner.close_result.status == "pending"
+            for owner, _ in self._owners
+        )

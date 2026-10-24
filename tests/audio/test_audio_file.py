@@ -1,5 +1,6 @@
 """实际写入 WAV 与 FLAC，从文件入口验证解码和转换组合。"""
 
+import struct
 import tempfile
 import unittest
 from contextlib import contextmanager
@@ -19,6 +20,30 @@ from tests.runtime.test_engine_injection import RecordingEngine
 
 
 class AudioFileTests(unittest.TestCase):
+    def test_truncated_pcm_wav_is_rejected_before_transcription(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "truncated.wav"
+            sf.write(path, np.ones(1600, dtype=np.int16), 16000, subtype="PCM_16")
+            path.write_bytes(path.read_bytes()[:-1600])
+            engine = RecordingEngine()
+            with Transcriber.from_adapter(engine) as transcriber:
+                with self.assertRaises(STTError) as caught:
+                    transcriber.transcribe_file(path)
+            self.assertEqual(caught.exception.code, "AUDIO_READ_FAILED")
+            self.assertEqual(engine.inputs, [])
+
+    def test_pcm_wav_with_extra_chunk_keeps_all_samples(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "metadata.wav"
+            samples = np.arange(1600, dtype=np.int16)
+            sf.write(path, samples, 16000, subtype="PCM_16")
+            raw = path.read_bytes()
+            extra = b"JUNK" + struct.pack("<I", 3) + b"abc\x00"
+            raw = raw[:12] + extra + raw[12:]
+            raw = raw[:4] + struct.pack("<I", len(raw) - 8) + raw[8:]
+            path.write_bytes(raw)
+            self.assertEqual(read_audio_file(path), samples.tobytes())
+
     def test_decoder_failure_after_first_frame_is_not_a_successful_prefix(self):
         real_open = av.open
 

@@ -55,8 +55,12 @@ class Transcriber:
     def __exit__(self, exc_type, exc, tb):
         """关闭自有资源，正文异常优先于关闭异常。"""
         result = self.close()
-        if exc_type is None and result.status == "failed":
-            raise STTError("CLEANUP_FAILED", "close", result.errors[0].message)
+        if result.status != "ok":
+            code = "CLOSE_TIMEOUT" if result.status == "pending" else "CLEANUP_FAILED"
+            message = result.errors[0].message if result.errors else "识别器关闭尚未完成"
+            if exc_type is None:
+                raise STTError(code, "close", message)
+            exc.add_note(f"{code}: {message}")
         return False
 
     @property
@@ -92,8 +96,8 @@ class Transcriber:
         if not self._operation_lock.acquire(blocking=False):
             raise STTError("RUNTIME_BUSY", "close" if closing else "transcribe", "运行时正在使用")
         try:
-            if self.state == "closed" and not closing:
-                raise STTError("RUNTIME_CLOSED", "transcribe", "运行时已经关闭")
+            if self.state in ("closing", "closed") and not closing:
+                raise STTError("RUNTIME_CLOSED", "transcribe", "运行时正在关闭或已经关闭")
             yield
         except STTError as exc:
             LOGGER.error(
@@ -110,17 +114,15 @@ class Transcriber:
             self._engine.prepare()
             self._state = "ready"
         except BaseException as exc:
-            cleanup_errors = self._release_resources()
-            if cleanup_errors:
-                exc.cleanup_errors = cleanup_errors
-            if self.config is not None:
+            cleanup = self._release_resources()
+            if cleanup.errors:
+                exc.cleanup_errors = cleanup.errors
+            if self.config is not None and cleanup.status == "ok":
                 self._engine = build_engine(self.config)
             else:
-                # 已关闭的注入实例不能凭空重建，失败仍保留原始原因。
-                self._state = "closed"
-                self._close_result = CloseResult(
-                    status="failed" if cleanup_errors else "ok", errors=cleanup_errors
-                )
+                # 清理未完成时不能覆盖旧引擎；注入实例也不能凭空重建。
+                self._state = "closing" if cleanup.status == "pending" else "closed"
+                self._close_result = cleanup
             if isinstance(exc, (STTError, KeyboardInterrupt, SystemExit)):
                 raise
             raise STTError("MODEL_LOAD", "load_model", str(exc)) from exc
@@ -291,22 +293,44 @@ class Transcriber:
         )
 
     def _release_resources(self):
-        """引擎关闭错误独立记录；本地或网络资源都由该引擎负责。"""
-        engine, self._engine = self._engine, None
+        """保留完整关闭状态；pending 引擎仍归当前对象所有。"""
+        engine = self._engine
         if engine is None:
-            return ()
+            return self._close_result or CloseResult()
         try:
             result = engine.close()
-            return result.errors if isinstance(result, CloseResult) else ()
+            if result is None:
+                result = CloseResult()
+            if not isinstance(result, CloseResult) or result.status not in (
+                "ok",
+                "pending",
+                "failed",
+            ):
+                raise ValueError("适配器 close 应返回 None 或有效的 CloseResult")
         except Exception as exc:
             LOGGER.error("引擎资源关闭失败：%s", exc)
-            return (CloseError("CLEANUP_FAILED", "close", str(exc)),)
+            result = CloseResult(
+                status="failed", errors=(CloseError("CLEANUP_FAILED", "close", str(exc)),)
+            )
+        errors = tuple(
+            dict.fromkeys(
+                (*self._close_result.errors, *result.errors)
+                if self._close_result
+                else result.errors
+            )
+        )
+        if result.status == "failed" and not errors:
+            errors = (CloseError("CLEANUP_FAILED", "close", "适配器报告关闭失败，未提供详情"),)
+        status = "failed" if result.status == "ok" and errors else result.status
+        result = replace(result, status=status, errors=errors)
+        if status != "pending":
+            self._engine = None
+        return result
 
     def close(self) -> CloseResult:
-        """保留首次关闭结果；不把引用清除当作宿主资源回到初始值。"""
+        """继续未完成的释放，完成后保留最终结果。"""
         with self._operation(closing=True):
-            if self.close_result is None:
-                errors = self._release_resources()
-                self._close_result = CloseResult(status="failed" if errors else "ok", errors=errors)
-                self._state = "closed"
+            if self.close_result is None or self.close_result.status == "pending":
+                self._close_result = self._release_resources()
+                self._state = "closing" if self._close_result.status == "pending" else "closed"
             return self.close_result

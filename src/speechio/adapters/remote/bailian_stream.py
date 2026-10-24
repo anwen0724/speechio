@@ -2,6 +2,8 @@
 
 import json
 import logging
+import socket
+from threading import Event, Timer
 from time import monotonic
 from uuid import uuid4
 
@@ -30,6 +32,7 @@ class BailianStream(STTStream):
         self._task_id = uuid4().hex
         self._ws = None
         self._connection = None
+        self._cancelled = Event()
         self._started = self._ending = self._finished = self._closed = False
         self._sentences = {}
         self._progress_version = 0
@@ -82,13 +85,52 @@ class BailianStream(STTStream):
             raise
 
     def _send(self, message):
-        """网络错误只暴露稳定分类，不回传可能含密钥的响应或异常内容。"""
+        """给阻塞发送设置截止时间；超时关闭读写通道，不重放音频。"""
         from websockets.exceptions import WebSocketException
 
+        if self._cancelled.is_set():
+            raise STTError("CANCELLED", "stream", "百炼识别已取消")
+        expired = Event()
+
+        def expire():
+            expired.set()
+            self._abort_transport()
+
+        timer = Timer(self.config.timeout_seconds, expire)
+        timer.daemon = True
+        timer.start()
         try:
             self._ws.send(message)
+            if expired.is_set() or self._cancelled.is_set():
+                raise OSError
         except (OSError, WebSocketException):
-            raise STTError("REMOTE_CONNECTION", "stream", "百炼音频流发送失败") from None
+            code = (
+                "CANCELLED"
+                if self._cancelled.is_set()
+                else "REMOTE_TIMEOUT"
+                if expired.is_set()
+                else "REMOTE_CONNECTION"
+            )
+            raise STTError(code, "stream", "百炼音频流发送未完成，未自动重试") from None
+        finally:
+            timer.cancel()
+            timer.join()
+
+    def _abort_transport(self):
+        """不等待 WebSocket 协议锁，以便解除持锁中的 sendall。"""
+        if self._ws is not None:
+            try:
+                self._ws.socket.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            # Windows 上 shutdown 不一定立即解除另一线程的阻塞发送，
+            # 同时关闭原始 socket；不能调用会等待协议锁的 WebSocket.close。
+            self._ws.socket.close()
+
+    def cancel(self):
+        """只发送中断信号；执行线程退出后统一关闭连接。"""
+        self._cancelled.set()
+        self._abort_transport()
 
     def _send_command(self, action, payload):
         self._send(

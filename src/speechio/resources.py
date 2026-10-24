@@ -14,7 +14,7 @@ class CloseError:
 
 @dataclass(frozen=True)
 class CloseResult:
-    """记录首次关闭结论；引用清除不等于原生库或显存已经卸载。"""
+    """关闭状态：pending 可继续确认，ok/failed 为最终结论。"""
 
     status: str = "ok"
     cleanup_method: str = "reference_drop"
