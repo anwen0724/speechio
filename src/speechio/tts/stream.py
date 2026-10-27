@@ -8,19 +8,27 @@ from speechio.audio.results import AudioChunk, validate_pcm
 from speechio.errors import TTSError
 from speechio.resources import CloseError, CloseResult
 from speechio.tts.options import validate_seconds
+from speechio.tts.timing import TextTiming
 
 
 class SynthesisStream:
     """一个发送方与一个读取方可并行工作，关闭不会释放共享引擎。"""
 
-    def __init__(self, backend, *, incremental, max_buffer_seconds):
+    def __init__(self, backend, *, incremental, max_buffer_seconds, text_timestamps=None):
         validate_pcm(b"", backend.format)
+        if text_timestamps is not None and not callable(getattr(backend, "read_event", None)):
+            raise TTSError(
+                "PROTOCOL_ERROR", "open_stream", "声明文字时间能力的后端须提供 read_event"
+            )
         self._backend = backend
+        self._text_timestamps = text_timestamps
+        self._read_mode = None
         self._format = backend.format
         self._incremental = incremental
         self._state = "accepting" if incremental else "finishing"
         self._condition = Condition()
         self._sender = Lock()
+        self._reader = Lock()
         self._queue = deque()
         self._buffer_bytes = 0
         self._max_bytes = max_buffer_seconds * self.format.sample_rate * 2
@@ -118,7 +126,11 @@ class SynthesisStream:
                 with self._condition:
                     if self._state in ("cancelled", "failed"):
                         break
-                chunk = self._backend.read()
+                chunk = (
+                    self._backend.read_event()
+                    if self._text_timestamps is not None
+                    else self._backend.read()
+                )
                 with self._condition:
                     if self._state in ("cancelled", "failed"):
                         break
@@ -128,6 +140,13 @@ class SynthesisStream:
                         self._state = "completed"
                         self._condition.notify_all()
                         break
+                    if isinstance(chunk, TextTiming):
+                        # 音频容量不能约束无音频的元信息；事件队列另设数量上限。
+                        if len(self._queue) >= 1024:
+                            raise TTSError("BUFFER_EXCEEDED", "read", "待读取合成事件超过缓冲上限")
+                        self._queue.append(chunk)
+                        self._condition.notify_all()
+                        continue
                     if not isinstance(chunk, AudioChunk) or chunk.format != self.format:
                         raise TTSError("PROTOCOL_ERROR", "read", "音频块格式不一致")
                     if getattr(self._backend, "pull_based", False):
@@ -178,17 +197,44 @@ class SynthesisStream:
                 self._condition.notify_all()
 
     def read(self, *, timeout=None):
-        """None 只表示成功读尽；读取超时不会改变任务状态。"""
+        """只读取音频，跳过文字事件；不能与事件读取方式混用。"""
+        return self._read("audio", timeout)
+
+    def read_event(self, *, timeout=None):
+        """按顺序读取 AudioChunk 或 TextTiming；None 表示成功读尽。"""
+        return self._read("events", timeout)
+
+    def events(self):
+        """逐个交付事件，同一段文字可能在结束时收到更新。"""
+        while (event := self.read_event()) is not None:
+            yield event
+
+    def _read(self, mode, timeout):
+        if not self._reader.acquire(blocking=False):
+            raise TTSError("INVALID_INPUT", "read", "同一合成流只允许一个读取方")
+        try:
+            return self._read_next(mode, timeout)
+        finally:
+            self._reader.release()
+
+    def _read_next(self, mode, timeout):
+        """两种读取方式共用一条队列和同一个等待截止时间。"""
         validate_seconds(timeout, "timeout", optional=True)
         deadline = None if timeout is None else monotonic() + timeout
         with self._condition:
+            if self._read_mode is not None and self._read_mode != mode:
+                raise TTSError("INVALID_INPUT", "read", "同一合成流不能混用音频读取和事件读取")
+            self._read_mode = mode
             while True:
                 if self._error is not None:
                     raise self._error
                 if self._queue:
                     chunk = self._queue.popleft()
-                    self._buffer_bytes -= len(chunk.data)
+                    if isinstance(chunk, AudioChunk):
+                        self._buffer_bytes -= len(chunk.data)
                     self._condition.notify_all()
+                    if mode == "audio" and isinstance(chunk, TextTiming):
+                        continue
                     return chunk
                 if self._state == "completed" and self._done.is_set():
                     self._drained = True

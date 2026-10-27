@@ -147,6 +147,7 @@ class TTSCapabilities:
     instruction_control: bool = False
     sample_rates: tuple[int, ...] | None = None
     voice_cloning: bool = False
+    text_timestamps: tuple[str, ...] = ()
 
     def __post_init__(self):
         if (
@@ -165,6 +166,8 @@ class TTSCapabilities:
                 )
             )
             or (self.text_streaming and not self.audio_streaming)
+            or not isinstance(self.text_timestamps, tuple)
+            or any(level not in ("sentence", "word") for level in self.text_timestamps)
             or (
                 self.sample_rates is not None
                 and (

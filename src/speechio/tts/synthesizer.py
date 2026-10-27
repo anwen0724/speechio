@@ -103,6 +103,13 @@ class Synthesizer:
         if not isinstance(options, SynthesisOptions):
             raise TTSError("INVALID_INPUT", "synthesize", "需要 SynthesisOptions")
         caps = self.capabilities
+        if (
+            options.text_timestamps is not None
+            and options.text_timestamps not in caps.text_timestamps
+        ):
+            raise TTSError(
+                "CAPABILITY_UNSUPPORTED", "synthesize", "该模型不支持所请求的文字时间信息"
+            )
         if isinstance(options.voice, Voice) and not caps.voice_cloning:
             raise TTSError("CAPABILITY_UNSUPPORTED", "synthesize", "该模型不支持使用克隆声音")
         if not getattr(caps, capability) or any(
@@ -214,7 +221,10 @@ class Synthesizer:
             if backend.format.sample_rate != selected.sample_rate:
                 raise TTSError("PROTOCOL_ERROR", "open_stream", "后端未采用所请求采样率")
             stream = SynthesisStream(
-                backend, incremental=text is None, max_buffer_seconds=self._max_buffer_seconds
+                backend,
+                incremental=text is None,
+                max_buffer_seconds=self._max_buffer_seconds,
+                text_timestamps=selected.text_timestamps,
             )
             with self._condition:
                 self._active = stream

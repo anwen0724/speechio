@@ -438,6 +438,78 @@ def synthesize_text_parts(text_parts, tts_config, voice, output_path):
 
 调用前可读取 `synthesizer.capabilities`，例如 `voice_cloning`、`audio_streaming`、`text_streaming`。不支持的功能会报错，不会自动切换模型。
 
+### 获取文字对应的音频时间
+
+需要让字幕跟随语音播放时，在 `SynthesisOptions` 中设置 `text_timestamps`。这不改变文字的发送方式，也不需要把每句话拆成单独请求。
+
+| 值 | 返回内容 |
+| --- | --- |
+| `None`（默认） | 只获取音频，保留原有用法 |
+| `"sentence"` | 每段文字对应的音频起止位置 |
+| `"word"` | 段落位置，以及供应商返回的字或词的位置 |
+
+当前只有百炼适配器的 `qwen-audio-3.1-tts-flash` 接通这项能力。调用前可查看 `synthesizer.capabilities.text_timestamps`；空元组表示不支持，传入不支持的级别会在发起合成前报 `CAPABILITY_UNSUPPORTED`。本地 Qwen、Kokoro 的原有合成方式不受影响。
+
+使用 `stream.read_event(timeout=None)` 读取一个事件，或使用 `stream.events()` 逐个读取。返回值有两种：
+
+- `AudioChunk`：PCM 音频块，按返回顺序交给播放器。
+- `TextTiming`：某段文字及其在输出音频中的位置。
+
+`TextTiming` 的字段如下。所有时间均为秒，**从本次输出音频开头计算**，不是网络接收时间或播放器启动时间。
+
+| 字段 | 含义 |
+| --- | --- |
+| `segment_index` | 本次任务内从 0 开始的段编号，由供应商分句决定，与 `send_text()` 次数无关 |
+| `text` | 该段的文字 |
+| `start_seconds` | 该段音频的开始位置 |
+| `end_seconds` | 该段音频的结束位置；尚未结束时为 `None` |
+| `words` | `WordTiming` 元组；尚未返回或供应商未提供时为 `None` |
+
+`WordTiming` 包含 `text`、`start_seconds`、`end_seconds`。同一个 `segment_index` 可以多次返回，应用用新事件更新该段信息。句级范围按实际 PCM 长度确定，可能包含停顿；字级范围直接使用供应商的结果，不按文字长度估算。
+
+下面示例接收已经创建的百炼 `tts_config`。`on_event` 由应用实现，将音频交给播放器，将文字时间交给字幕逻辑：
+
+```python
+from concurrent.futures import ThreadPoolExecutor
+from speechio import SynthesisOptions, Synthesizer
+
+def synthesize_with_timings(text_parts, tts_config, on_event):
+    def receive(stream):
+        try:
+            for event in stream.events():
+                on_event(event)
+        except BaseException:
+            stream.cancel()
+            raise
+
+    with Synthesizer(tts_config) as synthesizer:
+        options = SynthesisOptions(
+            voice="yuxiaoyun_v3.1",  # 北京地域的预设中文音色
+            text_timestamps="word",
+        )
+        with synthesizer.open_stream(options=options) as stream:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                receiver = executor.submit(receive, stream)
+                try:
+                    for text in text_parts:
+                        stream.send_text(text)
+                    stream.finish_input()
+                    receiver.result()
+                except BaseException:
+                    stream.cancel()
+                    raise
+```
+
+输入和读取并行进行；`on_event` 不应等待音频实际播放完再返回，否则会阻塞后续读取。应用根据播放器实际播放到的位置显示字幕，而不是收到文字事件就立即显示。
+
+一句话的开始事件先于对应音频交付。字级信息可能随合成逐步补全，也可能到句末才完整返回。因此，无缓冲立即播放时不能保证每个字的时间都提前可用；需要精确逐字显示的应用应自行安排播放缓冲。speechio 不延迟播放、不补造缺失的时间，也不额外调用识别模型。
+
+音色支持情况以[百炼音色列表](https://help.aliyun.com/zh/model-studio/qwen-audio-tts-voice-list)为准。官方声明支持复刻音色；本次实际验证使用预设音色 `yuxiaoyun_v3.1`，未验证克隆音色。其他地域、音色或模型不能据此视为已实测。
+
+`stream(text, options=...)` 同样可以读取事件。完整生成 `synthesize()` 将最终段信息放在 `AudioResult.text_timings` 中，默认是空元组；它收集同一次合成的结果，不再发起第二次合成。`AudioResult.save()` 仍只保存 WAV 音频，文字时间由应用另行保存。
+
+原有的 `read()` 和 `for chunk in stream` 继续只返回音频，即使开启了时间信息也会跳过文字事件。同一个流只能选择一种读取方式，不能中途切换或同时使用多个读取方。`read_event()` 成功读尽时返回 `None`，超时抛出 `READ_TIMEOUT`，不代表合成结束。取消或失败会清除待读取事件；文字事件也受队列容量限制，长期不读取会报 `BUFFER_EXCEEDED`。
+
 ## 6. 克隆声音与复用音色
 
 ### 独立克隆并保存

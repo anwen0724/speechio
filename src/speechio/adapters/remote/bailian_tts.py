@@ -16,6 +16,7 @@ from speechio.audio.formats import AudioFormat
 from speechio.audio.results import AudioChunk, AudioResult
 from speechio.errors import TTSError
 from speechio.resources import CloseResult
+from speechio.tts.timing import TextTiming, WordTiming
 from speechio.tts.voices import Voice
 
 
@@ -36,6 +37,12 @@ class BailianSynthesisEngine(TTSAdapter):
 
     def __init__(self, config):
         self.config = config
+        self.capabilities = replace(
+            type(self).capabilities,
+            text_timestamps=("sentence", "word")
+            if config.model == "qwen-audio-3.1-tts-flash"
+            else (),
+        )
         self._streams = set()
         self._lock = Lock()
 
@@ -210,9 +217,13 @@ class BailianSynthesisEngine(TTSAdapter):
         stream = self.stream(text, options=options)
         try:
             chunks = []
-            while (chunk := stream.read()) is not None:
-                chunks.append(chunk.data)
-            return AudioResult(b"".join(chunks), stream.format)
+            timings = []
+            while (event := stream.read_event()) is not None:
+                if isinstance(event, AudioChunk):
+                    chunks.append(event.data)
+                elif event.end_seconds is not None:
+                    timings.append(event)
+            return AudioResult(b"".join(chunks), stream.format, tuple(timings))
         finally:
             stream.close()
 
@@ -245,7 +256,13 @@ class _BailianSynthesisStream:
         self._characters = 0
         self._remainder = b""
         self._finish_deadline = None
+        self._progress_index = -1
         self._progress = set()
+        self._text_timestamps = options.text_timestamps
+        self._audio_bytes = 0
+        self._segment = None
+        self._next_segment = 0
+        self._awaiting_audio = False
         try:
             self._connect()
             parameters = {
@@ -257,6 +274,8 @@ class _BailianSynthesisStream:
             }
             if options.language is not None:
                 parameters["language_hints"] = [options.language]
+            if options.text_timestamps == "word":
+                parameters["word_timestamp_enabled"] = True
             if options.instruction is not None:
                 parameters["instruction"] = options.instruction
             self._send(
@@ -407,7 +426,7 @@ class _BailianSynthesisStream:
             if event == "task-started" and not self._started:
                 self._started = True
             elif event == "task-finished" and self._started and self._ending:
-                if self._remainder:
+                if self._remainder or (self._text_timestamps and self._segment is not None):
                     raise ValueError
                 self._finished = True
             elif event == "result-generated" and self._started:
@@ -417,17 +436,97 @@ class _BailianSynthesisStream:
                     index = output.get("sentence", {}).get("index")
                     if type(index) is not int:
                         raise ValueError
-                    progress = (index, kind)
-                    if progress not in self._progress:
-                        self._progress.add(progress)
+                    # 只保留当前句子的进展标记；重复或旧句事件不延长截止时间。
+                    if index > self._progress_index:
+                        self._progress_index = index
+                        self._progress.clear()
+                    if index == self._progress_index and kind not in self._progress:
+                        self._progress.add(kind)
                         self._mark_progress()
+                    if self._text_timestamps is not None:
+                        return self._sentence_event(output)
                 # 未知扩展和心跳不延长结束等待。
             else:
                 raise ValueError
         except (ValueError, TypeError, KeyError, AttributeError):
             raise TTSError("PROTOCOL_ERROR", "read", "百炼任务事件或 PCM 尾部无效") from None
 
+    def _sentence_event(self, output):
+        """根据服务分句和实际 PCM 长度定位句子，不按发送文本片段估算。"""
+        kind = output["type"]
+        index = output["sentence"]["index"]
+        words = self._word_timings(output["sentence"].get("words"))
+        if self._awaiting_audio:
+            raise ValueError
+        if kind == "sentence-begin":
+            text = output["original_text"]
+            if (
+                self._segment is not None
+                or index != self._next_segment
+                or not isinstance(text, str)
+            ):
+                raise ValueError
+            self._segment = TextTiming(
+                index,
+                text,
+                self._audio_bytes / (2 * self.format.sample_rate),
+                words=words,
+            )
+            return self._segment
+        if self._segment is None or index != self._segment.segment_index:
+            raise ValueError
+        if kind == "sentence-synthesis":
+            self._awaiting_audio = True
+            if words is not None and words != self._segment.words:
+                self._segment = replace(self._segment, words=words)
+                return self._segment
+            return None
+        if self._remainder:
+            raise ValueError
+        text = output.get("original_text", self._segment.text)
+        if not isinstance(text, str):
+            raise ValueError
+        result = replace(
+            self._segment,
+            text=text,
+            end_seconds=self._audio_bytes / (2 * self.format.sample_rate),
+            words=words,
+        )
+        self._segment = None
+        self._next_segment += 1
+        return result
+
+    def _word_timings(self, words):
+        """实测 Qwen 3.1 flash 的毫秒值从整段音频开头计算，只转换单位。"""
+        if self._text_timestamps != "word" or words is None or words == []:
+            return None
+        if not isinstance(words, list):
+            raise ValueError
+        result = []
+        for word in words:
+            text, begin, end = word["text"], word["begin_time"], word["end_time"]
+            if (
+                not isinstance(text, str)
+                or type(begin) is not int
+                or type(end) is not int
+                or not 0 <= begin <= end
+            ):
+                raise ValueError
+            result.append(WordTiming(text, begin / 1000, end / 1000))
+        return tuple(result)
+
     def read(self, *, timeout=None):
+        """旧适配器入口继续只交付音频。"""
+        deadline = None if timeout is None else monotonic() + timeout
+        while True:
+            event = self.read_event(
+                timeout=None if deadline is None else max(0, deadline - monotonic())
+            )
+            if event is None or isinstance(event, AudioChunk):
+                return event
+
+    def read_event(self, *, timeout=None):
+        """服务元信息与紧随其后的 PCM 保持同一读取顺序。"""
         deadline = None if timeout is None else monotonic() + timeout
         while not self._finished:
             if self._cancelled.is_set():
@@ -447,15 +546,22 @@ class _BailianSynthesisStream:
             except TimeoutError:
                 continue
             if isinstance(raw, bytes):
+                if self._text_timestamps is not None:
+                    if not self._awaiting_audio:
+                        raise TTSError("PROTOCOL_ERROR", "read", "音频缺少对应的句子事件")
+                    self._awaiting_audio = False
                 if raw:
                     self._mark_progress()
                 data = self._remainder + raw
                 length = len(data) // 2 * 2
                 self._remainder = data[length:]
                 if length:
+                    self._audio_bytes += length
                     return AudioChunk(data[:length], self.format)
             else:
-                self._event(raw)
+                event = self._event(raw)
+                if event is not None:
+                    return event
         return None
 
     def cancel(self):

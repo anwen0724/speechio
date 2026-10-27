@@ -50,6 +50,7 @@ from speechio.tts.api import clone_voice, synthesize
 from speechio.tts.options import SynthesisOptions
 from speechio.tts.stream import SynthesisStream
 from speechio.tts.synthesizer import Synthesizer
+from speechio.tts.timing import TextTiming, WordTiming
 from speechio.tts.voices import Voice
 
 __all__ = [
@@ -63,6 +64,8 @@ __all__ = [
     "Synthesizer",
     "SynthesisOptions",
     "SynthesisStream",
+    "TextTiming",
+    "WordTiming",
     "TTSCapabilities",
     "TTSAdapter",
     "AudioResult",

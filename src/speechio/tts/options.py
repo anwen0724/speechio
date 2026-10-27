@@ -29,8 +29,13 @@ class SynthesisOptions:
     speed: float = 1.0
     instruction: str | None = None
     sample_rate: int | None = None
+    text_timestamps: str | None = None
 
     def __post_init__(self):
+        if self.text_timestamps not in (None, "sentence", "word"):
+            raise TTSError(
+                "INVALID_INPUT", "synthesize", "text_timestamps 应为 None、sentence 或 word"
+            )
         if (
             self.voice is not None
             and not isinstance(self.voice, Voice)

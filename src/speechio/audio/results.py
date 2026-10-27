@@ -6,6 +6,7 @@ from pathlib import Path
 
 from speechio.audio.formats import AudioFormat
 from speechio.errors import TTSError
+from speechio.tts.timing import TextTiming
 
 
 def validate_pcm(data, format):
@@ -37,6 +38,7 @@ class AudioResult:
 
     data: bytes
     format: AudioFormat
+    text_timings: tuple[TextTiming, ...] = ()
 
     def __post_init__(self):
         validate_pcm(self.data, self.format)
