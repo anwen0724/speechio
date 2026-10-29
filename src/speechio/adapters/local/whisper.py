@@ -112,7 +112,12 @@ class WhisperEngine:
                 word_timestamps=word_timestamps,
             )
             # 分段是惰性迭代器，必须在本次调用内全部消费并转换。
-            complete = list(segments)
+            from speechio._async import check_cancelled
+
+            complete = []
+            for segment in segments:
+                check_cancelled()
+                complete.append(segment)
             words = None
             timestamp_status = "not_requested"
             if word_timestamps:

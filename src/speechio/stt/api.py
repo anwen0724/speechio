@@ -5,6 +5,7 @@ from pathlib import Path
 from sys import exc_info
 from time import monotonic
 
+from speechio._async import cancellable, run_operation
 from speechio.adapters.contracts import validate_engine
 from speechio.audio.microphone import MicrophoneConfig, MicrophoneInput
 from speechio.bundled import default_vad_model
@@ -20,8 +21,16 @@ from speechio.stt.text.endpoint import SpeechEndConfig
 from speechio.stt.transcriber import Transcriber
 
 
+@cancellable(STTError)
 def transcribe_audio(
-    audio, *, config, format=None, options=None, max_audio_seconds=None, task_timeout_seconds=3600.0
+    audio,
+    *,
+    config,
+    format=None,
+    options=None,
+    max_audio_seconds=None,
+    task_timeout_seconds=3600.0,
+    cancellation=None,
 ):
     """识别一次文件或裸音频；裸音频必须声明格式。"""
     transcriber = Transcriber(config, max_audio_seconds=max_audio_seconds)
@@ -41,8 +50,15 @@ def transcribe_audio(
         transcriber.__exit__(*exc_info())
 
 
+@cancellable(STTError)
 def transcribe_url(
-    url, *, config, options=None, max_audio_seconds=None, task_timeout_seconds=3600.0
+    url,
+    *,
+    config,
+    options=None,
+    max_audio_seconds=None,
+    task_timeout_seconds=3600.0,
+    cancellation=None,
 ):
     """识别服务可访问的文件地址，不在本机下载。"""
     transcriber = Transcriber(config, max_audio_seconds=max_audio_seconds)
@@ -52,6 +68,50 @@ def transcribe_url(
         )
     finally:
         transcriber.__exit__(*exc_info())
+
+
+async def transcribe_audio_async(
+    audio,
+    *,
+    config,
+    format=None,
+    options=None,
+    max_audio_seconds=None,
+    task_timeout_seconds=3600.0,
+    cancellation=None,
+):
+    """一次性异步识别文件、裸音频或有限同步块序列。"""
+    return await run_operation(
+        transcribe_audio,
+        audio,
+        config=config,
+        format=format,
+        options=options,
+        max_audio_seconds=max_audio_seconds,
+        task_timeout_seconds=task_timeout_seconds,
+        cancellation=cancellation,
+    )
+
+
+async def transcribe_url_async(
+    url,
+    *,
+    config,
+    options=None,
+    max_audio_seconds=None,
+    task_timeout_seconds=3600.0,
+    cancellation=None,
+):
+    """异步识别远程文件地址；取消停止本地等待，不承诺撤回云端任务。"""
+    return await run_operation(
+        transcribe_url,
+        url,
+        config=config,
+        options=options,
+        max_audio_seconds=max_audio_seconds,
+        task_timeout_seconds=task_timeout_seconds,
+        cancellation=cancellation,
+    )
 
 
 class MicrophoneTranscriber:

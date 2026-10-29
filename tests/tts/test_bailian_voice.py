@@ -112,7 +112,6 @@ class BailianVoiceTests(unittest.TestCase):
                     patch(
                         "speechio.adapters.remote.bailian_tts.monotonic", side_effect=lambda: now[0]
                     ),
-                    patch("speechio.adapters.remote.bailian_tts.sleep"),
                     patch("websockets.sync.client.reconnect") as connection,
                 ):
                     with self.assertRaises(TTSError) as caught:

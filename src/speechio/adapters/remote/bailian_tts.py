@@ -8,9 +8,10 @@ import socket
 import wave
 from dataclasses import replace
 from threading import Event, Lock, Timer
-from time import monotonic, sleep
+from time import monotonic
 from uuid import uuid4
 
+from speechio._async import check_cancelled, current_cancellation, wait_cancellable
 from speechio.adapters.contracts import TTSAdapter, TTSCapabilities, VoiceCloningRequirements
 from speechio.adapters.remote.bailian_voices import preset_voices
 from speechio.audio.formats import AudioFormat
@@ -88,6 +89,7 @@ class BailianSynthesisEngine(TTSAdapter):
         page = 0
         page_size = 10
         while True:
+            check_cancelled()
             output = self._enrollment_request(
                 client,
                 {"action": "list_voice", "page_index": page, "page_size": page_size},
@@ -222,6 +224,10 @@ class BailianSynthesisEngine(TTSAdapter):
             voice_id = output.get("voice_id")
             if not isinstance(voice_id, str) or not voice_id.strip():
                 raise TTSError("PROTOCOL_ERROR", "clone_voice", "百炼没有返回有效音色 ID")
+            note = f"云端已返回音色 ID：{voice_id}；未自动重建或删除"
+            token = current_cancellation()
+            if token is not None:
+                token._add_note(note)
             deadline = monotonic() + self.config.timeout_seconds
             try:
                 while True:
@@ -232,14 +238,16 @@ class BailianSynthesisEngine(TTSAdapter):
                         client, {"action": "query_voice", "voice_id": voice_id}, timeout=remaining
                     )
                     status = output.get("status")
+                    check_cancelled()
                     if status == "OK":
                         break
                     if status != "DEPLOYING":
                         raise TTSError("CLONING_FAILED", "clone_voice", "云端音色未能创建成功")
-                    sleep(min(0.5, max(0, deadline - monotonic())))
+                    wait_cancellable(min(0.5, max(0, deadline - monotonic())))
             except TTSError as exc:
                 # 创建后查询失败不代表音色不存在；保留 ID 供调用方查询，禁止重建或删除。
-                exc.add_note(f"云端已返回音色 ID：{voice_id}；未自动重建或删除")
+                if note not in getattr(exc, "__notes__", ()):
+                    exc.add_note(note)
                 raise
         return Voice(
             adapter="bailian",
@@ -250,6 +258,8 @@ class BailianSynthesisEngine(TTSAdapter):
     def _enrollment_request(self, client, payload, *, timeout, operation="clone_voice"):
         """一次创建或查询请求；不重试、不重定向，也不回显服务原文中的敏感数据。"""
         import httpx
+
+        check_cancelled()
 
         try:
             response = client.post(
@@ -341,8 +351,13 @@ class _BailianSynthesisStream:
         self._segment = None
         self._next_segment = 0
         self._awaiting_audio = False
+        self._unsubscribe_cancel = None
         try:
             self._connect()
+            token = current_cancellation()
+            if token is not None:
+                self._unsubscribe_cancel = token._subscribe(self.cancel)
+            check_cancelled()
             parameters = {
                 "text_type": "PlainText",
                 "voice": options.voice,
@@ -655,9 +670,14 @@ class _BailianSynthesisStream:
         if self._finished or self._closed or self._cancelled.is_set():
             return
         self._cancelled.set()
-        with self._send_lock:
-            if not self._closed:
-                self._send("finish-task", {"input": {"directive": "cancel"}})
+        # 取消不能等待被阻塞发送占用的锁；直接中断当前连接的读写。
+        if self._ws is not None:
+            try:
+                self._ws.socket.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            finally:
+                self._ws.socket.close()
 
     def close(self, *, timeout=5.0):
         """中断协议读取并关闭连接；公共拥有者负责等待线程退出。"""
@@ -671,5 +691,7 @@ class _BailianSynthesisStream:
                     self._connection.__exit__(None, None, None)
             finally:
                 self._closed = True
+                if self._unsubscribe_cancel is not None:
+                    self._unsubscribe_cancel()
                 self._on_close(self)
         return CloseResult()

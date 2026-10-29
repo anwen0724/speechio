@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from websockets.sync.client import reconnect
 
+from speechio._async import check_cancelled, current_cancellation
 from speechio.adapters.contracts import STTStream
 from speechio.errors import STTError
 from speechio.stt.results import Transcript
@@ -39,6 +40,7 @@ class BailianStream(STTStream):
         self._audio_samples = 0
         self._stash = None
         self._result = Transcript()
+        self._unsubscribe_cancel = None
         root = (config.base_url or "https://dashscope.aliyuncs.com").rstrip("/")
         url = root.replace("https://", "wss://", 1).replace("http://", "ws://", 1)
         try:
@@ -51,6 +53,10 @@ class BailianStream(STTStream):
                 logger=logging.Logger(__name__, level=logging.CRITICAL),
             )
             self._ws = self._connection.__enter__()
+            token = current_cancellation()
+            if token is not None:
+                self._unsubscribe_cancel = token._subscribe(self.cancel)
+            check_cancelled()
             parameters = {"format": "pcm", "sample_rate": 16000}
             if language is not None:
                 parameters["language_hints"] = [
@@ -260,6 +266,8 @@ class BailianStream(STTStream):
             self.close()
 
     def close(self):
+        if self._unsubscribe_cancel is not None:
+            self._unsubscribe_cancel()
         """关闭本连接并解除引擎登记；不会将未确认预览当作最终结果。"""
         if self._closed:
             return

@@ -1,9 +1,11 @@
 """公开合成任务：接收音频、限制缓冲并管理结束与取消。"""
 
+import asyncio
 from collections import deque
-from threading import Condition, Event, Lock, Thread
+from threading import Event, Lock, Thread
 from time import monotonic
 
+from speechio._async import AsyncCondition, run_blocking
 from speechio.audio.results import AudioChunk, validate_pcm
 from speechio.errors import TTSError
 from speechio.resources import CloseError, CloseResult
@@ -26,8 +28,9 @@ class SynthesisStream:
         self._format = backend.format
         self._incremental = incremental
         self._state = "accepting" if incremental else "finishing"
-        self._condition = Condition()
+        self._condition = AsyncCondition()
         self._sender = Lock()
+        self._async_sender = asyncio.Lock()
         self._reader = Lock()
         self._queue = deque()
         self._buffer_bytes = 0
@@ -42,6 +45,7 @@ class SynthesisStream:
         self._cancel_thread = None
         self._cancel_error = None
         self._close_result = None
+        self._unsubscribe_cancel = None
         self._worker = Thread(target=self._receive, name="speechio-tts-audio", daemon=True)
         self._worker.start()
 
@@ -178,6 +182,8 @@ class SynthesisStream:
         finally:
             # 取消可能仍在发送控制消息，连接不能先于该操作释放。
             self._cancel_done.wait()
+            # 中断请求不等于发送调用已经返回；关闭须等发送方退出后接管后端。
+            self._sender.acquire()
             try:
                 result = self._backend.close()
                 while isinstance(result, CloseResult) and result.status == "pending":
@@ -192,6 +198,8 @@ class SynthesisStream:
                     status="failed",
                     errors=(CloseError("CLOSE_FAILED", "close_stream", "合成流释放失败"),),
                 )
+            finally:
+                self._sender.release()
             with self._condition:
                 self._done.set()
                 self._condition.notify_all()
@@ -238,6 +246,7 @@ class SynthesisStream:
                     return chunk
                 if self._state == "completed" and self._done.is_set():
                     self._drained = True
+                    self._unbind_cancellation()
                     return None
                 remaining = None if deadline is None else deadline - monotonic()
                 if remaining is not None and remaining <= 0:
@@ -263,19 +272,35 @@ class SynthesisStream:
 
     def cancel(self):
         with self._condition:
-            if self._state in ("completed", "failed", "cancelled"):
+            if self._state in ("failed", "cancelled") or self._drained:
                 return
+            finished = self._done.is_set()
             self._state = "cancelled"
+            self._drained = True
             self._error = TTSError("CANCELLED", "read", "合成任务已取消")
             self._queue.clear()
             self._buffer_bytes = 0
             self._condition.notify_all()
-        self._request_cancel()
+        if not finished:
+            self._request_cancel()
+        self._unbind_cancellation()
+
+    def _bind_cancellation(self, token):
+        """令牌持续控制整条流，直到读尽或取消；结束后解除引用。"""
+        self._unsubscribe_cancel = token._subscribe(self.cancel)
+        if self._drained:
+            self._unbind_cancellation()
+
+    def _unbind_cancellation(self):
+        if self._unsubscribe_cancel is not None:
+            self._unsubscribe_cancel()
+            self._unsubscribe_cancel = None
 
     def close(self, *, timeout=5.0):
         validate_seconds(timeout, "timeout")
         self._close_requested = True
         self.cancel()
+        self._unbind_cancellation()
         with self._condition:
             self._queue.clear()
             self._buffer_bytes = 0
@@ -306,6 +331,79 @@ class SynthesisStream:
 
     def __exit__(self, exc_type, exc, traceback):
         result = self.close()
+        if result.status != "ok":
+            if exc is not None:
+                exc.add_note(f"合成流关闭状态：{result.status}")
+            else:
+                raise TTSError("CLOSE_FAILED", "close_stream", f"合成流关闭状态：{result.status}")
+
+    async def _read_async(self, mode, timeout):
+        """只在事件循环恢复后消费；取消等待不会遗留后台读取者。"""
+        validate_seconds(timeout, "timeout", optional=True)
+        if not self._reader.acquire(blocking=False):
+            raise TTSError("INVALID_INPUT", "read", "同一合成流只允许一个读取方")
+        deadline = None if timeout is None else monotonic() + timeout
+        try:
+            while True:
+                with self._condition:
+                    try:
+                        return self._read_next(mode, 0)
+                    except TTSError as exc:
+                        if exc.code != "READ_TIMEOUT":
+                            raise
+                    remaining = None if deadline is None else deadline - monotonic()
+                    if remaining is not None and remaining <= 0:
+                        raise TTSError("READ_TIMEOUT", "read", "本次音频读取等待超时")
+                    wake = self._condition.subscribe()
+                try:
+                    await asyncio.wait_for(wake, remaining)
+                except TimeoutError:
+                    raise TTSError("READ_TIMEOUT", "read", "本次音频读取等待超时") from None
+                finally:
+                    self._condition.unsubscribe(wake)
+        finally:
+            self._reader.release()
+
+    async def read_async(self, *, timeout=None):
+        return await self._read_async("audio", timeout)
+
+    async def read_event_async(self, *, timeout=None):
+        return await self._read_async("events", timeout)
+
+    async def send_text_async(self, text):
+        # 有副作用的发送无法回滚；取消等待意味着取消整条合成流。
+        try:
+            async with self._async_sender:
+                await run_blocking(self.send_text, text, on_cancel=self.cancel)
+        except asyncio.CancelledError:
+            self.cancel()
+            raise
+
+    async def finish_input_async(self):
+        try:
+            async with self._async_sender:
+                await run_blocking(self.finish_input, on_cancel=self.cancel)
+        except asyncio.CancelledError:
+            self.cancel()
+            raise
+
+    async def close_async(self, *, timeout=5.0):
+        return await run_blocking(self.close, timeout=timeout)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        chunk = await self.read_async()
+        if chunk is None:
+            raise StopAsyncIteration
+        return chunk
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        result = await self.close_async()
         if result.status != "ok":
             if exc is not None:
                 exc.add_note(f"合成流关闭状态：{result.status}")

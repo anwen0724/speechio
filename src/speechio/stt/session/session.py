@@ -1,13 +1,17 @@
 """会话拥有音频单元、归属和消费顺序，不执行模型推理。"""
 
+import asyncio
 from collections import deque
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from math import isfinite
+from threading import Thread
+from time import monotonic
 from uuid import uuid4
 
 import numpy as np
 
+from speechio._async import run_blocking
 from speechio.audio.formats import AudioFormat
 from speechio.errors import STTError
 from speechio.stt.input import AudioConverter
@@ -232,6 +236,9 @@ class Session:
             raise STTError("BACKEND_INCOMPATIBLE", "create_session", "所选完成策略需要整段识别能力")
         self._session_id = uuid4().hex
         self._generation = 0
+        self._async_input = asyncio.Lock()
+        self._async_input_cancelled = False
+        self._async_reader = False
         self._next_unit = 1
         self._sequence = 0
         self._units = {}
@@ -923,6 +930,49 @@ class Session:
             if unit.candidate_events:
                 return unit, "candidate"
         return None
+
+    async def feed_audio_async(self, chunk):
+        """逐块等待处理，避免为每个音频块堆积执行线程。"""
+        async with self._async_input:
+            if self._async_input_cancelled:
+                raise STTError("SESSION_CLOSED", "feed_audio", "会话输入已取消")
+            return await run_blocking(self.feed_audio, chunk, on_cancel=self._cancel_async_input)
+
+    def _cancel_async_input(self):
+        """立即阻止新异步输入，再后台关闭这一会话的检测及识别资源。"""
+        self._async_input_cancelled = True
+        Thread(target=self.close, name="speechio-session-cancel", daemon=True).start()
+
+    def _poll_async_event(self):
+        return self.next_event(timeout=0)
+
+    async def next_event_async(self, *, timeout=None):
+        """等待状态通知后再消费事件，取消等待不会丢弃一个已出队事件。"""
+        _validate_timeout(timeout, allow_none=True)
+        if self._async_reader:
+            raise STTError("RUNTIME_BUSY", "next_event", "同一会话只允许一个异步读取方")
+        self._async_reader = True
+        deadline = None if timeout is None else monotonic() + timeout
+        condition = self._runtime.coordination
+        generation = self._generation
+        try:
+            while True:
+                with condition:
+                    wake = condition.subscribe()
+                try:
+                    event = self._poll_async_event()
+                    if event is not None or self._closed or self._generation != generation:
+                        return event
+                    remaining = None if deadline is None else max(0, deadline - monotonic())
+                    if remaining == 0:
+                        return None
+                    await asyncio.wait_for(wake, remaining)
+                except TimeoutError:
+                    return None
+                finally:
+                    condition.unsubscribe(wake)
+        finally:
+            self._async_reader = False
 
     def next_event(self, *, timeout=0.0) -> SessionEvent | None:
         """按单元顺序消费；慢消费者不持有模型执行锁。"""

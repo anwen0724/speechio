@@ -7,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
+from speechio._async import check_cancelled
 from speechio.audio.decoding import open_audio_source
 from speechio.audio.formats import AudioFormat
 from speechio.audio.results import AudioResult
@@ -96,6 +97,7 @@ def read_reference_audio(reference_audio):
                 rate = source.info.format.sample_rate
                 blocks = []
                 for block in source.chunks(8192):
+                    check_cancelled()
                     values = block.astype(np.float32)
                     if source.info.format.sample_type == "int16":
                         values /= 32768.0

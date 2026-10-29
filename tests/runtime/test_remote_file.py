@@ -1,4 +1,5 @@
 """长音频适配通过公开 SDK 与本机 HTTP 服务验证，不访问付费端点。"""
+
 import json
 import tempfile
 import unittest
@@ -151,7 +152,10 @@ class RemoteFileTests(unittest.TestCase):
                 )
                 with (
                     patch("speechio.adapters.remote.bailian_file.monotonic", lambda: clock[0]),
-                    patch("speechio.adapters.remote.bailian_file.sleep", advance),
+                    patch(
+                        "speechio.cancellation.CancellationToken.wait_cancelled",
+                        side_effect=advance,
+                    ),
                     Transcriber(config) as recognizer,
                 ):
                     if timeout == 3:

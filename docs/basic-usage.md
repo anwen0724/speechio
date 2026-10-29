@@ -752,15 +752,129 @@ def try_transcribe(path, asr_config):
 | 合成流的 `cancel()` | 停止交付，并请求取消后续工作 |
 | `close()` | 释放对象资源；不是获取未读结果的方法 |
 
-取消不能强行终止已经进入本地模型的一次计算。带等待参数的关闭接口，如 `Synthesizer.close(timeout=5.0)` 和 `STTRuntime.close(timeout=5.0)`，限制的是本次等待时间。
+取消不能强行终止已经进入本地模型的一次计算。`Transcriber.close(timeout=5.0)`、`Synthesizer.close(timeout=5.0)` 和 `STTRuntime.close(timeout=5.0)` 限制的是本次等待时间。`timeout=0` 发起关闭后立即查询状态。
 
-提供关闭状态的接口用 `ok` 表示已完成、`pending` 表示仍在退出、`failed` 表示清理失败。`pending` 不表示模型或线程已经释放。`Transcriber.close()` 在等待结束后可再次调用以确认状态，`STTRuntime` 会继续在后台确认清理。使用上下文管理器时，未正常完成的关闭可能作为异常报告。
+提供关闭状态的接口用 `ok` 表示已完成、`pending` 表示仍在退出、`failed` 表示清理失败。`pending` 不表示模型或线程已经释放。拥有者会继续后台清理，可以再次调用 `close()` 确认状态。使用上下文管理器时，未正常完成的关闭可能作为异常报告；已有正文异常不会被关闭异常替换。
 
 `Transcriber`、`Synthesizer` 等单任务对象忙时会拒绝重叠任务，不会替应用无限排队。应用应复用对象并控制调用顺序；需要并发时应结合内存、显存和服务额度安排独立对象或使用支持调度的识别运行对象。
+
+### 在异步应用中调用
+
+异步接口适合 FastAPI、WebSocket 等使用 `asyncio` 的应用。在等待识别或合成时，事件循环可以继续处理其他连接。它不会提高模型本身的推理速度，也不让同一个单任务对象同时执行多个任务。原有同步接口仍可使用。
+
+异步方法使用与对应同步方法相同的配置、选项和结果类型，方法名增加 `_async`。新增任务参数 `cancellation` 默认 `None`；不传时，异步入口会为这次调用创建取消令牌。
+
+| 入口 | 异步方法 |
+| --- | --- |
+| 一次性函数 | `transcribe_audio_async()`、`transcribe_url_async()`、`synthesize_async()`、`clone_voice_async()` |
+| `Transcriber` | `prepare_async()`、`transcribe_async()`、`transcribe_chunks_async()`、`transcribe_file_async()`、`transcribe_url_async()` |
+| `Synthesizer` | `prepare_async()`、`synthesize_async()`、`clone_voice_async()`、`list_voices_async()`、`stream_async()`、`open_stream_async()` |
+| `STTRuntime` | `prepare_async()`、`create_auto_session_async()`、`create_auto_session_from_detector_async()` |
+| 识别会话 | `feed_audio_async(chunk)`、`next_event_async(timeout=None)`；自动会话另有 `end_input_async()` |
+| 合成流 | `send_text_async(text)`、`finish_input_async()`、`read_async(timeout=None)`、`read_event_async(timeout=None)` |
+| 关闭 | `Transcriber`、`Synthesizer`、`STTRuntime`、`SynthesisStream` 都提供 `close_async(timeout=5.0)` 和 `async with` |
+
+`transcribe_chunks_async()` 接收有限的同步可迭代音频块；网络持续产生音频时，使用会话的 `feed_audio_async()`。同一会话逐块等待处理结果，不要为每个块创建一个独立任务。`start()`、`end_turn()`、`cancel_turn()` 等短控制操作继续同步调用。
+
+`next_event_async()` 默认等待，超时返回 `None`；同步 `next_event()` 默认不等待。合成流的读取超时仍抛出 `TTSError(code="READ_TIMEOUT")`，成功读尽才返回 `None`。同一合成流不能混用只读音频与读取文字时间事件两种方式。
+
+一次性异步识别示例：
+
+```python
+from speechio import transcribe_audio_async
+
+async def recognize_file(path, asr_config):
+    result = await transcribe_audio_async(path, config=asr_config)
+    return result.text
+```
+
+持续追加文字并接收音频时，发送与读取应同时进行。下例的 `texts` 是应用提供的异步文字来源，`send_audio` 是应用提供的异步音频发送函数：
+
+```python
+import asyncio
+from speechio import Synthesizer, SynthesisOptions
+
+async def speak(texts, send_audio, tts_config, voice):
+    async with Synthesizer(tts_config) as tts:
+        async with await tts.open_stream_async(
+            options=SynthesisOptions(voice=voice)
+        ) as stream:
+            async def send_text():
+                async for text in texts:
+                    await stream.send_text_async(text)
+                await stream.finish_input_async()
+
+            async def receive_audio():
+                async for chunk in stream:
+                    await send_audio(chunk.data, chunk.format)
+
+            async with asyncio.TaskGroup() as tasks:
+                tasks.create_task(send_text())
+                tasks.create_task(receive_audio())
+```
+
+该例要求模型支持持续追加文字。需要文字与音频时间对应信息时，在选项中请求相应精度，并将读取改为循环 `await stream.read_event_async()`；具体模型限制仍见前面的时间信息说明。
+
+### 取消一个任务
+
+`CancellationToken` 表示一次任务的取消请求，不代表模型已经停止。每个独立任务创建一个新令牌；不要复用已经取消的令牌。
+
+| 成员 | 含义 |
+| --- | --- |
+| `CancellationToken()` | 创建令牌，无必填参数 |
+| `cancel_requested` | 只读布尔值，初始为 `False` |
+| `cancel()` | 可跨线程调用，重复调用无额外效果；只发出请求，不等待执行退出 |
+| `wait_cancelled(timeout=None)` | 给同步适配器使用；等到请求返回 `True`，等待超时返回 `False` |
+
+同步与异步的准备、整段识别、合成、克隆、音色查询、流创建方法都可传 `cancellation=token`。`synthesize(reference_audio=...)` 的克隆与合成共用同一令牌；在克隆结束后取消，不再开始合成。创建合成流时传入的令牌在返回后仍控制整条流。
+
+```python
+import asyncio
+from speechio import CancellationToken, TTSError
+
+async def generate_with_stop(tts, text, stop_requested):
+    # stop_requested 是应用在用户点击“停止”时设置的 asyncio.Event。
+    token = CancellationToken()
+
+    async def watch_stop():
+        await stop_requested.wait()
+        token.cancel()
+
+    watcher = asyncio.create_task(watch_stop())
+    try:
+        return await tts.synthesize_async(text, cancellation=token)
+    except TTSError as error:
+        if error.code != "CANCELLED":
+            raise
+        return None
+    finally:
+        watcher.cancel()
+        await asyncio.gather(watcher, return_exceptions=True)
+```
+
+也可以取消 Python 的任务对象：`task.cancel()`，然后 `await task` 会抛出 `asyncio.CancelledError`。对于识别、合成等任务入口，这也会向底层发出取消请求。显式 `token.cancel()` 则通过 `STTError` 或 `TTSError` 的 `CANCELLED` 错误报告；同步调用或不支持中断的底层调用可能要等到下一处取消检查才能返回。
+
+不同操作的取消范围如下：
+
+| 被取消的等待 | 影响 |
+| --- | --- |
+| `next_event_async()`、`read_async()`、`read_event_async()` | 只取消本次等待；任务继续，之后仍能读取结果 |
+| `send_text_async()`、`finish_input_async()` | 已发送的文字无法撤回，因此取消整条合成流 |
+| 已开始的 `feed_audio_async()`、`end_input_async()` | 关闭本次识别会话，不关闭运行时或其他会话 |
+| `session.cancel_turn(turn)` | 取消指定轮次，向其识别任务传递请求；其他轮次不受影响 |
+| `stream.cancel()` | 丢弃尚未交付的音频，包括已生成但未读取的音频；已交给应用播放的内容由应用停止 |
+
+本地模型进入原生计算后通常不能强制中断。取消后结果不再交付，但对象继续占用模型，直到实际调用退出。`Transcriber.busy`、`Synthesizer.busy` 可查询占用状态；`wait_idle(timeout=5.0)` 和 `await wait_idle_async(timeout=5.0)` 等待可复用，返回 `True` 表示空闲，`False` 表示等待超时。它们不取消任务、不关闭对象；已关闭的对象不能靠等待重新使用。
+
+百炼 WebSocket 任务通过中断当前连接解除发送或接收等待。普通 HTTP 请求不能保证立即中止，但取消后不会继续下一阶段；长录音会停止轮询和下载结果。已经提交的云端任务可能继续执行或计费。克隆创建已经返回音色 ID 时，取消异常的 `__notes__` 会保留该 ID；speechio 不会自动删除音色。
 
 ## 9. 接入自定义模型或服务
 
 适配器是把某个模型自身的调用方式转换为 speechio 契约的 Python 对象。本地与云端都使用这种扩展方式。
+
+适配器仍实现同步方法，由 speechio 的异步入口安排执行，不需要再写一套异步适配器。旧适配器可以继续使用；如果方法增加可选的 `cancellation=None` 参数，speechio 会传入本次任务令牌。适配器可在分块处理、提交远程请求或轮询之间检查 `cancellation.cancel_requested`，并抛出 `STTError("CANCELLED", "transcribe", "任务已取消")` 或对应的 `TTSError`。等待轮询间隔时，可用 `cancellation.wait_cancelled(seconds)`，让等待能被取消唤醒。
+
+未接收该参数的旧适配器只能在返回后由 speechio 丢弃迟到结果。speechio 接入时检查方法签名，不会因为方法抛出 `TypeError` 而重试一次调用。
 
 使用内置适配器时传 `LocalModelConfig` 或 `RemoteModelConfig`。使用自己的适配器时，先完成它自己的配置，再把实例传给 `Transcriber.from_adapter(adapter)` 或 `Synthesizer.from_adapter(adapter)`，不再重复传一份 `config`，也不需要注册到内置模型列表。
 

@@ -1,8 +1,9 @@
 """会话与执行器之间的不可变输入，不携带会话可变状态或策略上下文。"""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
+from speechio.cancellation import CancellationToken
 from speechio.stt.runtime.candidates import EMPTY_RETRY_SAMPLES
 
 if TYPE_CHECKING:
@@ -21,6 +22,9 @@ class InferenceRequest:
     submitted_at: float = 0.0
     role: Literal["final", "candidate"] = "final"
     retry_empty: bool = False
+    cancellation: CancellationToken = field(
+        default_factory=CancellationToken, compare=False, repr=False
+    )
 
     @property
     def reserved_samples(self):

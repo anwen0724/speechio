@@ -4,10 +4,11 @@ import logging
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import replace
-from threading import Lock
+from threading import Event, Lock, Thread
 
 import numpy as np
 
+from speechio._async import AdapterCalls, cancellable, check_cancelled, run_blocking, run_operation
 from speechio.adapters.contracts import validate_engine
 from speechio.audio.files import audio_file_chunks, read_audio_file
 from speechio.audio.formats import AudioFormat
@@ -42,10 +43,14 @@ class Transcriber:
         self._capabilities = validate_engine(adapter)
         self._max_audio_seconds = max_audio_seconds
         self._engine = adapter
+        self._calls = AdapterCalls(adapter)
         self._config = config
         self._state = "unprepared"
         self._close_result = None
         self._operation_lock = Lock()
+        self._close_lock = Lock()
+        self._closed = Event()
+        self._cleanup = None
 
     def __enter__(self):
         """进入时准备引擎；内置模型失败可重试，注入实例失败后关闭。"""
@@ -85,7 +90,8 @@ class Transcriber:
         """供角色组装识别同一实例；调用仍应经由本拥有者。"""
         return self._engine
 
-    def prepare(self) -> None:
+    @cancellable(STTError)
+    def prepare(self, *, cancellation=None) -> None:
         """显式准备所选模型或远程客户端；输入调用也可延迟至转换完成后准备。"""
         with self._operation():
             self._prepare()
@@ -96,7 +102,7 @@ class Transcriber:
         if not self._operation_lock.acquire(blocking=False):
             raise STTError("RUNTIME_BUSY", "close" if closing else "transcribe", "运行时正在使用")
         try:
-            if self.state in ("closing", "closed") and not closing:
+            if (self.state in ("closing", "closed") or self._cleanup is not None) and not closing:
                 raise STTError("RUNTIME_CLOSED", "transcribe", "运行时正在关闭或已经关闭")
             yield
         except STTError as exc:
@@ -111,7 +117,7 @@ class Transcriber:
         if self.state == "ready":
             return
         try:
-            self._engine.prepare()
+            self._calls.call("prepare")
             self._state = "ready"
         except BaseException as exc:
             cleanup = self._release_resources()
@@ -119,6 +125,7 @@ class Transcriber:
                 exc.cleanup_errors = cleanup.errors
             if self.config is not None and cleanup.status == "ok":
                 self._engine = build_engine(self.config)
+                self._calls = AdapterCalls(self._engine)
             else:
                 # 清理未完成时不能覆盖旧引擎；注入实例也不能凭空重建。
                 self._state = "closing" if cleanup.status == "pending" else "closed"
@@ -127,7 +134,8 @@ class Transcriber:
                 raise
             raise STTError("MODEL_LOAD", "load_model", str(exc)) from exc
 
-    def transcribe(self, audio, *, format: AudioFormat, options=None):
+    @cancellable(STTError)
+    def transcribe(self, audio, *, format: AudioFormat, options=None, cancellation=None):
         """识别一段完整字节或数组。"""
         selected = resolve_options(options)
         language, word_timestamps = selected.language, selected.word_timestamps
@@ -135,7 +143,8 @@ class Transcriber:
             self._validate_options(language, word_timestamps)
             return self._transcribe_chunks((audio,), format, language, word_timestamps)
 
-    def transcribe_chunks(self, chunks, *, format: AudioFormat, options=None):
+    @cancellable(STTError)
+    def transcribe_chunks(self, chunks, *, format: AudioFormat, options=None, cancellation=None):
         """有限块序列结束后返回一个完整结果。"""
         selected = resolve_options(options)
         language, word_timestamps = selected.language, selected.word_timestamps
@@ -153,6 +162,7 @@ class Transcriber:
             except Exception as exc:
                 raise STTError("AUDIO_READ_FAILED", "read_chunks", str(exc)) from exc
             while True:
+                check_cancelled()
                 try:
                     chunk = next(iterator)
                 except StopIteration:
@@ -167,7 +177,10 @@ class Transcriber:
         finally:
             converter.close()
 
-    def transcribe_file(self, path, *, options=None, task_timeout_seconds=3600.0):
+    @cancellable(STTError)
+    def transcribe_file(
+        self, path, *, options=None, task_timeout_seconds=3600.0, cancellation=None
+    ):
         """按能力直接提交原始文件；其余引擎沿用标准音频解码。"""
         selected = resolve_options(options)
         language, word_timestamps = selected.language, selected.word_timestamps
@@ -178,7 +191,7 @@ class Transcriber:
                 if self._max_audio_seconds is not None:
                     # 有界解码检查真实时长，不把完整长音频保存在内存中。
                     for _ in audio_file_chunks(path, max_audio_seconds=self._max_audio_seconds):
-                        pass
+                        check_cancelled()
                 return self._infer_source(
                     "transcribe_file", path, language, word_timestamps, task_timeout_seconds
                 )
@@ -189,7 +202,8 @@ class Transcriber:
                 word_timestamps=word_timestamps,
             )
 
-    def transcribe_url(self, url, *, options=None, task_timeout_seconds=3600.0):
+    @cancellable(STTError)
+    def transcribe_url(self, url, *, options=None, task_timeout_seconds=3600.0, cancellation=None):
         """按声明能力识别文件地址；不能对未下载的音频承诺本地时长检查。"""
         selected = resolve_options(options)
         language, word_timestamps = selected.language, selected.word_timestamps
@@ -215,7 +229,8 @@ class Transcriber:
         if type(word_timestamps) is not bool:
             raise STTError("INVALID_CONFIGURATION", "transcribe", "词时间戳开关应为布尔值")
 
-    def _candidate(self, pcm, language, *, word_timestamps=False):
+    @cancellable(STTError)
+    def _candidate(self, pcm, language, *, word_timestamps=False, cancellation=None):
         """候选仍是整段输入，使用通用候选角色而不读取任何会话状态。"""
         with self._operation():
             self._validate_options(language, word_timestamps)
@@ -225,7 +240,8 @@ class Transcriber:
         """文件输入沿用资源、错误和结果契约，厂商传输由适配器处理。"""
         self._prepare()
         try:
-            result = getattr(self._engine, method)(
+            result = self._calls.call(
+                method,
                 source,
                 task_timeout_seconds=task_timeout_seconds,
                 language=language,
@@ -237,21 +253,34 @@ class Transcriber:
             raise STTError("INFERENCE_FAILED", method, str(exc)) from exc
         return self._normalize_result(result, language, word_timestamps)
 
-    def _snapshot(self, pcm, language):
+    @cancellable(STTError)
+    def _snapshot(self, pcm, language, *, cancellation=None):
         """识别固定的标准音频快照，使用实时角色参数。"""
         with self._operation():
             if not self.capabilities.snapshot:
                 raise STTError("BACKEND_INCOMPATIBLE", "snapshot", "引擎不支持周期快照")
             return self._infer(pcm, language, role="snapshot")
 
-    def _create_stream(self, language):
+    @cancellable(STTError)
+    def _create_stream(self, language, *, cancellation=None):
         """创建独立流，语言及网络协议映射由具体引擎负责。"""
         with self._operation():
             if not self.capabilities.streaming:
                 raise STTError("BACKEND_INCOMPATIBLE", "create_stream", "引擎不支持原生流式")
             self._prepare()
             try:
-                return self._engine.create_streaming_session(language=language)
+                stream = self._calls.call("create_streaming_session", language=language)
+                from speechio._async import current_cancellation
+
+                token = current_cancellation()
+                if token is not None:
+                    cancel = getattr(stream, "cancel", None)
+                    if callable(cancel):
+                        token._subscribe(cancel)
+                    if token.cancel_requested:
+                        stream.close()
+                        check_cancelled()
+                return stream
             except STTError:
                 raise
             except Exception as exc:
@@ -264,7 +293,8 @@ class Transcriber:
         self._prepare()
         array = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
         try:
-            result = self._engine.transcribe(
+            result = self._calls.call(
+                "transcribe",
                 array,
                 language=language,
                 role=role,
@@ -325,12 +355,114 @@ class Transcriber:
         result = replace(result, status=status, errors=errors)
         if status != "pending":
             self._engine = None
+            self._calls = None
         return result
 
-    def close(self) -> CloseResult:
-        """继续未完成的释放，完成后保留最终结果。"""
-        with self._operation(closing=True):
-            if self.close_result is None or self.close_result.status == "pending":
+    def close(self, *, timeout=5.0) -> CloseResult:
+        """有界等待；后台拥有者等执行退出后才释放模型。"""
+        from speechio.stt.session.session import _validate_timeout
+
+        _validate_timeout(timeout)
+        with self._close_lock:
+            if self._state == "closed" and self._close_result is not None:
+                return self._close_result
+            if self._cleanup is None:
+                self._state = "closing"
+                self._close_result = CloseResult(
+                    status="pending",
+                    cleanup_method="deferred",
+                    errors=self._close_result.errors if self._close_result else (),
+                )
+                self._cleanup = Thread(
+                    target=self._release_when_idle, name="speechio-stt-close", daemon=True
+                )
+                self._cleanup.start()
+        if not self._closed.wait(timeout):
+            return CloseResult(status="pending", cleanup_method="deferred")
+        return self._close_result
+
+    def _release_when_idle(self):
+        with self._operation_lock:
+            self._state = "closing"
+            self._close_result = self._release_resources()
+            while self._close_result.status == "pending":
+                self._closed.wait(0.05)
                 self._close_result = self._release_resources()
-                self._state = "closing" if self._close_result.status == "pending" else "closed"
-            return self.close_result
+            self._state = "closed"
+        self._closed.set()
+
+    @property
+    def busy(self):
+        return self._operation_lock.locked()
+
+    def wait_idle(self, *, timeout=5.0):
+        from speechio.stt.session.session import _validate_timeout
+
+        _validate_timeout(timeout)
+        if self._state in ("closing", "closed"):
+            raise STTError("RUNTIME_CLOSED", "wait_idle", "识别器正在关闭或已经关闭")
+        acquired = self._operation_lock.acquire(timeout=timeout)
+        if acquired:
+            self._operation_lock.release()
+        return acquired
+
+    async def prepare_async(self, *, cancellation=None):
+        return await run_operation(self.prepare, cancellation=cancellation)
+
+    async def transcribe_async(self, audio, *, format, options=None, cancellation=None):
+        return await run_operation(
+            self.transcribe, audio, format=format, options=options, cancellation=cancellation
+        )
+
+    async def transcribe_chunks_async(self, chunks, *, format, options=None, cancellation=None):
+        return await run_operation(
+            self.transcribe_chunks,
+            chunks,
+            format=format,
+            options=options,
+            cancellation=cancellation,
+        )
+
+    async def transcribe_file_async(
+        self, path, *, options=None, task_timeout_seconds=3600.0, cancellation=None
+    ):
+        return await run_operation(
+            self.transcribe_file,
+            path,
+            options=options,
+            task_timeout_seconds=task_timeout_seconds,
+            cancellation=cancellation,
+        )
+
+    async def transcribe_url_async(
+        self, url, *, options=None, task_timeout_seconds=3600.0, cancellation=None
+    ):
+        return await run_operation(
+            self.transcribe_url,
+            url,
+            options=options,
+            task_timeout_seconds=task_timeout_seconds,
+            cancellation=cancellation,
+        )
+
+    async def wait_idle_async(self, *, timeout=5.0):
+        return await run_blocking(self.wait_idle, timeout=timeout)
+
+    async def close_async(self, *, timeout=5.0):
+        return await run_blocking(self.close, timeout=timeout)
+
+    async def __aenter__(self):
+        try:
+            await self.prepare_async()
+        except BaseException:
+            await self.close_async(timeout=0)
+            raise
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        result = await self.close_async()
+        if result.status != "ok":
+            if exc is not None:
+                exc.add_note(f"识别器关闭状态：{result.status}")
+            else:
+                raise STTError("CLEANUP_FAILED", "close", f"识别器关闭状态：{result.status}")

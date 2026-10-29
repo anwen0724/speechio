@@ -28,7 +28,7 @@ class CloseStatusTests(unittest.TestCase):
     def test_transcriber_pending_close_can_complete_and_rejects_new_work(self):
         adapter = ClosingAdapter()
         transcriber = Transcriber.from_adapter(adapter)
-        self.assertEqual(transcriber.close().status, "pending")
+        self.assertEqual(transcriber.close(timeout=0).status, "pending")
         self.assertEqual(transcriber.state, "closing")
         with self.assertRaises(STTError):
             transcriber.prepare()

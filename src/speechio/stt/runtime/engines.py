@@ -39,9 +39,9 @@ class EngineResources:
                 continue
             owner.prepare()
 
-    def close(self):
+    def close(self, *, timeout=5.0):
         """保留未完成状态及各拥有者的失败；不能仅靠错误列表判断完成。"""
-        results = [owner.close() for owner, _ in self._owners]
+        results = [owner.close(timeout=timeout) for owner, _ in self._owners]
         errors = tuple(error for result in results for error in result.errors)
         status = (
             "pending"
@@ -51,6 +51,16 @@ class EngineResources:
             else "ok"
         )
         return CloseResult(status=status, errors=errors)
+
+    @property
+    def close_errors(self):
+        """后台关闭尚未全部完成时，仍保留已经报告的失败。"""
+        return tuple(
+            error
+            for owner, _ in self._owners
+            if owner.close_result is not None
+            for error in owner.close_result.errors
+        )
 
     @property
     def pending_count(self):

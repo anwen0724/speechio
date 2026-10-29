@@ -9,6 +9,7 @@ from uuid import uuid4
 
 import numpy as np
 
+from speechio.cancellation import CancellationToken
 from speechio.errors import STTError
 from speechio.models.config import LocalModelConfig, RemoteModelConfig
 from speechio.resources import CloseError
@@ -142,6 +143,7 @@ class _RealtimeUnit:
     boundary_pending: bool = False
     followups: list[float] = field(default_factory=list)
     trigger_reason: str = "periodic"
+    cancellation: CancellationToken = field(default_factory=CancellationToken)
 
 
 class RealtimeExecutor:
@@ -212,6 +214,7 @@ class RealtimeExecutor:
         if state is None:
             return
         state.invalid = True
+        state.cancellation.cancel()
         state.pending.clear()
         state.followups.clear()
         self._cancel_stream(state)
@@ -219,6 +222,7 @@ class RealtimeExecutor:
 
     def _cancel_stream(self, state):
         """可选中断入口必须非阻塞；旧自定义流仍可在调用返回后清理。"""
+        state.cancellation.cancel()
         cancel = getattr(state.stream, "cancel", None)
         if cancel is not None:
             try:
@@ -330,7 +334,9 @@ class RealtimeExecutor:
         if cleaning:
             return None, self._close_stream(state)
         if state.stream is None:
-            state.stream = self.model._create_stream(state.session.config.options.language)
+            state.stream = self.model._create_stream(
+                state.session.config.options.language, cancellation=state.cancellation
+            )
         # 建流期间取消时还没有流句柄；建流返回后不能继续发送。
         if state.invalid:
             self._cancel_stream(state)
@@ -389,7 +395,11 @@ class RealtimeExecutor:
                             state, pcm, finishing=finishing, cleaning=cleaning
                         )
                     else:
-                        result = self.model._snapshot(pcm, state.session.config.options.language)
+                        result = self.model._snapshot(
+                            pcm,
+                            state.session.config.options.language,
+                            cancellation=state.cancellation,
+                        )
                 except STTError as exc:
                     error = EventError(exc.code, exc.operation, exc.message)
                     self._close_stream(state)

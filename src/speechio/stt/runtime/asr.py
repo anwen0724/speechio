@@ -3,9 +3,16 @@
 import logging
 from collections import deque
 from dataclasses import dataclass, replace
-from threading import Condition, Lock, Thread
+from threading import Event, Lock, Thread
 from time import monotonic
 
+from speechio._async import (
+    AsyncCondition,
+    cancellable,
+    check_cancelled,
+    run_blocking,
+    run_operation,
+)
 from speechio.audio.formats import AudioFormat
 from speechio.errors import STTError
 from speechio.resources import CloseError, CloseResult
@@ -108,7 +115,7 @@ class STTRuntime:
             raise STTError("INVALID_CONFIGURATION", "configure", "需要 RuntimeLimits")
         self._limits = limits if limits is not None else RuntimeLimits()
         # 会话控制和任务登记共用协调锁，避免跨对象锁顺序和提交竞态。
-        self._condition = Condition()
+        self._condition = AsyncCondition()
         self._state = "unprepared"
         self._sessions = {}
         self._queue = deque()
@@ -116,6 +123,8 @@ class STTRuntime:
         self._tasks = 0
         self._task_samples = 0
         self._worker = None
+        self._preparation_done = Event()
+        self._preparation_done.set()
         self._close_result = None
         self._worker_error = None
         self._wake_resources = {}
@@ -199,12 +208,17 @@ class STTRuntime:
             raise STTError(code, "close", "运行时关闭未成功")
         return False
 
-    def prepare(self):
-        """显式准备后才启动执行线程；模型加载错误沿用 P1。"""
+    @cancellable(STTError)
+    def prepare(self, *, cancellation=None):
+        """锁外准备模型；关闭只等待实际加载退出，不占用调用方线程。"""
         with self._condition:
             self._require_ready(allow_unprepared=True)
             if self._state == "ready":
                 return
+            if not self._preparation_done.is_set():
+                raise STTError("RUNTIME_BUSY", "prepare", "模型正在准备")
+            self._preparation_done.clear()
+        try:
             try:
                 self._engines.prepare(
                     defer_primary=self._final_enabled
@@ -216,26 +230,34 @@ class STTRuntime:
                 cleanup = self._engines.close()
                 if cleanup.errors:
                     exc.cleanup_errors = cleanup.errors
-                injected = self._engines.injected
-                if injected or cleanup.status != "ok":
-                    self._state = "closing" if cleanup.status == "pending" else "closed"
-                    self._close_result = RuntimeCloseResult(
-                        cleanup.status, self._engines.pending_count, errors=cleanup.errors
-                    )
-                else:
-                    self._recognizer = Transcriber(self._recognizer.config)
-                    self._engines = EngineResources(self._recognizer, self._model_lock)
-                    if self._realtime is not None:
-                        self._realtime = RealtimeGroup(
-                            self, self._realtime_config, self._ultrafast_config
-                        )
-                    self._assemble_candidate()
+                with self._condition:
+                    if self._state != "closing":
+                        if self._engines.injected or cleanup.status != "ok":
+                            self._state = "closing" if cleanup.status == "pending" else "closed"
+                            self._close_result = RuntimeCloseResult(
+                                cleanup.status, self._engines.pending_count, errors=cleanup.errors
+                            )
+                        else:
+                            self._recognizer = Transcriber(self._recognizer.config)
+                            self._engines = EngineResources(self._recognizer, self._model_lock)
+                            if self._realtime is not None:
+                                self._realtime = RealtimeGroup(
+                                    self, self._realtime_config, self._ultrafast_config
+                                )
+                            self._assemble_candidate()
                 raise
-            if self._realtime is not None:
-                self._realtime.start()
-            self._worker = Thread(target=self._run, name="ASRFinalWorker", daemon=True)
-            self._worker.start()
-            self._state = "ready"
+            with self._condition:
+                self._require_ready(allow_unprepared=True)
+                check_cancelled()
+                if self._realtime is not None:
+                    self._realtime.start()
+                self._worker = Thread(target=self._run, name="ASRFinalWorker", daemon=True)
+                self._worker.start()
+                self._state = "ready"
+        finally:
+            self._preparation_done.set()
+            with self._condition:
+                self._condition.notify_all()
 
     def _require_ready(self, *, allow_unprepared=False):
         if self._worker_error is not None:
@@ -264,6 +286,7 @@ class STTRuntime:
             self._sessions[session.session_id] = session
             return session
 
+    @cancellable(STTError, discard=lambda session: session.close())
     def create_auto_session(
         self,
         *,
@@ -273,6 +296,7 @@ class STTRuntime:
         endpoint=None,
         wake=None,
         wake_detector_factory=None,
+        cancellation=None,
     ):
         """自动分段；未指定 VAD 时使用随包提供的检测模型。"""
         from speechio.bundled import default_vad_model
@@ -288,6 +312,7 @@ class STTRuntime:
             wake_detector_factory=wake_detector_factory,
         )
 
+    @cancellable(STTError, discard=lambda session: session.close())
     def create_auto_session_from_detector(
         self,
         detector_factory,
@@ -297,6 +322,7 @@ class STTRuntime:
         endpoint=None,
         wake=None,
         wake_detector_factory=None,
+        cancellation=None,
     ):
         """由调用方提供语音检测器工厂；不同时接收 VAD 配置。"""
         return self._create_auto_session(
@@ -352,6 +378,7 @@ class STTRuntime:
         )
         with self._condition:
             try:
+                check_cancelled()
                 self._require_ready()
                 if len(self._sessions) >= self._limits.max_sessions:
                     raise STTError(
@@ -479,9 +506,10 @@ class STTRuntime:
 
     def _complete_cleanup(self, errors=()):
         """只在推理退出后继续释放；等待者的超时不丢弃未完成资源。"""
+        self._preparation_done.wait()
         while True:
             try:
-                cleanup = self._engines.close()
+                cleanup = self._engines.close(timeout=0)
             except BaseException as exc:
                 cleanup = CloseResult(
                     status="failed", errors=(CloseError("CLEANUP_FAILED", "close", str(exc)),)
@@ -528,6 +556,7 @@ class STTRuntime:
                             options=TranscriptionOptions(
                                 language=job.language, word_timestamps=job.word_timestamps
                             ),
+                            cancellation=job.cancellation,
                         )
             except STTError as exc:
                 error = exc
@@ -545,7 +574,11 @@ class STTRuntime:
             job = result = error = None
 
     def cancel_task(self, task_id):
-        """只移除尚未执行的任务；运行引用在调用实际返回后释放。"""
+        """取消对应任务；运行引用与容量仍等到底层实际退出才释放。"""
+        if self._running is not None and self._running.task.task_id == task_id:
+            self._running.cancellation.cancel()
+            # 返回值仍表示是否已移出物理队列；在途槽不能提前复用。
+            return False
         for job in self._queue:
             if job.task.task_id == task_id:
                 self._queue.remove(job)
@@ -554,6 +587,72 @@ class STTRuntime:
                 self._condition.notify_all()
                 return True
         return False
+
+    async def prepare_async(self, *, cancellation=None):
+        return await run_operation(self.prepare, cancellation=cancellation)
+
+    async def create_auto_session_async(
+        self,
+        *,
+        config=None,
+        vad=None,
+        segmentation=None,
+        endpoint=None,
+        wake=None,
+        wake_detector_factory=None,
+        cancellation=None,
+    ):
+        return await run_operation(
+            self.create_auto_session,
+            config=config,
+            vad=vad,
+            segmentation=segmentation,
+            endpoint=endpoint,
+            wake=wake,
+            wake_detector_factory=wake_detector_factory,
+            cancellation=cancellation,
+        )
+
+    async def create_auto_session_from_detector_async(
+        self,
+        detector_factory,
+        *,
+        config=None,
+        segmentation=None,
+        endpoint=None,
+        wake=None,
+        wake_detector_factory=None,
+        cancellation=None,
+    ):
+        return await run_operation(
+            self.create_auto_session_from_detector,
+            detector_factory,
+            config=config,
+            segmentation=segmentation,
+            endpoint=endpoint,
+            wake=wake,
+            wake_detector_factory=wake_detector_factory,
+            cancellation=cancellation,
+        )
+
+    async def close_async(self, *, timeout=5.0):
+        return await run_blocking(self.close, timeout=timeout)
+
+    async def __aenter__(self):
+        try:
+            await self.prepare_async()
+        except BaseException:
+            await self.close_async(timeout=0)
+            raise
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        result = await self.close_async()
+        if result.status != "ok":
+            if exc is not None:
+                exc.add_note(f"运行时关闭状态：{result.status}")
+            else:
+                raise STTError("CLEANUP_FAILED", "close", "运行时关闭未成功")
 
     def _realtime_ready(self, ref):
         """最终任务的排空屏障由实时拥有者提供，不读取会话单元。"""
@@ -611,6 +710,13 @@ class STTRuntime:
                     + realtime_pending
                     + len(self._wake_resources)
                     + self._engines.pending_count,
-                    errors=self._close_result.errors if self._close_result else (),
+                    errors=tuple(
+                        dict.fromkeys(
+                            (
+                                *(self._close_result.errors if self._close_result else ()),
+                                *self._engines.close_errors,
+                            )
+                        )
+                    ),
                 )
             return self._close_result

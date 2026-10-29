@@ -82,6 +82,9 @@ class NativeStream:
             raise STTError("INFERENCE_FAILED", "decode", "失败流不能继续解码")
         try:
             while self.recognizer.is_ready(self._native):
+                from speechio._async import check_cancelled
+
+                check_cancelled()
                 self.recognizer.decode_stream(self._native)
         except Exception as exc:
             self.failed = True

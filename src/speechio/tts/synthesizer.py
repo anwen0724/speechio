@@ -2,7 +2,16 @@
 
 from dataclasses import replace
 from threading import Condition, Event, Thread
+from time import monotonic
 
+from speechio._async import (
+    AdapterCalls,
+    cancellable,
+    check_cancelled,
+    current_cancellation,
+    run_blocking,
+    run_operation,
+)
 from speechio.adapters.contracts import TTSCapabilities
 from speechio.audio.results import AudioResult
 from speechio.errors import TTSError
@@ -47,6 +56,7 @@ class Synthesizer:
         ):
             raise TTSError("INVALID_CONFIGURATION", "configure", "引擎不符合合成接入契约")
         self._engine = engine
+        self._calls = AdapterCalls(engine)
         self._capabilities = capabilities
         self._max_buffer_seconds = max_buffer_seconds
         self._condition = Condition()
@@ -64,7 +74,8 @@ class Synthesizer:
     def capabilities(self):
         return self._capabilities
 
-    def list_voices(self, *, include_account=False) -> tuple[VoiceInfo, ...]:
+    @cancellable(TTSError)
+    def list_voices(self, *, include_account=False, cancellation=None) -> tuple[VoiceInfo, ...]:
         """查询当前模型的可选音色，不准备模型；查询失败不返回不完整列表。"""
         if type(include_account) is not bool:
             raise TTSError("INVALID_INPUT", "list_voices", "include_account 必须为布尔值")
@@ -73,7 +84,7 @@ class Synthesizer:
             raise TTSError("CAPABILITY_UNSUPPORTED", "list_voices", "适配器未实现音色查询")
         self._begin()
         try:
-            voices = tuple(method(include_account=include_account))
+            voices = tuple(self._calls.call("list_voices", include_account=include_account))
             if any(not isinstance(voice, VoiceInfo) for voice in voices):
                 raise TTSError("PROTOCOL_ERROR", "list_voices", "适配器须返回 VoiceInfo 列表")
             return voices
@@ -97,7 +108,7 @@ class Synthesizer:
     def _prepare(self):
         if not self._prepared:
             try:
-                self._engine.prepare()
+                self._calls.call("prepare")
             except BaseException as exc:
                 # 退出当前调用后再清理；不遗留准备了一半的自有资源。
                 self.close(timeout=0)
@@ -106,7 +117,8 @@ class Synthesizer:
                 raise TTSError("PREPARATION_FAILED", "prepare", "合成后端准备失败") from None
             self._prepared = True
 
-    def prepare(self):
+    @cancellable(TTSError)
+    def prepare(self, *, cancellation=None):
         self._begin()
         try:
             self._prepare()
@@ -147,7 +159,10 @@ class Synthesizer:
         if not isinstance(text, str) or not text.strip():
             raise TTSError("INVALID_INPUT", "synthesize", "完整合成文本不能为空")
 
-    def synthesize(self, text, *, options=None, reference_audio=None, reference_text=None):
+    @cancellable(TTSError)
+    def synthesize(
+        self, text, *, options=None, reference_audio=None, reference_text=None, cancellation=None
+    ):
         """可先克隆再合成；整个组合任务共用模型和一次资源占用。"""
         self._text(text)
         selected = self._options(options, "synthesis")
@@ -161,7 +176,7 @@ class Synthesizer:
                 voice = self._clone_voice(reference_audio, reference_text=reference_text)
                 selected = replace(selected, voice=voice)
             self._prepare()
-            result = self._engine.synthesize(text, options=selected)
+            result = self._calls.call("synthesize", text, options=selected)
             if (
                 not isinstance(result, AudioResult)
                 or result.format.sample_rate != selected.sample_rate
@@ -175,7 +190,8 @@ class Synthesizer:
         finally:
             self._end()
 
-    def clone_voice(self, reference_audio, *, reference_text=None) -> Voice:
+    @cancellable(TTSError)
+    def clone_voice(self, reference_audio, *, reference_text=None, cancellation=None) -> Voice:
         """使用本实例选定的模型克隆声音，不执行文字合成。"""
         self._begin()
         try:
@@ -194,7 +210,7 @@ class Synthesizer:
         try:
             audio = read_reference_audio(reference_audio)
             self._prepare()
-            voice = self._engine.clone_voice(audio, reference_text=reference_text)
+            voice = self._calls.call("clone_voice", audio, reference_text=reference_text)
             if not isinstance(voice, Voice):
                 raise TTSError("PROTOCOL_ERROR", "clone_voice", "适配器未返回 Voice")
             return voice
@@ -215,11 +231,13 @@ class Synthesizer:
             return CloseResult(status="pending", cleanup_method="deferred")
         return self._close_result
 
-    def stream(self, text, *, options):
+    @cancellable(TTSError)
+    def stream(self, text, *, options, cancellation=None):
         self._text(text)
         return self._start_stream(options, text=text)
 
-    def open_stream(self, *, options):
+    @cancellable(TTSError)
+    def open_stream(self, *, options, cancellation=None):
         return self._start_stream(options)
 
     def _start_stream(self, options, *, text=None):
@@ -231,9 +249,9 @@ class Synthesizer:
         try:
             self._prepare()
             backend = (
-                self._engine.open_stream(options=selected)
+                self._calls.call("open_stream", options=selected)
                 if text is None
-                else self._engine.stream(text, options=selected)
+                else self._calls.call("stream", text, options=selected)
             )
             if backend.format.sample_rate != selected.sample_rate:
                 raise TTSError("PROTOCOL_ERROR", "open_stream", "后端未采用所请求采样率")
@@ -249,6 +267,12 @@ class Synthesizer:
                 self._streams.append(stream)
                 if self._closing:
                     stream.cancel()
+            # 后端已由公开流接管，后续取消不能再次走创建失败的后端清理。
+            backend = None
+            token = current_cancellation()
+            if token is not None:
+                stream._bind_cancellation(token)
+            check_cancelled()
             return stream
         except BaseException as exc:
             if backend is not None:
@@ -327,6 +351,82 @@ class Synthesizer:
 
     def __exit__(self, exc_type, exc, traceback):
         result = self.close()
+        if result.status != "ok":
+            if exc is not None:
+                exc.add_note(f"合成资源关闭状态：{result.status}")
+            else:
+                raise TTSError("CLOSE_FAILED", "close", f"合成资源关闭状态：{result.status}")
+
+    @property
+    def busy(self):
+        """包括底层尚未退出的调用和未读尽的流。"""
+        with self._condition:
+            return self._busy or (self._active is not None and not self._active.released)
+
+    def wait_idle(self, *, timeout=5.0):
+        """仅等待任务释放，不取消任务，也不关闭模型。"""
+        validate_seconds(timeout, "timeout")
+        deadline = monotonic() + timeout
+        with self._condition:
+            if self._closing:
+                raise TTSError("RUNTIME_CLOSED", "wait_idle", "合成对象正在关闭或已经关闭")
+            while self.busy:
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    return False
+                self._condition.wait(min(remaining, 0.05))
+            return True
+
+    async def prepare_async(self, *, cancellation=None):
+        return await run_operation(self.prepare, cancellation=cancellation)
+
+    async def synthesize_async(
+        self, text, *, options=None, reference_audio=None, reference_text=None, cancellation=None
+    ):
+        return await run_operation(
+            self.synthesize,
+            text,
+            options=options,
+            reference_audio=reference_audio,
+            reference_text=reference_text,
+            cancellation=cancellation,
+        )
+
+    async def clone_voice_async(self, reference_audio, *, reference_text=None, cancellation=None):
+        return await run_operation(
+            self.clone_voice,
+            reference_audio,
+            reference_text=reference_text,
+            cancellation=cancellation,
+        )
+
+    async def list_voices_async(self, *, include_account=False, cancellation=None):
+        return await run_operation(
+            self.list_voices, include_account=include_account, cancellation=cancellation
+        )
+
+    async def stream_async(self, text, *, options, cancellation=None):
+        return await run_operation(self.stream, text, options=options, cancellation=cancellation)
+
+    async def open_stream_async(self, *, options, cancellation=None):
+        return await run_operation(self.open_stream, options=options, cancellation=cancellation)
+
+    async def wait_idle_async(self, *, timeout=5.0):
+        return await run_blocking(self.wait_idle, timeout=timeout)
+
+    async def close_async(self, *, timeout=5.0):
+        return await run_blocking(self.close, timeout=timeout)
+
+    async def __aenter__(self):
+        try:
+            await self.prepare_async()
+        except BaseException:
+            await self.close_async(timeout=0)
+            raise
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        result = await self.close_async()
         if result.status != "ok":
             if exc is not None:
                 exc.add_note(f"合成资源关闭状态：{result.status}")

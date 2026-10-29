@@ -9,6 +9,7 @@ from uuid import uuid4
 
 import numpy as np
 
+from speechio._async import run_blocking
 from speechio.audio.formats import AudioFormat
 from speechio.errors import STTError
 from speechio.stt.input import AudioConverter, AudioFrame
@@ -262,6 +263,14 @@ class AutoSession(Session):
             return super().current_audio()
 
     def feed_audio(self, chunk):
+        """提交输入后唤醒异步读取方，包括检测失败和取消的路径。"""
+        try:
+            return self._feed_audio(chunk)
+        finally:
+            with self._runtime.coordination:
+                self._runtime.coordination.notify_all()
+
+    def _feed_audio(self, chunk):
         """本会话串行转换和检测；不持有全局锁，也不等待 ASR 模型。"""
         with self._input_lock:
             with self._runtime.coordination:
@@ -610,7 +619,21 @@ class AutoSession(Session):
             self._runtime.coordination.notify_all()
             return changed
 
+    async def end_input_async(self):
+        async with self._async_input:
+            if self._async_input_cancelled:
+                raise STTError("SESSION_CLOSED", "end_input", "会话输入已取消")
+            return await run_blocking(self.end_input, on_cancel=self._cancel_async_input)
+
     def end_input(self):
+        """刷新源尾部并唤醒事件读取方。"""
+        try:
+            return self._end_input()
+        finally:
+            with self._runtime.coordination:
+                self._runtime.coordination.notify_all()
+
+    def _end_input(self):
         """只刷新一次源尾部；终止监听但不取消已固定任务。"""
         with self._input_lock:
             with self._runtime.coordination:
@@ -671,6 +694,7 @@ class AutoSession(Session):
             with self._input_lock, self._runtime.coordination:
                 if self._closed:
                     return None
+
                 if self._runtime_error is not None:
                     return Session.next_event(self)
                 state = self._input
@@ -688,6 +712,15 @@ class AutoSession(Session):
                     self._runtime.coordination.wait(remaining)
                 if self._input is not state and self._runtime_error is None:
                     return None
+
+    def _poll_async_event(self):
+        """检测线程持锁时仅等待通知，不阻塞事件循环。"""
+        if not self._input_lock.acquire(blocking=False):
+            return None
+        try:
+            return self.next_event(timeout=0)
+        finally:
+            self._input_lock.release()
 
     def _fail_input(self, state, error):
         """检测错误只失败尚未固定的当前输入，不改写已提交段。"""

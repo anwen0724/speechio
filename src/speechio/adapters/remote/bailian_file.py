@@ -2,10 +2,11 @@
 
 from math import isfinite
 from pathlib import Path
-from time import monotonic, sleep
+from time import monotonic
 from urllib.parse import quote, urlsplit
 from uuid import uuid4
 
+from speechio._async import check_cancelled, wait_cancellable
 from speechio.adapters.contracts import STTAdapter
 from speechio.adapters.remote.bailian_stt import transcript_from_sentences
 from speechio.audio.files import audio_file_chunks, read_audio_info
@@ -77,13 +78,15 @@ class BailianFileEngine(STTAdapter):
             import httpx
         except ImportError:
             raise STTError(
-                "DEPENDENCY_MISSING", "prepare", '运行库缺失，请运行 pip install speechio'
+                "DEPENDENCY_MISSING", "prepare", "运行库缺失，请运行 pip install speechio"
             ) from None
         self._http = httpx.Client(timeout=self.config.timeout_seconds, follow_redirects=False)
 
     def _request(self, method, url, operation, *, deadline=None, **options):
         """网络错误统一分类；上传与结果地址不继承百炼 API 鉴权头。"""
         import httpx
+
+        check_cancelled()
 
         if deadline is not None:
             options["timeout"] = min(self.config.timeout_seconds, self._remaining(deadline))
@@ -95,6 +98,7 @@ class BailianFileEngine(STTAdapter):
             raise STTError(
                 "REMOTE_CONNECTION", operation, "百炼文件请求连接失败，未自动重试"
             ) from None
+        check_cancelled()
         if deadline is not None:
             self._remaining(deadline)
         if response.status_code != 200:
@@ -266,7 +270,7 @@ class BailianFileEngine(STTAdapter):
                     raise ValueError
             except (KeyError, TypeError, ValueError):
                 raise STTError("REMOTE_PROTOCOL", "wait_task", "百炼文件任务响应格式无效") from None
-            sleep(min(2.0, self._remaining(deadline)))
+            wait_cancellable(min(2.0, self._remaining(deadline)))
         try:
             validate_file_url(result_url, operation="read_result")
         except STTError:

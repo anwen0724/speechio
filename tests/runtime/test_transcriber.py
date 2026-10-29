@@ -119,7 +119,7 @@ class RecognizerTests(unittest.TestCase):
         self.assertEqual(result.language_source, "hint")
         self.assertEqual(recognizer.close().status, "ok")
 
-    def test_busy_close_is_rejected_and_closed_runtime_does_not_consume_input(self):
+    def test_busy_close_is_deferred_and_closed_runtime_does_not_consume_input(self):
         entered, release = threading.Event(), threading.Event()
         outcomes = []
 
@@ -144,9 +144,7 @@ class RecognizerTests(unittest.TestCase):
             worker.start()
             try:
                 self.assertTrue(entered.wait(5))
-                with self.assertRaises(STTError) as caught:
-                    recognizer.close()
-                self.assertEqual(caught.exception.code, "RUNTIME_BUSY")
+                self.assertEqual(recognizer.close(timeout=0).status, "pending")
             finally:
                 release.set()
                 worker.join(5)

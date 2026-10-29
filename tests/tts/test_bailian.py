@@ -89,16 +89,19 @@ class BailianSynthesisTests(unittest.TestCase):
                     stream.close(timeout=2)
                 synth.close(timeout=2)
 
-    def test_cancel_sends_provider_directive_and_closes_connection(self):
-        commands = []
+    def test_cancel_interrupts_connection_without_waiting_for_send_lock(self):
         received = Event()
 
         def service(ws):
             run = json.loads(ws.recv())
             task_id = run["header"]["task_id"]
             ws.send(json.dumps({"header": {"task_id": task_id, "event": "task-started"}}))
-            commands.append(json.loads(ws.recv()))
-            received.set()
+            from websockets.exceptions import ConnectionClosed
+
+            try:
+                ws.recv()
+            except ConnectionClosed:
+                received.set()
 
         with websocket_service(service) as url:
             config = RemoteModelConfig(
@@ -115,7 +118,6 @@ class BailianSynthesisTests(unittest.TestCase):
                 with self.assertRaises(TTSError) as caught:
                     stream.read()
                 self.assertEqual(caught.exception.code, "CANCELLED")
-        self.assertEqual(commands[0]["payload"]["input"], {"directive": "cancel"})
 
     def test_long_text_is_split_within_one_task_and_rejects_total_overflow(self):
         parts = []
@@ -125,7 +127,12 @@ class BailianSynthesisTests(unittest.TestCase):
             task_id = run["header"]["task_id"]
             ws.send(json.dumps({"header": {"task_id": task_id, "event": "task-started"}}))
             while True:
-                item = json.loads(ws.recv())
+                from websockets.exceptions import ConnectionClosed
+
+                try:
+                    item = json.loads(ws.recv())
+                except ConnectionClosed:
+                    break
                 self.assertEqual(item["header"]["task_id"], task_id)
                 if item["header"]["action"] == "continue-task":
                     parts.append(item["payload"]["input"]["text"])

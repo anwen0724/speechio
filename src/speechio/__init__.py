@@ -16,14 +16,17 @@ from speechio.audio.microphone import (
     list_input_devices,
 )
 from speechio.audio.results import AudioChunk, AudioResult
+from speechio.cancellation import CancellationToken
 from speechio.errors import SpeechioError, STTError, TTSError
 from speechio.models.config import LocalModelConfig, RemoteModelConfig
 from speechio.resources import CloseResult
 from speechio.stt.api import (
     MicrophoneTranscriber,
     transcribe_audio,
+    transcribe_audio_async,
     transcribe_microphone,
     transcribe_url,
+    transcribe_url_async,
 )
 from speechio.stt.input import AudioFrame
 from speechio.stt.options import TranscriptionOptions
@@ -47,7 +50,7 @@ from speechio.stt.text.endpoint import SpeechEndConfig
 from speechio.stt.text.realtime_merge import RealtimeMergeConfig
 from speechio.stt.text.stabilizer import StabilizationConfig
 from speechio.stt.transcriber import Transcriber
-from speechio.tts.api import clone_voice, synthesize
+from speechio.tts.api import clone_voice, clone_voice_async, synthesize, synthesize_async
 from speechio.tts.options import SynthesisOptions
 from speechio.tts.stream import SynthesisStream
 from speechio.tts.synthesizer import Synthesizer
@@ -55,6 +58,11 @@ from speechio.tts.timing import TextTiming, WordTiming
 from speechio.tts.voices import Voice, VoiceInfo
 
 __all__ = [
+    "CancellationToken",
+    "transcribe_audio_async",
+    "transcribe_url_async",
+    "synthesize_async",
+    "clone_voice_async",
     "clone_voice",
     "Voice",
     "VoiceInfo",

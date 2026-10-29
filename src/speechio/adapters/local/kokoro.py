@@ -166,15 +166,19 @@ class KokoroAdapter(TTSAdapter):
         yield from self._phonemes(text[split:], g2p, limit)
 
     def _generate(self, text, options):
+        from speechio._async import check_cancelled
+
         pack = self._voice(options.voice)
         g2p = self._phonemizer(self._language(options))
         limit = min(self._model.context_length - 2, len(pack))
         # 英文句点保留给 G2P 解释小数、缩写；超长输入再按词边界拆分。
         for sentence in re.findall(r"[^。！？!?\n]+[。！？!?]*|[。！？!?]+", text):
             for phonemes in self._phonemes(sentence, g2p, limit):
+                check_cancelled()
                 output = self._model(
                     phonemes, pack[len(phonemes) - 1], options.speed, return_output=True
                 )
+                check_cancelled()
                 yield waveform_result(output.audio.detach().cpu().numpy(), 24000)
 
     def synthesize(self, text, *, options):

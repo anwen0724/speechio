@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
+from speechio._async import check_cancelled
 from speechio.audio.decoding import AudioFileInfo, open_audio_source
 from speechio.errors import STTError
 from speechio.stt.input import SAMPLE_RATE, AudioConverter, validate_max_audio_seconds
@@ -70,6 +71,7 @@ def audio_file_chunks(path, *, chunk_frames=1024, max_audio_seconds=None):
             raise STTError("AUDIO_CAPACITY_EXCEEDED", "read_file", "音频超过配置的时长上限")
         samples = 0
         for chunk in source.chunks(chunk_frames):
+            check_cancelled()
             samples += len(chunk)
             if (
                 max_audio_seconds is not None

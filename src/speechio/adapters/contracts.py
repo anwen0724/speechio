@@ -86,25 +86,39 @@ class STTAdapter(ABC):
     def capabilities(self) -> STTCapabilities:
         """准备前可查询，生命周期内保持不变。"""
 
-    def prepare(self):
+    def prepare(self, *, cancellation=None):
         """准备自有模型或连接；默认适用于已经准备好的轻量实现。"""
 
-    def transcribe(self, audio, language=None, *, role="final", word_timestamps=False):
+    def transcribe(
+        self, audio, language=None, *, role="final", word_timestamps=False, cancellation=None
+    ):
         """识别固定标准音频；仅支持流式的实现无需提供整段调用。"""
         raise STTError("BACKEND_INCOMPATIBLE", "transcribe", "引擎不支持整段识别")
 
-    def create_streaming_session(self, language=None):
+    def create_streaming_session(self, language=None, *, cancellation=None):
         """每个单元创建独立流，默认不声明流式能力。"""
         raise STTError("BACKEND_INCOMPATIBLE", "create_stream", "引擎不支持原生流式")
 
     def transcribe_file(
-        self, path, language=None, *, word_timestamps=False, task_timeout_seconds=3600.0
+        self,
+        path,
+        language=None,
+        *,
+        word_timestamps=False,
+        task_timeout_seconds=3600.0,
+        cancellation=None,
     ):
         """直接识别原始文件；未声明此能力的引擎仍由运行时解码后转写。"""
         raise STTError("BACKEND_INCOMPATIBLE", "transcribe_file", "引擎不支持直接文件识别")
 
     def transcribe_url(
-        self, url, language=None, *, word_timestamps=False, task_timeout_seconds=3600.0
+        self,
+        url,
+        language=None,
+        *,
+        word_timestamps=False,
+        task_timeout_seconds=3600.0,
+        cancellation=None,
     ):
         """识别服务可访问的文件地址，不在通用运行时下载音频。"""
         raise STTError("BACKEND_INCOMPATIBLE", "transcribe_url", "引擎不支持文件地址识别")
@@ -206,23 +220,23 @@ class TTSAdapter:
     def capabilities(self) -> TTSCapabilities:
         raise NotImplementedError
 
-    def prepare(self):
+    def prepare(self, *, cancellation=None):
         """准备自有资源；轻量适配器可直接使用默认实现。"""
 
-    def synthesize(self, text, *, options):
+    def synthesize(self, text, *, options, cancellation=None):
         raise TTSError("CAPABILITY_UNSUPPORTED", "synthesize", "后端不支持完整合成")
 
-    def stream(self, text, *, options):
+    def stream(self, text, *, options, cancellation=None):
         raise TTSError("CAPABILITY_UNSUPPORTED", "stream", "后端不支持音频流")
 
-    def open_stream(self, *, options):
+    def open_stream(self, *, options, cancellation=None):
         raise TTSError("CAPABILITY_UNSUPPORTED", "open_stream", "后端不支持增量文本")
 
-    def clone_voice(self, reference_audio, *, reference_text=None):
+    def clone_voice(self, reference_audio, *, reference_text=None, cancellation=None):
         """从参考录音提取可独立保存的声音数据。"""
         raise TTSError("CAPABILITY_UNSUPPORTED", "clone_voice", "适配器不支持声音克隆")
 
-    def list_voices(self, *, include_account=False):
+    def list_voices(self, *, include_account=False, cancellation=None):
         """列举当前模型的音色；只有显式请求时才查询云端已创建音色。"""
         raise TTSError("CAPABILITY_UNSUPPORTED", "list_voices", "适配器未实现音色查询")
 

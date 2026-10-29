@@ -49,7 +49,10 @@ EMPTY_RETRY_SAMPLES = 8000
 def execute_candidate(model, request):
     """常规空结果仅补静音重试一次，真实音频及请求覆盖保持固定。"""
     result = model._candidate(
-        request.pcm, request.language, word_timestamps=request.word_timestamps
+        request.pcm,
+        request.language,
+        word_timestamps=request.word_timestamps,
+        cancellation=request.cancellation,
     )
     attempts, added = 1, 0
     if request.retry_empty and not result.text.strip():
@@ -59,6 +62,7 @@ def execute_candidate(model, request):
                 request.pcm + bytes(added * 2),
                 request.language,
                 word_timestamps=request.word_timestamps,
+                cancellation=request.cancellation,
             )
         except STTError as error:
             error.candidate_execution = {"attempts": attempts, "added_silence_samples": added}
