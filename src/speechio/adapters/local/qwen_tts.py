@@ -1,10 +1,12 @@
 """Qwen3-TTS Base 本地适配器；两个参数规格共用克隆与合成契约。"""
 
 import json
+from dataclasses import replace
+from pathlib import Path
 
 import numpy as np
 
-from speechio.adapters.contracts import TTSAdapter, TTSCapabilities
+from speechio.adapters.contracts import TTSAdapter, TTSCapabilities, VoiceCloningRequirements
 from speechio.adapters.local.tts import torch_device, validate_local_config, waveform_result
 from speechio.errors import TTSError
 from speechio.models.files import check_tts_model_files
@@ -20,6 +22,9 @@ class QwenTTSAdapter(TTSAdapter):
         language_selection=True,
         voice_cloning=True,
         sample_rates=(24000,),
+        devices=("cpu", "gpu"),
+        voice_required=True,
+        cloning_requirements=VoiceCloningRequirements(reference_text="optional"),
     )
 
     def __init__(self, config):
@@ -27,6 +32,25 @@ class QwenTTSAdapter(TTSAdapter):
         self.config = config
         self._model = None
         self._identity = None
+        # 语言清单来自所选模型的小型配置文件；缺失时保持未知，不为查询加载模型。
+        try:
+            metadata = json.loads(
+                (Path(config.model_path).expanduser() / "config.json").read_text(encoding="utf-8")
+            )
+            language_ids = metadata["talker_config"]["codec_language_id"]
+            if isinstance(language_ids, dict) and language_ids:
+                aliases = {"chinese": "zh", "english": "en"}
+                self.capabilities = replace(
+                    type(self).capabilities,
+                    languages=tuple(aliases.get(name, name) for name in language_ids),
+                )
+        except (OSError, ValueError, KeyError, TypeError):
+            # 模型完整性仍在 prepare 检查；能力查询不能证明模型已经可运行。
+            pass
+
+    def list_voices(self, *, include_account=False):
+        """Base 模型没有预设音色；Voice 文件由应用保存和选择。"""
+        return ()
 
     def prepare(self):
         if self._model is not None:

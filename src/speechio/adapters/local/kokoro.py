@@ -1,6 +1,7 @@
 """Kokoro 中文版：本地预设音色、中英文转换和逐片段合成。"""
 
 import re
+from pathlib import Path
 from threading import Event
 
 from speechio.adapters.contracts import TTSAdapter, TTSCapabilities
@@ -9,6 +10,7 @@ from speechio.audio.formats import AudioFormat
 from speechio.audio.results import AudioChunk, AudioResult
 from speechio.errors import TTSError
 from speechio.models.files import check_tts_model_files
+from speechio.tts.voices import VoiceInfo
 
 
 def _english_g2p(folder, british=False):
@@ -40,6 +42,9 @@ class KokoroAdapter(TTSAdapter):
         language_selection=True,
         speed_control=True,
         sample_rates=(24000,),
+        languages=("zh", "en", "en-gb"),
+        devices=("cpu", "gpu"),
+        voice_required=True,
     )
 
     def __init__(self, config):
@@ -51,6 +56,29 @@ class KokoroAdapter(TTSAdapter):
         self._voices = {}
         self._g2p = {}
         self._folder = None
+
+    def list_voices(self, *, include_account=False):
+        """只读取音色文件名；音色权重在实际合成时才加载。"""
+        folder = Path(self.config.model_path).expanduser() / "voices"
+        try:
+            paths = sorted(folder.iterdir())
+        except OSError as exc:
+            raise TTSError(
+                "MODEL_FILES_MISSING", "list_voices", "无法读取模型的 voices 目录"
+            ) from exc
+        return tuple(
+            VoiceInfo(
+                id=path.stem,
+                name=path.stem,
+                languages={"a": ("en",), "b": ("en-gb",), "z": ("zh",)}.get(path.stem[0]),
+                instruction_control=False,
+                text_timestamps=(),
+            )
+            for path in paths
+            if path.is_file()
+            and path.suffix == ".pt"
+            and re.fullmatch(r"[A-Za-z0-9_-]+", path.stem)
+        )
 
     def prepare(self):
         if self._model is not None:
@@ -83,7 +111,7 @@ class KokoroAdapter(TTSAdapter):
                 else "en"
             )
         language = {"zh-cn": "zh", "en-us": "en"}.get(language, language)
-        if language not in ("zh", "en", "en-gb"):
+        if language not in self.capabilities.languages:
             raise TTSError(
                 "CAPABILITY_UNSUPPORTED", "synthesize", "Kokoro 首版支持 zh / en / en-gb"
             )

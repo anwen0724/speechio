@@ -105,6 +105,13 @@ class AutoSession(Session):
         self._endpoint = endpoint if endpoint is not None else SpeechEndConfig()
         if not isinstance(self._endpoint, SpeechEndConfig):
             raise STTError("INVALID_CONFIGURATION", "configure", "需要 SpeechEndConfig")
+        # 提前识别会提交独立的整段任务，不能因流式能完成而省略该能力检查。
+        if (
+            self._endpoint.early_transcription_silence > 0
+            and runtime.final_enabled
+            and not runtime.capabilities.transcription
+        ):
+            raise STTError("BACKEND_INCOMPATIBLE", "configure", "提前识别需要整段识别能力")
         shortest = (
             min(
                 self._endpoint.sentence_pause,

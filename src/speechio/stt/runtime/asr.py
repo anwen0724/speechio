@@ -97,8 +97,6 @@ class STTRuntime:
             raise STTError("INVALID_CONFIGURATION", "configure", "需要 OnDemandConfig")
         self._final_enabled = final_enabled
         self._recognizer = recognizer
-        if not self._recognizer.capabilities.transcription:
-            raise STTError("BACKEND_INCOMPATIBLE", "configure", "主角色需要整段识别能力")
         if realtime is not None and not isinstance(realtime, RealtimeConfig):
             raise STTError("INVALID_CONFIGURATION", "configure", "需要 RealtimeConfig")
         self._realtime_config = realtime

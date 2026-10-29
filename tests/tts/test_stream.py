@@ -65,6 +65,60 @@ class StreamingEngine(TTSAdapter):
 
 
 class StreamTests(unittest.TestCase):
+    def test_failed_start_still_closes_backend_when_cancel_fails(self):
+        engine = StreamingEngine()
+        engine.backend.format = AudioFormat(sample_rate=16000)
+
+        def fail_cancel():
+            raise RuntimeError("cancel failed")
+
+        engine.backend.cancel = fail_cancel
+        synth = Synthesizer.from_adapter(engine)
+        self.addCleanup(synth.close)
+        with self.assertRaises(TTSError) as caught:
+            synth.open_stream(options=SynthesisOptions())
+        self.assertEqual(caught.exception.code, "PROTOCOL_ERROR")
+        result = synth.close(timeout=1)
+        self.assertTrue(engine.backend.closed.is_set())
+        self.assertTrue(engine.closed.is_set())
+        self.assertEqual(result.status, "failed")
+        self.assertIn("cancel", [error.operation for error in result.errors])
+
+    def test_failed_start_owns_pending_backend_until_cleanup_finishes(self):
+        for final_status in ("ok", "failed"):
+            with self.subTest(final_status=final_status):
+                engine = StreamingEngine()
+                engine.backend.format = AudioFormat(sample_rate=16000)
+                allow_cleanup = Event()
+                cleanup_attempted = Event()
+
+                def close_backend():
+                    cleanup_attempted.set()
+                    if not allow_cleanup.is_set():
+                        return CloseResult(status="pending")
+                    engine.backend.closed.set()
+                    return CloseResult(status=final_status)
+
+                engine.backend.close = close_backend
+                synth = Synthesizer.from_adapter(engine)
+                try:
+                    with self.assertRaises(TTSError) as caught:
+                        synth.open_stream(options=SynthesisOptions())
+                    self.assertEqual(caught.exception.code, "PROTOCOL_ERROR")
+                    self.assertTrue(cleanup_attempted.wait(1))
+                    self.assertEqual(synth.close(timeout=0).status, "pending")
+                    self.assertFalse(engine.closed.is_set())
+                    with self.assertRaises(TTSError):
+                        synth.open_stream(options=SynthesisOptions())
+                finally:
+                    allow_cleanup.set()
+                    result = synth.close(timeout=1)
+                self.assertEqual(result.status, final_status)
+                self.assertTrue(engine.backend.closed.is_set())
+                self.assertTrue(engine.closed.is_set())
+                if final_status == "failed":
+                    self.assertTrue(result.errors)
+
     def test_read_timeout_is_recoverable_and_cancel_wakes_reader(self):
         engine = StreamingEngine()
         synth = Synthesizer.from_adapter(adapter=engine)

@@ -11,13 +11,14 @@ from threading import Event, Lock, Timer
 from time import monotonic, sleep
 from uuid import uuid4
 
-from speechio.adapters.contracts import TTSAdapter, TTSCapabilities
+from speechio.adapters.contracts import TTSAdapter, TTSCapabilities, VoiceCloningRequirements
+from speechio.adapters.remote.bailian_voices import preset_voices
 from speechio.audio.formats import AudioFormat
 from speechio.audio.results import AudioChunk, AudioResult
 from speechio.errors import TTSError
 from speechio.resources import CloseResult
 from speechio.tts.timing import TextTiming, WordTiming
-from speechio.tts.voices import Voice
+from speechio.tts.voices import Voice, VoiceInfo
 
 
 class BailianSynthesisEngine(TTSAdapter):
@@ -33,6 +34,15 @@ class BailianSynthesisEngine(TTSAdapter):
         instruction_control=True,
         voice_cloning=True,
         sample_rates=(8000, 16000, 22050, 24000, 44100, 48000),
+        devices=(),
+        voice_required=True,
+        speed_range=(0.5, 2.0),
+        cloning_requirements=VoiceCloningRequirements(
+            min_audio_seconds=5,
+            max_audio_seconds=60,
+            min_sample_rate=16000,
+            reference_text="unsupported",
+        ),
     )
 
     def __init__(self, config):
@@ -57,10 +67,76 @@ class BailianSynthesisEngine(TTSAdapter):
                 "OPTIONAL_DEPENDENCY_MISSING", "prepare", "运行库缺失，请运行 pip install speechio"
             ) from None
 
+    def list_voices(self, *, include_account=False):
+        """列举所选模型在当前地域的音色，不建立合成任务。"""
+        presets = preset_voices(self.config)
+        if not include_account:
+            return presets
+        if not self.config.api_key:
+            raise TTSError("REMOTE_AUTH", "list_voices", "查询云端已创建音色需要 api_key")
+        import httpx
+
+        with httpx.Client(follow_redirects=False) as client:
+            created = self._account_voices(client)
+        # 两类音色共用一个列表；不要求使用者先选择来源。
+        return tuple({voice.id: voice for voice in (*presets, *created)}.values())
+
+    def _account_voices(self, client):
+        """翻页并核对详情：列表本身不含 target_model，不能根据 ID 猜测。"""
+        voices = []
+        seen = set()
+        page = 0
+        page_size = 10
+        while True:
+            output = self._enrollment_request(
+                client,
+                {"action": "list_voice", "page_index": page, "page_size": page_size},
+                timeout=self.config.timeout_seconds,
+                operation="list_voices",
+            )
+            items = output.get("voice_list")
+            if not isinstance(items, list):
+                raise TTSError("PROTOCOL_ERROR", "list_voices", "百炼未返回音色列表")
+            previous_count = len(seen)
+            for item in items:
+                if (
+                    not isinstance(item, dict)
+                    or not isinstance(item.get("voice_id"), str)
+                    or not item["voice_id"].strip()
+                    or not isinstance(item.get("status"), str)
+                ):
+                    raise TTSError("PROTOCOL_ERROR", "list_voices", "百炼音色条目格式无效")
+                voice_id = item["voice_id"]
+                if voice_id in seen:
+                    continue
+                seen.add(voice_id)
+                if item["status"] != "OK":
+                    continue
+                detail = self._enrollment_request(
+                    client,
+                    {"action": "query_voice", "voice_id": voice_id},
+                    timeout=self.config.timeout_seconds,
+                    operation="list_voices",
+                )
+                if not isinstance(detail.get("target_model"), str) or not isinstance(
+                    detail.get("status"), str
+                ):
+                    raise TTSError("PROTOCOL_ERROR", "list_voices", "百炼音色详情格式无效")
+                if detail["target_model"] == self.config.model and detail["status"] == "OK":
+                    voices.append(VoiceInfo(id=voice_id, name=voice_id))
+            if len(items) < page_size:
+                return voices
+            if len(seen) == previous_count:
+                raise TTSError("PROTOCOL_ERROR", "list_voices", "百炼分页未推进，查询已停止")
+            page += 1
+
     def open_stream(self, *, options):
         options = self._voice_options(options)
-        if not 0.5 <= options.speed <= 2.0:
-            raise TTSError("INVALID_INPUT", "synthesize", "百炼语速应在 0.5 到 2.0 之间")
+        minimum, maximum = self.capabilities.speed_range
+        if not minimum <= options.speed <= maximum:
+            raise TTSError(
+                "INVALID_INPUT", "synthesize", f"百炼语速应在 {minimum} 到 {maximum} 之间"
+            )
         stream = _BailianSynthesisStream(self.config, options, self._forget)
         with self._lock:
             self._streams.add(stream)
@@ -99,17 +175,22 @@ class BailianSynthesisEngine(TTSAdapter):
 
     def clone_voice(self, reference_audio, *, reference_text=None):
         """创建云端音色并等到可用；不执行试听合成，不保存密钥或原录音。"""
-        if reference_text is not None:
+        requirements = self.capabilities.cloning_requirements
+        if reference_text is not None and requirements.reference_text == "unsupported":
             raise TTSError("CAPABILITY_UNSUPPORTED", "clone_voice", "百炼音色创建不接收参考文字")
         if (
-            reference_audio.format.sample_rate < 16000
-            or not 5 <= reference_audio.duration_seconds <= 60
+            reference_audio.format.sample_rate < requirements.min_sample_rate
+            or not requirements.min_audio_seconds
+            <= reference_audio.duration_seconds
+            <= requirements.max_audio_seconds
             or len(reference_audio.data) + 44 > 10 * 1024 * 1024
         ):
             raise TTSError(
                 "INVALID_INPUT",
                 "clone_voice",
-                "百炼参考录音须为 5～60 秒、至少 16 kHz、WAV 不超过 10 MB",
+                f"百炼参考录音须为 {requirements.min_audio_seconds}～"
+                f"{requirements.max_audio_seconds} 秒、至少 {requirements.min_sample_rate} Hz、"
+                "转换后的 WAV 不超过 10 MiB",
             )
         try:
             import httpx
@@ -166,7 +247,7 @@ class BailianSynthesisEngine(TTSAdapter):
             data=json.dumps({"voice_id": voice_id, "base_url": self._root_url()}).encode("utf-8"),
         )
 
-    def _enrollment_request(self, client, payload, *, timeout):
+    def _enrollment_request(self, client, payload, *, timeout, operation="clone_voice"):
         """一次创建或查询请求；不重试、不重定向，也不回显服务原文中的敏感数据。"""
         import httpx
 
@@ -178,25 +259,21 @@ class BailianSynthesisEngine(TTSAdapter):
                 timeout=timeout,
             )
         except httpx.TimeoutException:
-            raise TTSError(
-                "REMOTE_TIMEOUT", "clone_voice", "百炼音色请求超时，未自动重试"
-            ) from None
+            raise TTSError("REMOTE_TIMEOUT", operation, "百炼音色请求超时，未自动重试") from None
         except httpx.HTTPError:
-            raise TTSError(
-                "REMOTE_CONNECTION", "clone_voice", "百炼音色请求失败，未自动重试"
-            ) from None
+            raise TTSError("REMOTE_CONNECTION", operation, "百炼音色请求失败，未自动重试") from None
         if not response.is_success:
             code = {401: "REMOTE_AUTH", 403: "REMOTE_AUTH", 429: "REMOTE_RATE_LIMIT"}.get(
                 response.status_code, "REMOTE_SERVICE"
             )
-            raise TTSError(code, "clone_voice", "百炼拒绝音色请求，未自动重试")
+            raise TTSError(code, operation, "百炼拒绝音色请求，未自动重试")
         try:
             output = response.json()["output"]
             if not isinstance(output, dict):
                 raise ValueError
             return output
         except (ValueError, TypeError, KeyError):
-            raise TTSError("PROTOCOL_ERROR", "clone_voice", "百炼音色响应格式无效") from None
+            raise TTSError("PROTOCOL_ERROR", operation, "百炼音色响应格式无效") from None
 
     def _forget(self, stream):
         with self._lock:
@@ -250,6 +327,7 @@ class _BailianSynthesisStream:
         self._state_lock = Lock()
         self._closed = False
         self._cancelled = Event()
+        self._send_expired = Event()
         self._ending = False
         self._finished = False
         self._started = False
@@ -338,7 +416,8 @@ class _BailianSynthesisStream:
 
     def _send(self, action, payload):
         """同步库没有发送超时参数；截止时中断 socket，解除阻塞且不重放。"""
-        expired = Event()
+        # 发送超时会终止整条连接；接收线程也须保留同一失败原因。
+        expired = self._send_expired
 
         def abort_send():
             expired.set()
@@ -346,6 +425,10 @@ class _BailianSynthesisStream:
                 self._ws.socket.shutdown(socket.SHUT_RDWR)
             except OSError:
                 pass
+            finally:
+                # Windows 的 shutdown 不一定解除另一线程的阻塞发送；直接关闭
+                # 底层 socket，不能调用会等待发送锁的 WebSocket.close()。
+                self._ws.socket.close()
 
         timer = Timer(self._config.timeout_seconds, abort_send)
         timer.daemon = True
@@ -401,6 +484,10 @@ class _BailianSynthesisStream:
         except TimeoutError:
             raise
         except Exception:
+            if self._send_expired.is_set():
+                raise TTSError(
+                    "REMOTE_TIMEOUT", "send_text", "百炼合成消息发送超时，连接已中断"
+                ) from None
             raise TTSError("REMOTE_CONNECTION", "read", "百炼在完成确认前断开连接") from None
 
     def _mark_progress(self):

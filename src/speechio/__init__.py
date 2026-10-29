@@ -6,6 +6,7 @@ from speechio.adapters.contracts import (
     STTStream,
     TTSAdapter,
     TTSCapabilities,
+    VoiceCloningRequirements,
 )
 from speechio.audio.formats import AudioFormat
 from speechio.audio.microphone import (
@@ -51,11 +52,13 @@ from speechio.tts.options import SynthesisOptions
 from speechio.tts.stream import SynthesisStream
 from speechio.tts.synthesizer import Synthesizer
 from speechio.tts.timing import TextTiming, WordTiming
-from speechio.tts.voices import Voice
+from speechio.tts.voices import Voice, VoiceInfo
 
 __all__ = [
     "clone_voice",
     "Voice",
+    "VoiceInfo",
+    "VoiceCloningRequirements",
     "TranscriptionOptions",
     "STTRuntime",
     "SessionTranscriptionRequest",

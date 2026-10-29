@@ -1,17 +1,94 @@
 """本机 WebSocket 模拟百炼服务，SDK 执行真实协议流程。"""
 
 import json
+import socket
 import unittest
-from threading import Event
+from threading import Event, Thread
 from unittest.mock import patch
 
 from websockets.exceptions import ConnectionClosed
+from websockets.sync.client import reconnect
 
 from speechio import RemoteModelConfig, SynthesisOptions, Synthesizer, TTSError, synthesize
 from tests.runtime.test_remote import websocket_service
 
 
 class BailianSynthesisTests(unittest.TestCase):
+    def test_send_timeout_releases_blocked_socket(self):
+        """真实连接停止接收时，发送须自行超时；测试清理不能替代产品解除阻塞。"""
+        release = Event()
+        completed = Event()
+        connections = []
+        outcome = []
+
+        class SmallBufferConnection(reconnect):
+            def __init__(self, *args, **kwargs):
+                # 禁用压缩并缩小缓冲，确保合法长度的文本足以阻塞真实发送。
+                kwargs["compression"] = None
+                super().__init__(*args, **kwargs)
+
+            def __enter__(self):
+                ws = super().__enter__()
+                ws.socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 2048)
+                connections.append(ws)
+                return ws
+
+        def service(ws):
+            ws.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 2048)
+            run = json.loads(ws.recv())
+            ws.send(
+                json.dumps(
+                    {"header": {"task_id": run["header"]["task_id"], "event": "task-started"}}
+                )
+            )
+            release.wait()
+
+        with websocket_service(
+            service, max_queue=1, ping_interval=None, compression=None, close_timeout=0.2
+        ) as url:
+            synth = Synthesizer(
+                RemoteModelConfig(
+                    provider="bailian",
+                    model="qwen-audio-3.1-tts-flash",
+                    api_key="test-key",
+                    base_url=url,
+                    timeout_seconds=0.2,
+                )
+            )
+            stream = sender = None
+            try:
+                with patch("websockets.sync.client.reconnect", SmallBufferConnection):
+                    stream = synth.open_stream(options=SynthesisOptions(voice="test"))
+
+                    def send():
+                        try:
+                            stream.send_text("a" * 200000)
+                        except TTSError as exc:
+                            outcome.append(exc.code)
+                        finally:
+                            completed.set()
+
+                    sender = Thread(target=send, daemon=True)
+                    sender.start()
+                    self.assertTrue(completed.wait(2), "发送超时后仍未退出")
+                    self.assertEqual(outcome, ["REMOTE_TIMEOUT"])
+                    self.assertEqual(len(connections), 1, "超时后不应重连重发")
+                    with self.assertRaises(TTSError) as caught:
+                        stream.read(timeout=1)
+                    self.assertEqual(caught.exception.code, "REMOTE_TIMEOUT")
+                self.assertNotEqual(stream.close(timeout=2).status, "pending")
+                self.assertNotEqual(synth.close(timeout=2).status, "pending")
+            finally:
+                # 旧实现失败时也能回收测试线程；断言必须发生在强制断开之前。
+                for ws in connections:
+                    ws.socket.close()
+                release.set()
+                if sender is not None:
+                    sender.join(2)
+                if stream is not None:
+                    stream.close(timeout=2)
+                synth.close(timeout=2)
+
     def test_cancel_sends_provider_directive_and_closes_connection(self):
         commands = []
         received = Event()

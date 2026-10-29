@@ -2,6 +2,7 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import Literal
 
 from speechio.errors import STTError, TTSError
 from speechio.stt.results import Transcript
@@ -20,6 +21,8 @@ class STTCapabilities:
     word_timestamps: bool = False
     file_transcription: bool = False
     url_transcription: bool = False
+    languages: tuple[str, ...] | None = None
+    devices: tuple[str, ...] | None = None
 
     def __post_init__(self):
         if (
@@ -135,6 +138,16 @@ def validate_engine(engine):
 
 
 @dataclass(frozen=True, kw_only=True)
+class VoiceCloningRequirements:
+    """参考录音要求；None 表示未声明，不表示没有限制。"""
+
+    min_audio_seconds: float | None = None
+    max_audio_seconds: float | None = None
+    min_sample_rate: int | None = None
+    reference_text: Literal["required", "optional", "unsupported"] | None = None
+
+
+@dataclass(frozen=True, kw_only=True)
 class TTSCapabilities:
     """准备前即可查询的合成能力，不根据模型名字猜测。"""
 
@@ -148,6 +161,12 @@ class TTSCapabilities:
     sample_rates: tuple[int, ...] | None = None
     voice_cloning: bool = False
     text_timestamps: tuple[str, ...] = ()
+    languages: tuple[str, ...] | None = None
+    devices: tuple[str, ...] | None = None
+    voice_required: bool | None = None
+    default_voice: str | None = None
+    speed_range: tuple[float, float] | None = None
+    cloning_requirements: VoiceCloningRequirements | None = None
 
     def __post_init__(self):
         if (
@@ -202,6 +221,10 @@ class TTSAdapter:
     def clone_voice(self, reference_audio, *, reference_text=None):
         """从参考录音提取可独立保存的声音数据。"""
         raise TTSError("CAPABILITY_UNSUPPORTED", "clone_voice", "适配器不支持声音克隆")
+
+    def list_voices(self, *, include_account=False):
+        """列举当前模型的音色；只有显式请求时才查询云端已创建音色。"""
+        raise TTSError("CAPABILITY_UNSUPPORTED", "list_voices", "适配器未实现音色查询")
 
     def close(self):
         """释放引擎资源；不由单个流释放共享引擎。"""

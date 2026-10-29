@@ -227,6 +227,9 @@ class Session:
         self._config = config
         realtime_mode = runtime.realtime.accurate_config.mode if runtime.realtime else None
         self._completion_source = config.resolve_completion_source(realtime_mode)
+        # 原生流可直接交付最终正文；只有实际选择整段完成时才要求整段能力。
+        if self._completion_source == "final" and not runtime.capabilities.transcription:
+            raise STTError("BACKEND_INCOMPATIBLE", "create_session", "所选完成策略需要整段识别能力")
         self._session_id = uuid4().hex
         self._generation = 0
         self._next_unit = 1

@@ -16,6 +16,17 @@ _MAGIC = b"SPVOICE1"
 
 
 @dataclass(frozen=True, kw_only=True)
+class VoiceInfo:
+    """可选音色的说明；id 可直接传给 SynthesisOptions.voice。"""
+
+    id: str
+    name: str
+    languages: tuple[str, ...] | None = None
+    instruction_control: bool | None = None
+    text_timestamps: tuple[str, ...] | None = None
+
+
+@dataclass(frozen=True, kw_only=True)
 class Voice:
     """适配器生成的独立声音数据；使用者通过 clone_voice 或 load 获取。"""
 

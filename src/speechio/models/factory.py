@@ -44,20 +44,60 @@ def create_engine(config):
 
 # 每个已支持模型明确声明能力；不按名称后缀猜测未知模型的协议。
 LOCAL_CAPABILITIES = {
-    "whisper": {"snapshot": True, "word_timestamps": True},
-    "nemotron": {"streaming": True},
+    "whisper": {"snapshot": True, "word_timestamps": True, "devices": ("cpu", "gpu")},
+    "nemotron": {"streaming": True, "devices": ("cpu",)},
 }
+# 百炼 3.1 三个已适配识别型号共用这份语言清单；不是所有远程模型的默认值。
+# 核对日期：2026-10-29；https://help.aliyun.com/zh/model-studio/asr-model
+# 语言代码：https://help.aliyun.com/en/model-studio/qwen-audio-asr-streaming-java-sdk
+QWEN_AUDIO_ASR_LANGUAGES = (
+    "zh",
+    "en",
+    "ja",
+    "ko",
+    "vi",
+    "th",
+    "id",
+    "ms",
+    "tl",
+    "hi",
+    "ar",
+    "fr",
+    "de",
+    "es",
+    "pt",
+    "ru",
+    "it",
+    "nl",
+    "sv",
+    "da",
+    "fi",
+    "no",
+    "el",
+    "pl",
+    "cs",
+    "hu",
+    "ro",
+    "bg",
+    "hr",
+    "sk",
+)
 REMOTE_MODELS = {
     ("bailian", "qwen-audio-3.1-asr-flash-filetrans"): {
         "transcription": False,
         "file_transcription": True,
         "url_transcription": True,
         "word_timestamps": True,
+        "languages": QWEN_AUDIO_ASR_LANGUAGES,
     },
-    ("bailian", "qwen-audio-3.1-asr-flash"): {"word_timestamps": True},
+    ("bailian", "qwen-audio-3.1-asr-flash"): {
+        "word_timestamps": True,
+        "languages": QWEN_AUDIO_ASR_LANGUAGES,
+    },
     ("bailian", "qwen-audio-3.1-asr-flash-streaming"): {
         "streaming": True,
         "word_timestamps": True,
+        "languages": QWEN_AUDIO_ASR_LANGUAGES,
     },
 }
 
@@ -81,7 +121,9 @@ def engine_capabilities(config):
         key = (config.provider, config.model)
         if key not in REMOTE_MODELS:
             raise STTError("BACKEND_INCOMPATIBLE", "configure", "尚未适配该远程服务或模型")
-        return STTCapabilities(engine=config.provider, model=config.model, **REMOTE_MODELS[key])
+        return STTCapabilities(
+            engine=config.provider, model=config.model, devices=(), **REMOTE_MODELS[key]
+        )
     raise STTError("INVALID_CONFIGURATION", "configure", "需要本地或远程模型配置")
 
 

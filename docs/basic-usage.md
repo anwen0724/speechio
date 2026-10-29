@@ -2,7 +2,7 @@
 
 speechio 是一个 Python 语音处理库。你可以把它导入自己的程序，用本地模型或云端服务将音频转换为文字、将文字转换为音频。你也可以克隆声音，并重复使用克隆得到的音色。
 
-本文适用于 **speechio 0.2.0**。示例面向在其他项目中安装和使用 speechio 的开发者，不需要运行 speechio 的 Web 示例应用。
+本文描述当前仓库的公开接口。示例面向在其他项目中安装和使用 speechio 的开发者，不需要运行 speechio 的 Web 示例应用。本文新增的能力说明字段和 `list_voices()` 尚未发布到 PyPI，使用已发布版本时暂不可调用这些新接口。
 
 ## 1. speechio 提供什么
 
@@ -26,6 +26,8 @@ speechio 负责音频处理、模型调用及任务资源管理。对话回复�
 | 合成一次语音 | `synthesize()` |
 | 多次合成或流式合成 | `Synthesizer` |
 | 独立克隆声音 | `clone_voice()` 或 `Synthesizer.clone_voice()` |
+| 查询已选模型的能力 | 处理对象的 `capabilities` 属性 |
+| 查询已选合成模型的可用音色 | `Synthesizer.list_voices()` |
 
 ## 2. 安装与运行环境
 
@@ -336,6 +338,101 @@ def recognize_turn(chunks, asr_config):
 
 ## 5. 将文字转换为音频
 
+### 查询能力与选择音色
+
+创建 `Synthesizer(config)` 时就选定了模型。随后可以查询它的能力和音色，不需要再次传入模型配置，也不需要先调用 `prepare()`。
+
+```python
+from speechio import LocalModelConfig, SynthesisOptions, Synthesizer
+
+tts = Synthesizer(LocalModelConfig(
+    adapter="kokoro",
+    model_path="models/kokoro-v1.1-zh",
+))
+try:
+    print("支持的设备：", tts.capabilities.devices)
+    print("支持追加文字：", tts.capabilities.text_streaming)
+    voices = tts.list_voices()
+    for voice in voices:
+        print(voice.id, voice.name, voice.languages)
+
+    # 本例选择中文音色；实际应用可以把列表交给用户选择。
+    selected = next((v for v in voices if v.languages and "zh" in v.languages), None)
+    if selected is not None:
+        tts.synthesize(
+            "你好，欢迎使用语音合成。",
+            options=SynthesisOptions(voice=selected.id, language="zh"),
+        ).save("hello.wav")
+finally:
+    tts.close()
+```
+
+`capabilities` 不联网、不下载、不加载模型权重；本地适配器可能读取模型的小型配置文件。查询结果描述适配器与所选模型支持的功能，不检查当前电脑是否装好依赖、模型文件是否齐全、GPU 是否可用，或密钥是否有效。进入 `with Synthesizer(...)` 会执行 `prepare()`；只查询时使用上例的创建和关闭方式。
+
+`Transcriber.capabilities` 和 `STTRuntime.capabilities` 返回识别能力；`Synthesizer.capabilities` 返回合成能力。已有的整段、流式、采样率、时间戳等字段保持原有含义，新增字段如下：
+
+| 字段 | 适用对象 | 默认值 | 含义 |
+| --- | --- | --- | --- |
+| `languages` | STT、TTS | `None` | 已声明的语言值；可传给该适配器的语言参数 |
+| `devices` | STT、TTS | `None` | 适配器支持的执行设备，如 `("cpu", "gpu")`；云端为 `()`，由服务安排设备 |
+| `voice_required` | TTS | `None` | 是否要求指定音色；直接提供参考音频时，由克隆步骤提供音色 |
+| `default_voice` | TTS | `None` | 适配器声明的默认音色 ID；speechio 不自动选择列表第一项 |
+| `speed_range` | TTS | `None` | 语速倍率的闭区间，如 `(0.5, 2.0)` |
+| `cloning_requirements` | TTS | `None` | `VoiceCloningRequirements`，描述参考录音要求 |
+
+**这些新增说明字段中的 `None` 表示未知或未声明，不能理解为不支持、无限制或可随意省略。** 判断是否支持克隆仍看 `voice_cloning`；判断语速控制仍看 `speed_control`。当前三个内置 TTS 适配器均要求提供音色，未声明默认音色。
+
+语言值遵循对应适配器的接口。例如，Kokoro 返回 `zh`、`en`、`en-gb`；Qwen Base 从所选模型的 `config.json` 读取语言，中文和英文使用 `zh`、`en`，其他语言使用模型接受的名称，如 `japanese`。不能确定当前本地识别模型的语言范围时，返回 `None`。百炼 TTS 的语言还取决于音色，应查看具体音色说明。
+
+`VoiceCloningRequirements` 的四个字段均默认 `None`：`min_audio_seconds`、`max_audio_seconds` 表示参考录音时长范围，`min_sample_rate` 表示最低采样率，`reference_text` 为 `"required"`、`"optional"` 或 `"unsupported"`，分别表示参考文字必填、可选、不接受。它描述当前适配器的要求；提供 WAV、M4A 等文件时，speechio 会先解码，不能把服务端接收 WAV 理解为调用方只能提供 WAV。
+
+### 音色列表返回什么
+
+`list_voices(*, include_account=False)` 返回只读 `VoiceInfo` 对象组成的元组。默认只读取本地信息，不联网：
+
+| 适配器 | 返回内容 |
+| --- | --- |
+| Kokoro | 当前模型 `voices/` 目录中的音色文件；不加载文件里的权重。目录无法读取时报错 |
+| Qwen3-TTS Base | `()`；Base 模型没有预设音色，需要使用克隆得到的 `Voice` |
+| 百炼 | 随 speechio 发布的官方预设音色目录，按当前模型和服务地域筛选 |
+
+每个 `VoiceInfo` 包含以下字段：
+
+| 字段 | 含义 |
+| --- | --- |
+| `id` | 直接传给 `SynthesisOptions(voice=...)` 的音色 ID |
+| `name` | 展示名称；没有名称时使用 ID |
+| `languages` | 已知语言元组；`None` 表示未声明完整语言范围 |
+| `instruction_control` | 是否支持风格指令；`None` 表示未知 |
+| `text_timestamps` | 支持的文字时间信息级别，如 `("sentence", "word")`；`()` 表示不支持，`None` 表示未知 |
+
+后面三个字段默认 `None`。音色是否可用与模型、地域和服务状态有关；列举本地文件不等于验证文件完整性。音色列表也不限制手动输入 ID：供应商新增音色后，即使 speechio 的内置目录尚未更新，仍可直接传入有效 ID 合成。
+
+百炼默认配置对应北京；`dashscope-intl.aliyuncs.com` 对应新加坡。两地的业务空间专属域名也会按地域筛选。自定义代理域名无法确定地域时，`list_voices()` 报 `CAPABILITY_UNSUPPORTED`，不会猜测可用音色；已有指定 ID 合成的方式不受影响。目录依据[官方音色说明](https://help.aliyun.com/zh/model-studio/qwen-audio-tts-voice-list)，核对日期为 2026-10-29，运行时不抓取该网页。
+
+如果还要查询当前密钥可访问的云端已创建音色，显式传入 `include_account=True`：
+
+```python
+import os
+from speechio import RemoteModelConfig, Synthesizer
+
+tts = Synthesizer(RemoteModelConfig(
+    provider="bailian",
+    model="qwen-audio-3.1-tts-flash",
+    api_key=os.environ["DASHSCOPE_API_KEY"],
+))
+try:
+    voices = tts.list_voices(include_account=True)
+    for voice in voices:
+        print(voice.id, voice.name)
+finally:
+    tts.close()
+```
+
+结果是一个统一列表，包含预设音色和属于当前模型、状态可用的云端已创建音色。查询使用当前配置的服务地址和密钥，内部处理分页及模型核对，不创建或删除音色，也不发起语音合成。权限错误、网络错误或响应错误会抛出 `TTSError`，不会伪装成空列表或只返回预设音色。云端没有已创建音色时，正常返回预设列表。
+
+本地适配器不访问云端，`include_account=True` 不改变结果。应用自行保存的 `.voice` 文件不在此列表中；应用决定保存位置，通过 `Voice.load()` 读取并传给合成接口。没有实现音色查询的自定义适配器会报 `CAPABILITY_UNSUPPORTED`，其原有合成方式仍可使用。
+
 ### 完整生成
 
 以下示例要求已安装 `tts-kokoro`，并下载 Kokoro 模型及音色：
@@ -554,7 +651,7 @@ Qwen 省略 `reference_text` 时只提取声音特征；填写准确原文时还
 - 本地 Qwen 的 `Voice` 保存声音特征和模型需要的参考信息。再次使用不需要原参考录音，但仍需要兼容的模型文件。
 - 云端 `Voice` 保存服务端音色 ID、模型和服务地址，不包含密钥或原录音。使用时仍需联网并提供有权限的密钥；删除服务端音色后，本地文件不能恢复它。
 
-`Voice` 不是跨模型通用格式。应用负责保存位置、音色显示名称、用户归属和音色列表。
+`Voice` 不是跨模型通用格式。应用负责保存位置、用户自定义的音色名称、用户归属和本地 `.voice` 文件列表。查询模型预设音色或云端已创建音色使用 `Synthesizer.list_voices()`。
 
 ### 使用百炼克隆
 
@@ -725,6 +822,8 @@ class MyTTSAdapter(TTSAdapter):
 ```
 
 将实例传给 `Synthesizer.from_adapter(MyTTSAdapter(generate))`，即可使用完整合成入口。要支持音频流、追加文本或克隆，分别实现契约中的对应方法，并在 `TTSCapabilities` 中声明。只有完整生成能力时，不应声明流式能力。
+
+自定义适配器可按实际支持情况填写新增能力说明字段。不填写时保持 `None`。要支持音色查询，实现 `list_voices(self, *, include_account=False)`，返回 `VoiceInfo` 序列；查询不能调用 `prepare()` 加载模型。默认只读取本地资料，只有 `include_account=True` 才可查询云端已创建音色。没有账户概念的适配器忽略这个开关。
 
 两个最小示例都包装了外部函数，因此没有自行持有模型资源。实际适配器如果创建模型或连接，应在 `prepare()` 中准备，在 `close()` 中释放。处理对象接管适配器的生命周期；不要把同一实例交给多个独立的处理对象。
 

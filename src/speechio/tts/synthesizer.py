@@ -8,7 +8,7 @@ from speechio.audio.results import AudioResult
 from speechio.errors import TTSError
 from speechio.resources import CloseError, CloseResult
 from speechio.tts.options import SynthesisOptions, validate_seconds
-from speechio.tts.voices import Voice, read_reference_audio
+from speechio.tts.voices import Voice, VoiceInfo, read_reference_audio
 
 
 class Synthesizer:
@@ -54,6 +54,7 @@ class Synthesizer:
         self._busy = False
         self._active = None
         self._streams = []
+        self._failed_backend = None
         self._closing = False
         self._cleanup = None
         self._closed = Event()
@@ -62,6 +63,22 @@ class Synthesizer:
     @property
     def capabilities(self):
         return self._capabilities
+
+    def list_voices(self, *, include_account=False) -> tuple[VoiceInfo, ...]:
+        """查询当前模型的可选音色，不准备模型；查询失败不返回不完整列表。"""
+        if type(include_account) is not bool:
+            raise TTSError("INVALID_INPUT", "list_voices", "include_account 必须为布尔值")
+        method = getattr(self._engine, "list_voices", None)
+        if not callable(method):
+            raise TTSError("CAPABILITY_UNSUPPORTED", "list_voices", "适配器未实现音色查询")
+        self._begin()
+        try:
+            voices = tuple(method(include_account=include_account))
+            if any(not isinstance(voice, VoiceInfo) for voice in voices):
+                raise TTSError("PROTOCOL_ERROR", "list_voices", "适配器须返回 VoiceInfo 列表")
+            return voices
+        finally:
+            self._end()
 
     def _begin(self):
         """在加载和输入副作用之前占用对象；流任务保持占用至读尽或关闭。"""
@@ -235,22 +252,46 @@ class Synthesizer:
             return stream
         except BaseException as exc:
             if backend is not None:
-                try:
-                    backend.cancel()
-                    backend.close()
-                except Exception:
-                    exc.add_note("创建合成流失败后，后端清理未成功")
+                # 未创建出公开流的后端仍归本对象所有；停止接纳新任务，
+                # 由后台等待其释放，再关闭共享引擎，不阻塞原错误的交付。
+                self._failed_backend = backend
+                self.close(timeout=0)
             if isinstance(exc, (TTSError, KeyboardInterrupt, SystemExit)):
                 raise
             raise TTSError("SYNTHESIS_FAILED", "open_stream", "合成流创建失败") from None
         finally:
             self._end()
 
+    def _release_failed_backend(self):
+        """创建失败的流也须独立取消、关闭，并等到 pending 得到最终结果。"""
+        backend = self._failed_backend
+        if backend is None:
+            return []
+        errors = []
+        try:
+            backend.cancel()
+        except BaseException:
+            errors.append(CloseError("CLOSE_FAILED", "cancel", "后端取消请求失败"))
+        try:
+            result = backend.close()
+            while isinstance(result, CloseResult) and result.status == "pending":
+                self._closed.wait(0.05)
+                result = backend.close()
+            if isinstance(result, CloseResult):
+                errors.extend(result.errors)
+                if result.status != "ok" and not result.errors:
+                    errors.append(CloseError("CLOSE_FAILED", "close_stream", "合成流释放失败"))
+        except BaseException:
+            errors.append(CloseError("CLOSE_FAILED", "close_stream", "合成流释放失败"))
+        self._failed_backend = None
+        return errors
+
     def _release(self):
         errors = []
         try:
             with self._condition:
                 self._condition.wait_for(lambda: not self._busy)
+            errors.extend(self._release_failed_backend())
             for stream in self._streams:
                 stream.close(timeout=0)
             for stream in self._streams:
