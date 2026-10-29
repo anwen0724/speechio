@@ -543,9 +543,18 @@ def synthesize_text_parts(text_parts, tts_config, voice, output_path):
 | --- | --- |
 | `None`（默认） | 只获取音频，保留原有用法 |
 | `"sentence"` | 每段文字对应的音频起止位置 |
-| `"word"` | 段落位置，以及供应商返回的字或词的位置 |
+| `"word"` | 段落位置，以及供应商或本地模型提供的字词位置 |
 
-当前只有百炼适配器的 `qwen-audio-3.1-tts-flash` 接通这项能力。调用前可查看 `synthesizer.capabilities.text_timestamps`；空元组表示不支持，传入不支持的级别会在发起合成前报 `CAPABILITY_UNSUPPORTED`。本地 Qwen、Kokoro 的原有合成方式不受影响。
+目前的支持范围如下：
+
+| 模型 | 句段时间 `sentence` | 字词时间 `word` | 返回时机 |
+| --- | --- | --- | --- |
+| 百炼 `qwen-audio-3.1-tts-flash` | 支持 | 取决于音色 | 句子开始信息先于音频；字词信息可能随后更新 |
+| Kokoro 82M v1.1-zh，中文 `zh` | 支持 | 不支持 | 每个片段生成完后，先返回该段时间，再返回该段音频 |
+| Kokoro 82M v1.1-zh，英文 `en` / `en-gb` | 支持 | 支持，由模型预测的发音时长换算 | 每个片段生成完后，先返回该段及词时间，再返回该段音频 |
+| Qwen3-TTS Base 0.6B / 1.7B | 不支持 | 不支持 | — |
+
+调用前可查看 `synthesizer.capabilities.text_timestamps`；空元组表示不支持。该字段列出模型支持的级别，不保证所有语言和音色组合都支持。例如，Kokoro 声明 `("sentence", "word")`，但中文请求 `word` 仍会报 `CAPABILITY_UNSUPPORTED`，不会自动降为句段时间。Kokoro 音色列表中的时间能力按该音色的默认语言列出；显式指定 `language` 时，以本次语言为准。
 
 使用 `stream.read_event(timeout=None)` 读取一个事件，或使用 `stream.events()` 逐个读取。返回值有两种：
 
@@ -556,13 +565,13 @@ def synthesize_text_parts(text_parts, tts_config, voice, output_path):
 
 | 字段 | 含义 |
 | --- | --- |
-| `segment_index` | 本次任务内从 0 开始的段编号，由供应商分句决定，与 `send_text()` 次数无关 |
+| `segment_index` | 本次任务内从 0 开始的段编号，由供应商分句或本地模型的生成片段决定，与 `send_text()` 次数无关 |
 | `text` | 该段的文字 |
 | `start_seconds` | 该段音频的开始位置 |
 | `end_seconds` | 该段音频的结束位置；尚未结束时为 `None` |
-| `words` | `WordTiming` 元组；尚未返回或供应商未提供时为 `None` |
+| `words` | `WordTiming` 元组；未请求、尚未返回或供应商未提供时为 `None` |
 
-`WordTiming` 包含 `text`、`start_seconds`、`end_seconds`。同一个 `segment_index` 可以多次返回，应用用新事件更新该段信息。句级范围按实际 PCM 长度确定，可能包含停顿；字级范围直接使用供应商的结果，不按文字长度估算。
+`WordTiming` 包含 `text`、`start_seconds`、`end_seconds`。同一个 `segment_index` 可以多次返回，应用用新事件更新该段信息。句段范围按实际 PCM 长度确定，可能包含停顿；字词范围来自供应商数据或本地模型的发音时长，不按文字长度均分。
 
 下面示例接收已经创建的百炼 `tts_config`。`on_event` 由应用实现，将音频交给播放器，将文字时间交给字幕逻辑：
 
@@ -599,9 +608,29 @@ def synthesize_with_timings(text_parts, tts_config, on_event):
 
 输入和读取并行进行；`on_event` 不应等待音频实际播放完再返回，否则会阻塞后续读取。应用根据播放器实际播放到的位置显示字幕，而不是收到文字事件就立即显示。
 
-一句话的开始事件先于对应音频交付。字级信息可能随合成逐步补全，也可能到句末才完整返回。因此，无缓冲立即播放时不能保证每个字的时间都提前可用；需要精确逐字显示的应用应自行安排播放缓冲。speechio 不延迟播放、不补造缺失的时间，也不额外调用识别模型。
+百炼一句话的开始事件先于对应音频交付。字级信息可能随合成逐步补全，也可能到句末才完整返回。因此，无缓冲立即播放时不能保证每个字的时间都提前可用；需要精确逐字显示的应用应自行安排播放缓冲。speechio 不延迟播放、不补造缺失的时间，也不额外调用识别模型。
 
 音色支持情况以[百炼音色列表](https://help.aliyun.com/zh/model-studio/qwen-audio-tts-voice-list)为准。官方声明支持复刻音色；本次实际验证使用预设音色 `yuxiaoyun_v3.1`，未验证克隆音色。其他地域、音色或模型不能据此视为已实测。
+
+Kokoro 可以一次传入整段文字，通过 `stream()` 逐段取得时间和音频。它仍不支持 `open_stream()` 持续追加文字。以下示例使用已下载的本地模型：
+
+```python
+from speechio import LocalModelConfig, SynthesisOptions, Synthesizer
+
+config = LocalModelConfig(adapter="kokoro", model_path="models/kokoro-v1.1-zh")
+options = SynthesisOptions(voice="af_maple", language="en", text_timestamps="word")
+
+with Synthesizer(config) as synthesizer:
+    with synthesizer.stream("Hello! Welcome to speechio.", options=options) as stream:
+        for event in stream.events():
+            on_event(event)  # 应用分别处理 AudioChunk 和 TextTiming
+```
+
+中文可改用 `voice="zf_001", language="zh", text_timestamps="sentence"`。在异步应用中使用 `await synthesizer.stream_async(...)` 创建流，再循环 `await stream.read_event_async()`，直到返回 `None`。
+
+Kokoro 的“段”是实际生成的文本片段，长句因模型容量拆分时会返回多个 `TextTiming`。每段结束位置以实际采样数计算，后续段和词的时间累计到本次输出音频开头。每段生成完即可提供对应信息，无须等待全文完成，但第一段推理期间仍需等待。
+
+英文词时间来自同次合成的预测发音时长，反映模型生成安排，不是人工校准的精确发音边界。词文本保留原文中的数字、缩写和标点；标点也可能单独返回一项。无法把原文、音素和时长对应起来时会报 `PROTOCOL_ERROR`，不会补造词时间。只需分段字幕时可使用 `sentence`。
 
 `stream(text, options=...)` 同样可以读取事件。完整生成 `synthesize()` 将最终段信息放在 `AudioResult.text_timings` 中，默认是空元组；它收集同一次合成的结果，不再发起第二次合成。`AudioResult.save()` 仍只保存 WAV 音频，文字时间由应用另行保存。
 

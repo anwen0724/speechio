@@ -4,12 +4,15 @@ import re
 from pathlib import Path
 from threading import Event
 
+import numpy as np
+
 from speechio.adapters.contracts import TTSAdapter, TTSCapabilities
 from speechio.adapters.local.tts import torch_device, validate_local_config, waveform_result
 from speechio.audio.formats import AudioFormat
 from speechio.audio.results import AudioChunk, AudioResult
 from speechio.errors import TTSError
 from speechio.models.files import check_tts_model_files
+from speechio.tts.timing import TextTiming, WordTiming
 from speechio.tts.voices import VoiceInfo
 
 
@@ -32,6 +35,51 @@ def _english_g2p(folder, british=False):
     return LocalG2P()
 
 
+def _word_timings(text, phonemes, tokens, pred_dur, sample_offset, sample_end):
+    """把同次推理的音素时长对应到英文原词，不按字数均分音频。"""
+    if (
+        not tokens
+        or pred_dur is None
+        or "".join(token.text + token.whitespace for token in tokens).strip() != text.strip()
+        or "".join((token.phonemes or "") + token.whitespace for token in tokens) != phonemes
+        or any(not token.phonemes and any(c.isalnum() for c in token.text) for token in tokens)
+    ):
+        raise TTSError("PROTOCOL_ERROR", "synthesize", "Kokoro 未返回可对应原文的英文词时间数据")
+    durations = pred_dur.detach().cpu().numpy()
+    # 模型可能过滤不在词表中的音素；这种情况下不能沿用原音素下标。
+    if (
+        durations.ndim != 1
+        or len(durations) != len(phonemes) + 2
+        or not np.isfinite(durations).all()
+        or (durations <= 0).any()
+    ):
+        raise TTSError("PROTOCOL_ERROR", "synthesize", "Kokoro 发音时长与输入音素不对应")
+
+    # Kokoro 一个预测时长单位对应 600 个采样（24 kHz 下为 25 ms）。
+    # 沿用上游时间定位规则：起始标记扣除 3 个单位，词间空白由相邻词各占一半。
+    # 用采样位置累计，避免多个片段的浮点加法产生时间漂移。
+    positions = np.concatenate(([0], np.cumsum(durations[1:-1]))) * 600
+    positions += sample_offset + max(0, durations[0] - 3) * 600
+    words = []
+    index = 0
+    previous_space = 0
+    for token in tokens:
+        end = index + len(token.phonemes or "")
+        space_end = end + len(token.whitespace)
+        space_samples = positions[space_end] - positions[end]
+        if token.phonemes:
+            start_sample = positions[index] - previous_space / 2
+            end_sample = positions[end] + space_samples / 2
+            if not sample_offset <= start_sample <= end_sample <= sample_end:
+                raise TTSError("PROTOCOL_ERROR", "synthesize", "Kokoro 词时间超出生成音频范围")
+            words.append(
+                WordTiming(token.text, float(start_sample / 24000), float(end_sample / 24000))
+            )
+        index = space_end
+        previous_space = space_samples
+    return tuple(words)
+
+
 class KokoroAdapter(TTSAdapter):
     """逐段生成音频；不接收持续文字，不支持声音克隆。"""
 
@@ -45,6 +93,7 @@ class KokoroAdapter(TTSAdapter):
         languages=("zh", "en", "en-gb"),
         devices=("cpu", "gpu"),
         voice_required=True,
+        text_timestamps=("sentence", "word"),
     )
 
     def __init__(self, config):
@@ -72,7 +121,9 @@ class KokoroAdapter(TTSAdapter):
                 name=path.stem,
                 languages={"a": ("en",), "b": ("en-gb",), "z": ("zh",)}.get(path.stem[0]),
                 instruction_control=False,
-                text_timestamps=(),
+                text_timestamps=("sentence",)
+                if path.stem.startswith("z")
+                else ("sentence", "word"),
             )
             for path in paths
             if path.is_file()
@@ -115,6 +166,10 @@ class KokoroAdapter(TTSAdapter):
             raise TTSError(
                 "CAPABILITY_UNSUPPORTED", "synthesize", "Kokoro 首版支持 zh / en / en-gb"
             )
+        if options.text_timestamps == "word" and language == "zh":
+            raise TTSError(
+                "CAPABILITY_UNSUPPORTED", "synthesize", "Kokoro 中文只支持 sentence 时间信息"
+            )
         return language
 
     def _phonemizer(self, language):
@@ -143,9 +198,9 @@ class KokoroAdapter(TTSAdapter):
             self._voices[name] = torch.load(str(path), map_location="cpu", weights_only=True)
         return self._voices[name]
 
-    def _phonemes(self, text, g2p, limit):
-        """按实际音素长度再分段，避免上游对长句静默截断。"""
-        phonemes = g2p(text)[0]
+    def _segments(self, text, g2p, limit):
+        """按音素容量分段，保留每段原文和分词，避免上游静默截断。"""
+        phonemes, tokens = g2p(text)
         if not phonemes:
             if any(char.isalnum() for char in text):
                 raise TTSError("INVALID_INPUT", "synthesize", "这段文字未能转换为发音")
@@ -153,7 +208,7 @@ class KokoroAdapter(TTSAdapter):
         if "❓" in phonemes:
             raise TTSError("INVALID_INPUT", "synthesize", "文字中有无法转换的发音")
         if len(phonemes) <= limit:
-            yield phonemes
+            yield text, phonemes, tokens
             return
         if len(text) < 2:
             raise TTSError("INVALID_INPUT", "synthesize", "单个字符的发音超过模型容量")
@@ -162,30 +217,60 @@ class KokoroAdapter(TTSAdapter):
             m.end() for m in re.finditer(r"[\s，。！？,;!?]", text) if 0 < m.end() < len(text)
         ]
         split = min(boundaries, key=lambda i: abs(i - midpoint)) if boundaries else midpoint
-        yield from self._phonemes(text[:split], g2p, limit)
-        yield from self._phonemes(text[split:], g2p, limit)
+        yield from self._segments(text[:split], g2p, limit)
+        yield from self._segments(text[split:], g2p, limit)
 
     def _generate(self, text, options):
         from speechio._async import check_cancelled
 
         pack = self._voice(options.voice)
-        g2p = self._phonemizer(self._language(options))
+        language = self._language(options)
+        g2p = self._phonemizer(language)
         limit = min(self._model.context_length - 2, len(pack))
+        sample_offset = 0
+        segment_index = 0
         # 英文句点保留给 G2P 解释小数、缩写；超长输入再按词边界拆分。
         for sentence in re.findall(r"[^。！？!?\n]+[。！？!?]*|[。！？!?]+", text):
-            for phonemes in self._phonemes(sentence, g2p, limit):
+            for segment_text, phonemes, tokens in self._segments(sentence, g2p, limit):
                 check_cancelled()
                 output = self._model(
                     phonemes, pack[len(phonemes) - 1], options.speed, return_output=True
                 )
                 check_cancelled()
-                yield waveform_result(output.audio.detach().cpu().numpy(), 24000)
+                audio = waveform_result(output.audio.detach().cpu().numpy(), 24000)
+                sample_end = sample_offset + len(audio.data) // 2
+                if options.text_timestamps is not None:
+                    words = None
+                    if options.text_timestamps == "word":
+                        words = _word_timings(
+                            segment_text,
+                            phonemes,
+                            tokens,
+                            getattr(output, "pred_dur", None),
+                            sample_offset,
+                            sample_end,
+                        )
+                    timing = TextTiming(
+                        segment_index=segment_index,
+                        text=segment_text,
+                        start_seconds=sample_offset / 24000,
+                        end_seconds=sample_end / 24000,
+                        words=words,
+                    )
+                    audio = AudioResult(audio.data, audio.format, (timing,))
+                yield audio
+                sample_offset = sample_end
+                segment_index += 1
 
     def synthesize(self, text, *, options):
-        blocks = [audio.data for audio in self._generate(text, options)]
+        blocks = []
+        timings = []
+        for audio in self._generate(text, options):
+            blocks.append(audio.data)
+            timings.extend(audio.text_timings)
         if not blocks:
             raise TTSError("INVALID_INPUT", "synthesize", "文字没有可合成内容")
-        return AudioResult(b"".join(blocks), AudioFormat(sample_rate=24000))
+        return AudioResult(b"".join(blocks), AudioFormat(sample_rate=24000), tuple(timings))
 
     def stream(self, text, *, options):
         self._voice(options.voice)
@@ -210,6 +295,13 @@ class KokoroStream:
         self._pending = b""
 
     def read(self, *, timeout=None):
+        """原有音频读取跳过时间信息，保持音频块顺序不变。"""
+        while isinstance(event := self.read_event(timeout=timeout), TextTiming):
+            pass
+        return event
+
+    def read_event(self, *, timeout=None):
+        """每段推理完成后先交付时间信息，再按需交付该段音频。"""
         if self._cancelled.is_set():
             return None
         while not self._pending:
@@ -217,6 +309,8 @@ class KokoroStream:
             if result is None or self._cancelled.is_set():
                 return None
             self._pending = result.data
+            if result.text_timings:
+                return result.text_timings[0]
         # 短块只用于交付已生成的一段音频，不把整篇预生成冒充实时。
         chunk, self._pending = self._pending[:4800], self._pending[4800:]
         return AudioChunk(chunk, self.format)

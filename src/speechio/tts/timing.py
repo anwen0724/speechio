@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class WordTiming:
-    """供应商返回的一个字或词；时间从本次输出音频开头计算。"""
+    """供应商或本地模型提供的一个字或词；时间从本次输出音频开头计算。"""
 
     text: str
     start_seconds: float

@@ -333,7 +333,11 @@ class VoiceListingTests(unittest.TestCase):
                     [voice.languages for voice in result], [("en",), ("en-gb",), ("zh",)]
                 )
                 self.assertTrue(all(not voice.instruction_control for voice in result))
-                self.assertTrue(all(voice.text_timestamps == () for voice in result))
+                self.assertEqual(
+                    [voice.text_timestamps for voice in result],
+                    [("sentence", "word"), ("sentence", "word"), ("sentence",)],
+                )
+                self.assertEqual(tts.capabilities.text_timestamps, ("sentence", "word"))
                 self.assertEqual(tts.capabilities.devices, ("cpu", "gpu"))
                 self.assertTrue(tts.capabilities.voice_required)
                 self.assertIsNone(tts.capabilities.default_voice)
